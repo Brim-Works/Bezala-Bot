@@ -13,8 +13,8 @@ from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
-from app.db import get_db, init_db
-from app.models import ProcessedMessage, ScanRun
+from app.db import get_db, init_db, session_scope
+from app.models import MaintenanceTask, ProcessedMessage, ScanRun
 from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
 from app.services.pipeline import run_scan
 from app.services.settings_service import load_settings, settings_to_dict
@@ -28,6 +28,26 @@ logging.basicConfig(
 logger = logging.getLogger("bezala-bot")
 
 
+CLEANUP_ERRORS_TASK = "cleanup_error_messages_v1"
+
+
+def _run_once_cleanup_errors() -> None:
+    """Ta bort alla rader där status='error' — en gång per deploy-version."""
+    try:
+        with session_scope() as db:
+            if db.query(MaintenanceTask).filter(MaintenanceTask.name == CLEANUP_ERRORS_TASK).first():
+                return
+            deleted = (
+                db.query(ProcessedMessage)
+                .filter(ProcessedMessage.status == "error")
+                .delete(synchronize_session=False)
+            )
+            db.add(MaintenanceTask(name=CLEANUP_ERRORS_TASK))
+            logger.info("Engångsrensning: tog bort %d error-rader.", deleted)
+    except Exception:
+        logger.exception("Engångsrensning av error-rader misslyckades.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -37,6 +57,7 @@ async def lifespan(app: FastAPI):
         logger.warning("APP_PASSWORD saknas — inloggning kommer alltid att misslyckas.")
     init_db()
     logger.info("Databas initialiserad.")
+    _run_once_cleanup_errors()
     start_scheduler()
     yield
     shutdown_scheduler()
@@ -203,6 +224,22 @@ def trigger_scan(
     """Kör en scanning i bakgrunden. Returnerar direkt — resultatet hamnar i ScanRun."""
     background.add_task(run_scan, max_results=max_results)
     return {"status": "started", "max_results": max_results}
+
+
+@app.delete("/api/messages/errors")
+def delete_error_messages(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Rensa alla rader med status='error' så mailen kan processas om igen."""
+    deleted = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.status == "error")
+        .delete(synchronize_session=False)
+    )
+    db.commit()
+    logger.info("Rensade %d error-rader via API.", deleted)
+    return {"deleted": deleted}
 
 
 @app.get("/api/messages")

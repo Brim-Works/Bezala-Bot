@@ -41,6 +41,7 @@ export default function Dashboard({ navigate }) {
   const [messages, setMessages] = useState([]);
   const [selected, setSelected] = useState(null);
   const [scanning, setScanning] = useState(false);
+  const [clearing, setClearing] = useState(false);
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -72,6 +73,25 @@ export default function Dashboard({ navigate }) {
     }
   };
 
+  const clearErrors = async () => {
+    if (!window.confirm('Ta bort alla rader med status "error"? De kan processas om vid nästa scanning.')) {
+      return;
+    }
+    setClearing(true);
+    try {
+      const { deleted } = await api.deleteErrors();
+      setError(null);
+      await refresh();
+      if (deleted === 0) {
+        window.alert('Inga error-rader fanns att rensa.');
+      }
+    } catch (e) {
+      setError(e.message);
+    } finally {
+      setClearing(false);
+    }
+  };
+
   const lastRun = stats?.last_run;
 
   return (
@@ -81,6 +101,9 @@ export default function Dashboard({ navigate }) {
         <div style={{ display: 'flex', gap: '0.5rem' }}>
           <button onClick={triggerScan} disabled={scanning}>
             {scanning ? 'Scannar…' : 'Kör scanning nu'}
+          </button>
+          <button onClick={clearErrors} disabled={clearing} className="logout-btn">
+            {clearing ? 'Rensar…' : 'Rensa felade'}
           </button>
           <button onClick={() => navigate('/settings')} className="logout-btn">
             Inställningar

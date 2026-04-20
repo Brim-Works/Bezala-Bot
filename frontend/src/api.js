@@ -22,6 +22,7 @@ export const api = {
   messages: (limit = 50) => req(`/api/messages?limit=${limit}`),
   runs: (limit = 20) => req(`/api/runs?limit=${limit}`),
   scan: () => req('/api/scan', { method: 'POST' }),
+  deleteErrors: () => req('/api/messages/errors', { method: 'DELETE' }),
   getSettings: () => req('/api/settings'),
   updateSettings: (payload) => req('/api/settings', {
     method: 'PUT',

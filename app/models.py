@@ -89,3 +89,12 @@ class AppSettings(Base):
         onupdate=func.now(),
         nullable=False,
     )
+
+
+class MaintenanceTask(Base):
+    """Spår engångs-underhållsjobb som körts (kleaning, seed-data etc)."""
+
+    __tablename__ = "maintenance_tasks"
+
+    name = Column(String(128), primary_key=True)
+    ran_at = Column(DateTime, server_default=func.now(), nullable=False)
