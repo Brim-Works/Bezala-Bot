@@ -70,13 +70,24 @@ cd frontend && npm install && npm run dev
 Hälsokoll: `curl http://localhost:8000/health`
 Dashboard: `http://localhost:5173`
 
-## Engångssetup — Gmail OAuth
+## Engångssetup — Google OAuth (Gmail + Drive)
 
-Gmail kräver en `refresh_token` som genereras en gång lokalt och sedan läggs in
-som miljövariabel i Railway.
+Både Gmail- och Drive-integrationen använder samma OAuth-credentials. Drive
+autentiseras som ditt personliga konto (inte en service account) eftersom
+service accounts saknar storage quota i personligt Drive.
+
+Refresh-tokenen måste ha godkänt alla fyra scopes nedan:
+
+- `https://www.googleapis.com/auth/gmail.modify`
+- `https://www.googleapis.com/auth/gmail.readonly`
+- `https://www.googleapis.com/auth/gmail.labels`
+- `https://www.googleapis.com/auth/drive.file`
+
+`drive.file` ger appen access endast till filer den själv skapar — inte din
+hela Drive.
 
 1. Skapa projekt i [Google Cloud Console](https://console.cloud.google.com/).
-2. Aktivera **Gmail API**.
+2. Aktivera **Gmail API** och **Google Drive API**.
 3. Skapa OAuth-credentials av typen **Desktop app**.
 4. Ladda ner JSON-filen och spara som `gmail_credentials.json` i projektroten.
 5. Kör:
@@ -85,7 +96,7 @@ som miljövariabel i Railway.
    python scripts/generate_token.py
    ```
 
-6. Logga in i webbläsaren som öppnas. Skriptet skriver ut tre värden:
+6. Logga in i webbläsaren som öppnas, godkänn alla scopes. Skriptet skriver ut:
 
    ```
    GMAIL_CLIENT_ID=...
@@ -94,17 +105,13 @@ som miljövariabel i Railway.
    ```
 
 7. Klistra in i Railway → **Variables**.
+8. Sätt `GOOGLE_DRIVE_FOLDER_ID` till ID:t på Drive-mappen där kvitton ska
+   sparas (syns i URL:en när du öppnar mappen).
 
 > `gmail_credentials.json` finns i `.gitignore` och checkas aldrig in.
 
-## Engångssetup — Google Drive (service account)
-
-1. Google Cloud Console → **IAM & Admin** → **Service Accounts** → skapa.
-2. **Keys** → **Add Key** → **JSON** → ladda ner.
-3. Öppna JSON-filen och kopiera hela innehållet (inkl. klammerparenteser).
-4. Klistra in som `GOOGLE_SERVICE_ACCOUNT_JSON` i Railway.
-5. Öppna Drive-mappen i webbläsaren, dela med service account-e-posten
-   (Editor-behörighet). Kopiera mapp-ID från URL:en → `GOOGLE_DRIVE_FOLDER_ID`.
+> Om du redan har en refresh-token utan `drive.file` / `gmail.labels` —
+> kör skriptet igen för att få en ny token med alla scopes.
 
 ## Railway — miljövariabler
 
@@ -114,11 +121,10 @@ som miljövariabel i Railway.
 | `BEZALA_USERNAME` | Bezala-användarnamn |
 | `BEZALA_PASSWORD` | Bezala-lösenord |
 | `BEZALA_API_URL` | Bezala API (default `https://api.bezala.com`) |
-| `GMAIL_CLIENT_ID` | Från Google Cloud OAuth |
+| `GMAIL_CLIENT_ID` | Från Google Cloud OAuth (används för både Gmail & Drive) |
 | `GMAIL_CLIENT_SECRET` | Från Google Cloud OAuth |
-| `GMAIL_REFRESH_TOKEN` | Från `scripts/generate_token.py` |
-| `GOOGLE_SERVICE_ACCOUNT_JSON` | Hela service-account JSON som sträng |
-| `GOOGLE_DRIVE_FOLDER_ID` | Drive-mappens ID |
+| `GMAIL_REFRESH_TOKEN` | Från `scripts/generate_token.py` — måste ha `drive.file`-scope |
+| `GOOGLE_DRIVE_FOLDER_ID` | Drive-mappens ID (default: `1FoK-nmaDLgIUnMUImECjxXBO9XqLgFZb`) |
 | `DATABASE_URL` | **Sätts automatiskt av Railway PostgreSQL** |
 | `SCAN_INTERVAL_MINUTES` | Default 60 |
 | `SCAN_ENABLED` | `true`/`false` |
@@ -183,8 +189,10 @@ Vid race conditions fångar `UniqueConstraint` dubletter på DB-nivå.
 ## Felsökning
 
 - **`Gmail OAuth saknar konfiguration`** → saknar `GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN`.
-- **`GOOGLE_SERVICE_ACCOUNT_JSON är inte giltig JSON`** → kolla att du klistrat
-  in hela JSON-filen utan radbrytningar som brutit tecken.
+- **`Drive OAuth saknar konfiguration`** → samma som ovan; refresh-tokenen måste
+  dessutom ha godkänt scopet `drive.file`. Regenerera med `scripts/generate_token.py`.
+- **`insufficientScopes` från Drive-API** → refresh-tokenen har inte `drive.file`.
+  Kör `scripts/generate_token.py` igen och godkänn alla scopes i webbläsaren.
 - **Inga mail hittas** → testa query manuellt i Gmail:
   `has:attachment -category:promotions -label:"Bezala-Klar"`.
 - **Claude-namngivning saknas** → `ANTHROPIC_API_KEY` saknas eller felaktig;

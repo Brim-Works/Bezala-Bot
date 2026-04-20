@@ -1,13 +1,19 @@
-"""Google Drive-klient via service account JSON från miljövariabel."""
+"""Google Drive-klient via OAuth2 (samma credentials som Gmail).
+
+Använder GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN och
+scopet drive.file (begränsad access — bara filer som appen själv skapar).
+Service accounts använder vi inte längre eftersom de saknar storage quota
+i personligt Drive.
+"""
 
 from __future__ import annotations
 
 import io
-import json
 import logging
 from dataclasses import dataclass
 
-from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 from googleapiclient.http import MediaIoBaseUpload
 
@@ -15,7 +21,9 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SCOPES = [
+    "https://www.googleapis.com/auth/drive.file",
+]
 
 
 @dataclass
@@ -28,19 +36,26 @@ class DriveUploadResult:
 class DriveClient:
     def __init__(self) -> None:
         settings = get_settings()
-        if not settings.google_service_account_json:
+        if not (
+            settings.gmail_client_id
+            and settings.gmail_client_secret
+            and settings.gmail_refresh_token
+        ):
             raise RuntimeError(
-                "GOOGLE_SERVICE_ACCOUNT_JSON saknas. Klistra in HELA service-account JSON "
-                "som en sträng i Railway."
+                "Drive OAuth saknar konfiguration. Sätt GMAIL_CLIENT_ID, "
+                "GMAIL_CLIENT_SECRET och GMAIL_REFRESH_TOKEN (refresh-tokenen "
+                "måste ha godkänt scopet drive.file)."
             )
-        try:
-            info = json.loads(settings.google_service_account_json)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(
-                "GOOGLE_SERVICE_ACCOUNT_JSON är inte giltig JSON."
-            ) from exc
 
-        creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+        creds = Credentials(
+            token=None,
+            refresh_token=settings.gmail_refresh_token,
+            client_id=settings.gmail_client_id,
+            client_secret=settings.gmail_client_secret,
+            token_uri="https://oauth2.googleapis.com/token",
+            scopes=SCOPES,
+        )
+        creds.refresh(Request())
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
         self._folder_id = settings.google_drive_folder_id
 
