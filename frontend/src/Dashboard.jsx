@@ -25,6 +25,17 @@ function formatDate(iso) {
   return d.toLocaleString('sv-SE');
 }
 
+function formatAmount(amount, currency) {
+  if (amount === null || amount === undefined) return '—';
+  const n = Number(amount);
+  if (Number.isNaN(n)) return '—';
+  const formatted = n.toLocaleString('sv-SE', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+  return currency ? `${formatted} ${currency}` : formatted;
+}
+
 export default function Dashboard({ navigate }) {
   const [stats, setStats] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -107,8 +118,9 @@ export default function Dashboard({ navigate }) {
             <thead>
               <tr>
                 <th>Tid</th>
-                <th>Från</th>
-                <th>Ämne</th>
+                <th>Leverantör</th>
+                <th>Belopp</th>
+                <th>Kategori</th>
                 <th>Filnamn</th>
                 <th>Status</th>
               </tr>
@@ -116,7 +128,7 @@ export default function Dashboard({ navigate }) {
             <tbody>
               {messages.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="muted" style={{ textAlign: 'center', padding: '2rem' }}>
+                  <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: '2rem' }}>
                     Inga mail bearbetade ännu.
                   </td>
                 </tr>
@@ -128,8 +140,9 @@ export default function Dashboard({ navigate }) {
                   className={selected?.id === m.id ? 'selected' : ''}
                 >
                   <td>{formatDate(m.processed_at)}</td>
-                  <td>{m.sender || '—'}</td>
-                  <td>{m.subject || '—'}</td>
+                  <td>{m.vendor || <span className="muted">—</span>}</td>
+                  <td>{formatAmount(m.amount, m.currency)}</td>
+                  <td>{m.category || <span className="muted">—</span>}</td>
                   <td>{m.file_name || <span className="muted">—</span>}</td>
                   <td><StatusBadge status={m.status} /></td>
                 </tr>
@@ -143,6 +156,20 @@ export default function Dashboard({ navigate }) {
             <h3>{selected.file_name || selected.subject || selected.message_id}</h3>
             <p className="muted">Från: {selected.sender || '—'}</p>
             <p className="muted">Ämne: {selected.subject || '—'}</p>
+            {(selected.vendor || selected.amount !== null || selected.category || selected.summary) && (
+              <div className="ai-meta">
+                {selected.vendor && <p><strong>Leverantör:</strong> {selected.vendor}</p>}
+                {selected.amount !== null && selected.amount !== undefined && (
+                  <p><strong>Belopp:</strong> {formatAmount(selected.amount, selected.currency)}</p>
+                )}
+                {selected.receipt_date && <p><strong>Kvittodatum:</strong> {selected.receipt_date}</p>}
+                {selected.category && <p><strong>Kategori:</strong> {selected.category}</p>}
+                {selected.ai_confidence !== null && selected.ai_confidence !== undefined && (
+                  <p><strong>AI-confidence:</strong> {selected.ai_confidence}%</p>
+                )}
+                {selected.summary && <p className="muted">{selected.summary}</p>}
+              </div>
+            )}
             {selected.error_message && (
               <p style={{ color: 'var(--err)' }}>Fel: {selected.error_message}</p>
             )}

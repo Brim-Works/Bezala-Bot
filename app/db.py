@@ -1,8 +1,11 @@
+import logging
 from contextlib import contextmanager
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 from app.config import get_settings
+
+logger = logging.getLogger(__name__)
 
 settings = get_settings()
 
@@ -20,10 +23,41 @@ SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False)
 Base = declarative_base()
 
 
+_PROCESSED_MESSAGES_ADDITIONS = {
+    "vendor": "VARCHAR(255)",
+    "amount": "FLOAT",
+    "currency": "VARCHAR(16)",
+    "receipt_date": "VARCHAR(32)",
+    "category": "VARCHAR(64)",
+    "summary": "TEXT",
+    "ai_confidence": "INTEGER",
+}
+
+
+def _apply_schema_migrations() -> None:
+    """Idempotent: lägger till nya kolumner som saknas i existerande tabeller."""
+    insp = inspect(engine)
+    if "processed_messages" not in insp.get_table_names():
+        return
+    existing = {col["name"] for col in insp.get_columns("processed_messages")}
+    with engine.begin() as conn:
+        for name, col_type in _PROCESSED_MESSAGES_ADDITIONS.items():
+            if name in existing:
+                continue
+            try:
+                conn.execute(
+                    text(f"ALTER TABLE processed_messages ADD COLUMN {name} {col_type}")
+                )
+                logger.info("Lade till kolumn processed_messages.%s", name)
+            except Exception:
+                logger.exception("Kunde inte lägga till kolumn %s", name)
+
+
 def init_db() -> None:
     from app import models  # noqa: F401 — registrerar modeller
 
     Base.metadata.create_all(bind=engine)
+    _apply_schema_migrations()
 
 
 @contextmanager

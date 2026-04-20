@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from app.db import Base
@@ -23,6 +23,14 @@ class ProcessedMessage(Base):
     drive_link = Column(Text, nullable=True)
     status = Column(String(64), nullable=False, default="pending")
     error_message = Column(Text, nullable=True)
+
+    vendor = Column(String(255), nullable=True)
+    amount = Column(Float, nullable=True)
+    currency = Column(String(16), nullable=True)
+    receipt_date = Column(String(32), nullable=True)
+    category = Column(String(64), nullable=True)
+    summary = Column(Text, nullable=True)
+    ai_confidence = Column(Integer, nullable=True)
 
 
 class SavedFile(Base):

@@ -26,6 +26,11 @@ from app.services.ai_namer import FileNamer
 from app.services.drive_client import DriveClient
 from app.services.gmail_client import DONE_LABEL, GmailClient, GmailMessage
 from app.services.pdf_validator import looks_like_pdf
+from app.services.receipt_analyzer import (
+    AnalyzerError,
+    ReceiptAnalysis,
+    ReceiptAnalyzer,
+)
 from app.services.settings_service import (
     build_gmail_query,
     load_settings,
@@ -75,6 +80,7 @@ def run_scan(max_results: int = 50) -> ScanResult:
         app_settings = load_settings(db)
         gmail_query = build_gmail_query(app_settings, done_label=DONE_LABEL)
         excluded_subjects = list(app_settings.exclude_subjects or [])
+        ai_enabled = bool(app_settings.ai_naming_enabled)
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
@@ -95,6 +101,12 @@ def run_scan(max_results: int = 50) -> ScanResult:
         raise
 
     namer = FileNamer()
+    analyzer = ReceiptAnalyzer()
+    use_ai = ai_enabled and analyzer.enabled
+    if ai_enabled and not analyzer.enabled:
+        logger.warning(
+            "ai_naming_enabled=true men ANTHROPIC_API_KEY saknas — faller tillbaka på heuristisk namngivning."
+        )
 
     try:
         message_ids = gmail.list_candidate_message_ids(
@@ -106,11 +118,20 @@ def run_scan(max_results: int = 50) -> ScanResult:
         raise
 
     result.found = len(message_ids)
-    logger.info("Scanning hittade %d kandidater (query: %s)", result.found, gmail_query)
+    logger.info(
+        "Scanning hittade %d kandidater (AI=%s, query: %s)",
+        result.found,
+        "on" if use_ai else "off",
+        gmail_query,
+    )
 
     for mid in message_ids:
         try:
-            _process_one_message(mid, gmail, drive, namer, result, excluded_subjects)
+            _process_one_message(
+                mid, gmail, drive, namer, analyzer, result,
+                excluded_subjects=excluded_subjects,
+                use_ai=use_ai,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fel under bearbetning av %s: %s", mid, exc)
             result.errors += 1
@@ -126,8 +147,11 @@ def _process_one_message(
     gmail: GmailClient,
     drive: DriveClient,
     namer: FileNamer,
+    analyzer: ReceiptAnalyzer,
     result: ScanResult,
+    *,
     excluded_subjects: list[str] | None = None,
+    use_ai: bool = False,
 ) -> None:
     with session_scope() as db:
         if _message_already_processed(db, message_id):
@@ -162,14 +186,48 @@ def _process_one_message(
         return
 
     saved_any = False
+    any_non_receipt = False
+
     for att in pdf_attachments:
-        new_name = namer.name_for(
-            sender=msg.sender,
-            subject=msg.subject,
-            snippet=msg.snippet,
-            received_at=msg.received_at,
-            original_filename=att.filename,
-        )
+        analysis: ReceiptAnalysis | None = None
+        if use_ai:
+            try:
+                analysis = analyzer.analyze(
+                    attachment_bytes=att.data,
+                    mime_type=att.mime_type,
+                    original_filename=att.filename,
+                    sender=msg.sender,
+                    subject=msg.subject,
+                    snippet=msg.snippet,
+                    received_at=msg.received_at,
+                )
+            except AnalyzerError as exc:
+                logger.exception("Claude-analys misslyckades för %s: %s", message_id, exc)
+                result.errors += 1
+                result.notes.append(f"{message_id}: AI-analys: {exc}")
+                _log_error(message_id, f"AI-analys: {exc}")
+                return
+
+            if not analysis.is_receipt:
+                any_non_receipt = True
+                logger.info(
+                    "Claude: %s är inte ett kvitto (confidence=%d) — hoppar utan logg",
+                    message_id,
+                    analysis.confidence,
+                )
+                continue
+
+        if analysis is not None:
+            new_name = analysis.filename
+        else:
+            new_name = namer.name_for(
+                sender=msg.sender,
+                subject=msg.subject,
+                snippet=msg.snippet,
+                received_at=msg.received_at,
+                original_filename=att.filename,
+            )
+
         date_str = (msg.received_at or datetime.utcnow()).strftime("%Y%m%d")
 
         with session_scope() as db:
@@ -198,6 +256,13 @@ def _process_one_message(
                         drive_file_id=upload.file_id,
                         drive_link=upload.web_view_link,
                         status="saved",
+                        vendor=analysis.vendor if analysis else None,
+                        amount=analysis.amount if analysis else None,
+                        currency=analysis.currency if analysis else None,
+                        receipt_date=analysis.date if analysis else None,
+                        category=analysis.category if analysis else None,
+                        summary=analysis.summary if analysis else None,
+                        ai_confidence=analysis.confidence if analysis else None,
                     )
                 )
                 db.add(
@@ -214,11 +279,13 @@ def _process_one_message(
             result.skipped += 1
             break
 
-    if saved_any:
+    if saved_any or any_non_receipt:
         try:
             gmail.mark_done(message_id)
         except Exception:
-            logger.exception("Kunde inte sätta etikett på %s efter uppladdning", message_id)
+            logger.exception("Kunde inte sätta etikett på %s efter bearbetning", message_id)
+    if any_non_receipt and not saved_any:
+        result.skipped += 1
 
 
 def _log_skip(msg: GmailMessage, reason: str) -> None:

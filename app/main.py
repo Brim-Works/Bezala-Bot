@@ -230,6 +230,13 @@ def list_messages(
             "drive_link": r.drive_link,
             "status": r.status,
             "error_message": r.error_message,
+            "vendor": r.vendor,
+            "amount": r.amount,
+            "currency": r.currency,
+            "receipt_date": r.receipt_date,
+            "category": r.category,
+            "summary": r.summary,
+            "ai_confidence": r.ai_confidence,
         }
         for r in rows
     ]
