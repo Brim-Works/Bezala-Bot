@@ -22,6 +22,12 @@ export const api = {
   messages: (limit = 50) => req(`/api/messages?limit=${limit}`),
   runs: (limit = 20) => req(`/api/runs?limit=${limit}`),
   scan: () => req('/api/scan', { method: 'POST' }),
+  getSettings: () => req('/api/settings'),
+  updateSettings: (payload) => req('/api/settings', {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  }),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'same-origin' });
     window.location.href = '/login';

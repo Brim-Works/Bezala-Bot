@@ -24,8 +24,13 @@ from app.db import session_scope
 from app.models import ProcessedMessage, SavedFile, ScanRun
 from app.services.ai_namer import FileNamer
 from app.services.drive_client import DriveClient
-from app.services.gmail_client import GmailClient, GmailMessage
+from app.services.gmail_client import DONE_LABEL, GmailClient, GmailMessage
 from app.services.pdf_validator import looks_like_pdf
+from app.services.settings_service import (
+    build_gmail_query,
+    load_settings,
+    subject_matches_exclusion,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +72,9 @@ def run_scan(max_results: int = 50) -> ScanResult:
     result = ScanResult()
 
     with session_scope() as db:
+        app_settings = load_settings(db)
+        gmail_query = build_gmail_query(app_settings, done_label=DONE_LABEL)
+        excluded_subjects = list(app_settings.exclude_subjects or [])
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
@@ -89,18 +97,20 @@ def run_scan(max_results: int = 50) -> ScanResult:
     namer = FileNamer()
 
     try:
-        message_ids = gmail.list_candidate_message_ids(max_results=max_results)
+        message_ids = gmail.list_candidate_message_ids(
+            query=gmail_query, max_results=max_results
+        )
     except Exception as exc:
         logger.exception("Kunde inte lista Gmail-meddelanden: %s", exc)
         _finalize_run(run_id, result, status="error", note=f"Gmail list: {exc}")
         raise
 
     result.found = len(message_ids)
-    logger.info("Scanning hittade %d kandidater", result.found)
+    logger.info("Scanning hittade %d kandidater (query: %s)", result.found, gmail_query)
 
     for mid in message_ids:
         try:
-            _process_one_message(mid, gmail, drive, namer, result)
+            _process_one_message(mid, gmail, drive, namer, result, excluded_subjects)
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fel under bearbetning av %s: %s", mid, exc)
             result.errors += 1
@@ -117,6 +127,7 @@ def _process_one_message(
     drive: DriveClient,
     namer: FileNamer,
     result: ScanResult,
+    excluded_subjects: list[str] | None = None,
 ) -> None:
     with session_scope() as db:
         if _message_already_processed(db, message_id):
@@ -125,6 +136,17 @@ def _process_one_message(
             return
 
     msg = gmail.fetch_message(message_id)
+
+    if excluded_subjects and subject_matches_exclusion(msg.subject, excluded_subjects):
+        result.skipped += 1
+        logger.info("Hoppar över %s — ämnet matchar exkludering: %r", message_id, msg.subject)
+        _log_skip(msg, reason="excluded_subject")
+        try:
+            gmail.mark_done(message_id)
+        except Exception:
+            logger.exception("Kunde inte sätta etikett på %s", message_id)
+        return
+
     pdf_attachments = [
         a for a in msg.attachments if looks_like_pdf(a.filename, a.mime_type, a.data)
     ]

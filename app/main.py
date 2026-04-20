@@ -7,6 +7,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Requ
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
@@ -14,8 +15,9 @@ from starlette.middleware.sessions import SessionMiddleware
 from app.config import get_settings
 from app.db import get_db, init_db
 from app.models import ProcessedMessage, ScanRun
-from app.scheduler import shutdown_scheduler, start_scheduler
+from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
 from app.services.pipeline import run_scan
+from app.services.settings_service import load_settings, settings_to_dict
 
 settings = get_settings()
 
@@ -140,9 +142,56 @@ if FRONTEND_DIST.exists():
         name="assets",
     )
 
+    def _serve_spa():
+        return FileResponse(FRONTEND_DIST / "index.html")
+
     @app.get("/")
     def spa_root():
-        return FileResponse(FRONTEND_DIST / "index.html")
+        return _serve_spa()
+
+    @app.get("/settings")
+    def spa_settings():
+        return _serve_spa()
+
+
+class SettingsPayload(BaseModel):
+    scan_interval_minutes: int = Field(ge=5, le=1440)
+    ai_naming_enabled: bool
+    auto_upload_enabled: bool
+    confidence_threshold: int = Field(ge=0, le=100)
+    require_attachments: bool
+    exclude_promotions: bool
+    exclude_social: bool
+    exclude_calendar: bool
+    include_senders: list[str] = Field(default_factory=list)
+    exclude_senders: list[str] = Field(default_factory=list)
+    exclude_subjects: list[str] = Field(default_factory=list)
+
+
+@app.get("/api/settings")
+def get_app_settings(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    row = load_settings(db)
+    db.commit()
+    return settings_to_dict(row)
+
+
+@app.put("/api/settings")
+def update_app_settings(
+    payload: SettingsPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    row = load_settings(db)
+    data = payload.model_dump()
+    for key, value in data.items():
+        setattr(row, key, value)
+    db.commit()
+    db.refresh(row)
+    reschedule_scheduler(row.scan_interval_minutes)
+    return settings_to_dict(row)
 
 
 @app.post("/api/scan")

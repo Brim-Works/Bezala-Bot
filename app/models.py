@@ -1,5 +1,5 @@
 from datetime import datetime
-from sqlalchemy import Column, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import Boolean, Column, DateTime, Integer, JSON, String, Text, UniqueConstraint
 from sqlalchemy.sql import func
 
 from app.db import Base
@@ -52,3 +52,32 @@ class ScanRun(Base):
     errors = Column(Integer, default=0, nullable=False)
     status = Column(String(32), default="running", nullable=False)
     notes = Column(Text, nullable=True)
+
+
+class AppSettings(Base):
+    """Applikationsinställningar (singleton — id=1)."""
+
+    __tablename__ = "app_settings"
+
+    id = Column(Integer, primary_key=True)
+
+    scan_interval_minutes = Column(Integer, nullable=False, default=60)
+    ai_naming_enabled = Column(Boolean, nullable=False, default=True)
+    auto_upload_enabled = Column(Boolean, nullable=False, default=False)
+    confidence_threshold = Column(Integer, nullable=False, default=90)
+
+    require_attachments = Column(Boolean, nullable=False, default=True)
+    exclude_promotions = Column(Boolean, nullable=False, default=True)
+    exclude_social = Column(Boolean, nullable=False, default=True)
+    exclude_calendar = Column(Boolean, nullable=False, default=True)
+
+    include_senders = Column(JSON, nullable=False, default=list)
+    exclude_senders = Column(JSON, nullable=False, default=list)
+    exclude_subjects = Column(JSON, nullable=False, default=list)
+
+    updated_at = Column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
