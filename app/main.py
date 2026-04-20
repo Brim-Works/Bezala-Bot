@@ -1,13 +1,15 @@
 import logging
+import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import BackgroundTasks, Depends, FastAPI
+from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
+from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import get_db, init_db
@@ -27,6 +29,10 @@ logger = logging.getLogger("bezala-bot")
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
+    if not settings.session_secret:
+        logger.warning("SESSION_SECRET saknas — sessioner är osäkra.")
+    if not settings.app_password:
+        logger.warning("APP_PASSWORD saknas — inloggning kommer alltid att misslyckas.")
     init_db()
     logger.info("Databas initialiserad.")
     start_scheduler()
@@ -38,11 +44,87 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Bezala Bot", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
+    SessionMiddleware,
+    secret_key=settings.session_secret or secrets.token_hex(32),
+    session_cookie="bezala_session",
+    same_site="lax",
+    https_only=True,
+    max_age=60 * 60 * 24 * 7,
+)
+
+app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def require_auth(request: Request) -> None:
+    if not request.session.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+
+
+LOGIN_PAGE = """<!doctype html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bezala Bot — Logga in</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; background: #111; color: #eee;
+         display: grid; place-items: center; min-height: 100vh; margin: 0; }
+  form { background: #1a1a1a; padding: 2rem; border-radius: 8px; width: 100%; max-width: 320px;
+         box-shadow: 0 4px 24px rgba(0,0,0,0.4); }
+  h1 { margin: 0 0 1.5rem; font-size: 1.2rem; }
+  input { width: 100%; padding: 0.6rem; background: #222; color: #eee;
+          border: 1px solid #333; border-radius: 4px; box-sizing: border-box; font-size: 1rem; }
+  button { width: 100%; margin-top: 1rem; padding: 0.7rem; background: #3a82f6;
+           color: white; border: 0; border-radius: 4px; cursor: pointer; font-size: 1rem; }
+  button:hover { background: #2f6fd8; }
+  .err { color: #f66; margin: 0 0 1rem; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<form method="post" action="/login">
+  <h1>Bezala Bot</h1>
+  {error_block}
+  <input type="password" name="password" placeholder="Lösenord" autofocus required>
+  <button type="submit">Logga in</button>
+</form>
+</body>
+</html>
+"""
+
+
+@app.get("/login", response_class=HTMLResponse)
+def login_page(request: Request, error: str | None = None):
+    if request.session.get("authenticated"):
+        return RedirectResponse(url="/", status_code=303)
+    error_block = f'<p class="err">{error}</p>' if error else ""
+    return HTMLResponse(LOGIN_PAGE.replace("{error_block}", error_block))
+
+
+@app.post("/login")
+def login(request: Request, password: str = Form(...)):
+    expected = settings.app_password
+    if not expected or not secrets.compare_digest(password, expected):
+        return RedirectResponse(url="/login?error=Fel+l%C3%B6senord", status_code=303)
+    request.session["authenticated"] = True
+    return RedirectResponse(url="/", status_code=303)
+
+
+@app.post("/logout")
+def logout(request: Request):
+    request.session.clear()
+    return {"ok": True}
+
+
+@app.get("/api/me")
+def me(request: Request):
+    if not request.session.get("authenticated"):
+        raise HTTPException(status_code=401, detail="Not authenticated")
+    return {"authenticated": True}
 
 
 @app.get("/health")
@@ -64,14 +146,22 @@ if FRONTEND_DIST.exists():
 
 
 @app.post("/api/scan")
-def trigger_scan(background: BackgroundTasks, max_results: int = 50):
+def trigger_scan(
+    background: BackgroundTasks,
+    max_results: int = 50,
+    _: None = Depends(require_auth),
+):
     """Kör en scanning i bakgrunden. Returnerar direkt — resultatet hamnar i ScanRun."""
     background.add_task(run_scan, max_results=max_results)
     return {"status": "started", "max_results": max_results}
 
 
 @app.get("/api/messages")
-def list_messages(limit: int = 50, db: Session = Depends(get_db)):
+def list_messages(
+    limit: int = 50,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
     rows = (
         db.query(ProcessedMessage)
         .order_by(desc(ProcessedMessage.processed_at))
@@ -97,7 +187,11 @@ def list_messages(limit: int = 50, db: Session = Depends(get_db)):
 
 
 @app.get("/api/runs")
-def list_runs(limit: int = 20, db: Session = Depends(get_db)):
+def list_runs(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
     rows = db.query(ScanRun).order_by(desc(ScanRun.started_at)).limit(limit).all()
     return [
         {
@@ -116,7 +210,7 @@ def list_runs(limit: int = 20, db: Session = Depends(get_db)):
 
 
 @app.get("/api/stats")
-def stats(db: Session = Depends(get_db)):
+def stats(db: Session = Depends(get_db), _: None = Depends(require_auth)):
     total = db.query(func.count(ProcessedMessage.id)).scalar() or 0
     saved = (
         db.query(func.count(ProcessedMessage.id))

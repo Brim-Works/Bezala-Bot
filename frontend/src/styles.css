@@ -80,6 +80,11 @@ button {
 button:hover { filter: brightness(1.1); }
 button:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.logout-btn {
+  background: var(--surface-2);
+  color: var(--text);
+}
+
 .message-list {
   background: var(--surface);
   border-radius: 8px;

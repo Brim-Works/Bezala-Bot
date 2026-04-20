@@ -26,6 +26,7 @@ function formatDate(iso) {
 }
 
 export default function App() {
+  const [authChecked, setAuthChecked] = useState(false);
   const [stats, setStats] = useState(null);
   const [messages, setMessages] = useState([]);
   const [selected, setSelected] = useState(null);
@@ -44,10 +45,31 @@ export default function App() {
   }, []);
 
   useEffect(() => {
+    let cancelled = false;
+    api.me()
+      .then(() => {
+        if (!cancelled) setAuthChecked(true);
+      })
+      .catch(() => {
+        // api.js har redan redirectat till /login vid 401
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authChecked) return undefined;
     refresh();
     const id = setInterval(refresh, 15000);
     return () => clearInterval(id);
-  }, [refresh]);
+  }, [authChecked, refresh]);
+
+  if (!authChecked) {
+    return (
+      <div style={{ padding: '2rem', color: 'var(--muted, #888)' }}>Laddar…</div>
+    );
+  }
 
   const triggerScan = async () => {
     setScanning(true);
@@ -67,9 +89,14 @@ export default function App() {
     <>
       <header>
         <h1>Bezala Bot</h1>
-        <button onClick={triggerScan} disabled={scanning}>
-          {scanning ? 'Scannar…' : 'Kör scanning nu'}
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem' }}>
+          <button onClick={triggerScan} disabled={scanning}>
+            {scanning ? 'Scannar…' : 'Kör scanning nu'}
+          </button>
+          <button onClick={() => api.logout()} className="logout-btn">
+            Logga ut
+          </button>
+        </div>
       </header>
       <div className="container">
         {error && (

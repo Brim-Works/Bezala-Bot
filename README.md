@@ -123,6 +123,8 @@ som miljövariabel i Railway.
 | `SCAN_INTERVAL_MINUTES` | Default 60 |
 | `SCAN_ENABLED` | `true`/`false` |
 | `LOG_LEVEL` | `INFO` / `DEBUG` |
+| `APP_PASSWORD` | Lösenord för att logga in i dashboarden |
+| `SESSION_SECRET` | Hemlighet för signering av session-cookies. Generera med `python3 -c "import secrets; print(secrets.token_hex(32))"` |
 
 ## Deployment till Railway
 
@@ -136,13 +138,34 @@ som miljövariabel i Railway.
    - startar `uvicorn app.main:app`
 5. Healthcheck på `/health` bekräftar att tjänsten är uppe.
 
+## Autentisering
+
+Hela dashboarden är lösenordsskyddad.
+
+- `GET /login` — inloggningsformulär
+- `POST /login` — validerar lösenord (från `APP_PASSWORD`) och sätter
+  signerad session-cookie (`httpOnly`, `secure`, `samesite=lax`)
+- `POST /logout` — rensar sessionen
+- `GET /api/me` — returnerar `{"authenticated": true}` om inloggad, annars 401
+
+Samtliga `/api/*`-endpoints kräver giltig session och svarar `401 Unauthorized`
+utan. Frontend redirectar automatiskt till `/login` vid 401.
+
+Sätt `APP_PASSWORD` och `SESSION_SECRET` som miljövariabler i Railway.
+Glömmer du `SESSION_SECRET` genererar appen en tillfällig hemlighet vid
+uppstart — men då logggas alla ut vid varje deploy.
+
 ## API-endpoints
 
-- `GET /health` — hälsokoll
-- `GET /api/stats` — statistik + senaste scanning
-- `GET /api/messages?limit=50` — bearbetade mail
-- `GET /api/runs?limit=20` — scanning-körningar
-- `POST /api/scan` — triggar manuell scanning (async)
+- `GET /health` — hälsokoll (öppen, ingen auth)
+- `GET /login` — inloggningssida (öppen)
+- `POST /login` — logga in med lösenord (öppen)
+- `POST /logout` — logga ut
+- `GET /api/me` — auth-status (401 om inte inloggad)
+- `GET /api/stats` — statistik + senaste scanning *(auth)*
+- `GET /api/messages?limit=50` — bearbetade mail *(auth)*
+- `GET /api/runs?limit=20` — scanning-körningar *(auth)*
+- `POST /api/scan` — triggar manuell scanning (async) *(auth)*
 - `GET /` — React-dashboard (om `frontend/dist/` finns)
 
 ## Dubblettskydd — detaljer

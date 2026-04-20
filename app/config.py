@@ -29,6 +29,9 @@ class Settings(BaseSettings):
 
     log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
+    app_password: str = Field(default="", alias="APP_PASSWORD")
+    session_secret: str = Field(default="", alias="SESSION_SECRET")
+
 
 @lru_cache
 def get_settings() -> Settings:
