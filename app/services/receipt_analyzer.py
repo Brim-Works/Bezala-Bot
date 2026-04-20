@@ -21,8 +21,6 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-20250514"
-
 SYSTEM_PROMPT = (
     "Du analyserar bifogade dokument och avgör om de är kvitton, "
     "resedokument, fakturor eller liknande utläggsunderlag. "
@@ -116,6 +114,7 @@ class ReceiptAnalyzer:
 
     def __init__(self) -> None:
         settings = get_settings()
+        self._model = settings.claude_model
         if not settings.anthropic_api_key:
             self._client: Anthropic | None = None
         else:
@@ -153,7 +152,7 @@ class ReceiptAnalyzer:
 
         try:
             resp = self._client.messages.create(
-                model=MODEL,
+                model=self._model,
                 max_tokens=600,
                 system=SYSTEM_PROMPT,
                 messages=[

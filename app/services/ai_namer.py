@@ -16,8 +16,6 @@ from app.config import get_settings
 
 logger = logging.getLogger(__name__)
 
-MODEL = "claude-sonnet-4-6"
-
 SYSTEM_PROMPT = (
     "Du namnger kvitton och resedokument. Du får ett e-mail (avsändare, ämne, "
     "snippet) och ett bifogat filnamn. Svara med EN rad — ENDAST filnamnet, "
@@ -65,6 +63,7 @@ class FileNamer:
     def __init__(self) -> None:
         settings = get_settings()
         self._enabled = bool(settings.anthropic_api_key)
+        self._model = settings.claude_model
         self._client: Anthropic | None = (
             Anthropic(api_key=settings.anthropic_api_key) if self._enabled else None
         )
@@ -93,7 +92,7 @@ class FileNamer:
         )
         try:
             resp = self._client.messages.create(
-                model=MODEL,
+                model=self._model,
                 max_tokens=120,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_prompt}],

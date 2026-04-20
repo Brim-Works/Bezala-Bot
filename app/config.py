@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
+    claude_model: str = Field(default="claude-sonnet-4-6", alias="CLAUDE_MODEL")
 
     bezala_username: str = Field(default="", alias="BEZALA_USERNAME")
     bezala_password: str = Field(default="", alias="BEZALA_PASSWORD")
