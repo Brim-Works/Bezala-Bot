@@ -18,6 +18,10 @@
   --swatch-a-border: #cfcec2;
   --swatch-b-bg: #12221c;
   --swatch-b-border: #35574a;
+
+  /* Text på vendor-logo-bakgrund — bakgrunden är alltid mid-mörk
+   * (oklch 55%) så vit text fungerar i båda teman. */
+  --vendor-ink: #ffffff;
 }
 
 /* ========== Tema A — Bezala Modern Light (default) ========== */

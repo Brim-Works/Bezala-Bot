@@ -16,6 +16,70 @@ export default {
     themeLight: 'Ljust',
     themeForest: 'Skog',
   },
+  hero: {
+    before: 'Bezala Bot',
+    emphasis: 'automatiserar',
+    after: 'kvitton.',
+    waiting: 'väntar på granskning',
+  },
+  stats: {
+    pending: 'Väntar granskning',
+    transferredToday: 'Auto-överförda idag',
+    transferredTodaySub: 'Skickade till Bezala utan manuell granskning',
+    errors: 'Fel',
+    errorsSub: 'Mail som behöver utredas',
+    totalThisWeek: 'Total denna vecka',
+    totalThisWeekSub: 'Bearbetade de senaste 7 dagarna',
+    lastRun: 'Senaste scanning',
+  },
+  sections: {
+    processed: 'Senast bearbetade',
+    runs: 'Scanning-historik',
+    rows: 'rader',
+  },
+  cols: {
+    time: 'Tid',
+    vendor: 'Leverantör',
+    subject: 'Ämne',
+    file: 'Filnamn',
+    amount: 'Belopp',
+    confidence: 'Säkerhet',
+    status: 'Status',
+  },
+  filters: {
+    all: 'Alla',
+    pending: 'Väntar',
+    auto: 'Auto',
+    errors: 'Fel',
+  },
+  search: {
+    label: 'Sök i meddelanden',
+    placeholder: 'Sök leverantör, filnamn, belopp…',
+  },
+  fileStatus: {
+    saved: 'Sparad',
+    error: 'Fel',
+    skipped: 'Hoppad',
+  },
+  bezalaStatus: {
+    transferred: 'Uppladdad',
+    pending: 'Väntar',
+    error: 'Fel',
+  },
+  empty: {
+    noMessages: 'Inga mail bearbetade ännu — kör en scanning för att börja.',
+  },
+  runs: {
+    subtitle: 'Senaste 14 körningarna',
+    processed: 'processade',
+    errors: 'fel',
+    now: 'nu',
+    empty: 'Inga körningar ännu.',
+  },
+  toast: {
+    scanStarted: 'Scanning startad — uppdaterar listan…',
+    scanFailed: 'Scanning misslyckades',
+  },
   common: {
     loading: 'Laddar…',
     error: 'Fel',
@@ -26,10 +90,7 @@ export default {
     back: 'Tillbaka',
   },
   views: {
-    dashboard: {
-      title: 'Översikt',
-      placeholder: 'Dashboard byggs i Commit 2 — stat-kort, filter-tabs, tabell och körnings-stapel.',
-    },
+    dashboard: { title: 'Översikt' },
     review: {
       title: 'Granska',
       placeholder: 'Granska-vyn byggs i Commit 3 — kö, PDF-preview och redigerbara AI-fält.',
