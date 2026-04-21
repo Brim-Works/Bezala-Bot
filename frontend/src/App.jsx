@@ -4,7 +4,7 @@ import { ThemeProvider } from './theme/ThemeProvider.jsx';
 import { RouterProvider, useRouter } from './router/useRouter.jsx';
 import AppShell from './components/AppShell.jsx';
 import Dashboard from './views/Dashboard.jsx';
-import ReviewPlaceholder from './views/ReviewPlaceholder.jsx';
+import Review from './views/Review.jsx';
 import LogPlaceholder from './views/LogPlaceholder.jsx';
 import SettingsPlaceholder from './views/SettingsPlaceholder.jsx';
 import NotFound from './views/NotFound.jsx';
@@ -18,7 +18,7 @@ function ViewForRoute() {
     case 'dashboard':
       return <Dashboard />;
     case 'review':
-      return <ReviewPlaceholder />;
+      return <Review />;
     case 'log':
       return <LogPlaceholder />;
     case 'settings':
