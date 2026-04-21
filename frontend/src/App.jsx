@@ -6,7 +6,7 @@ import AppShell from './components/AppShell.jsx';
 import Dashboard from './views/Dashboard.jsx';
 import Review from './views/Review.jsx';
 import Log from './views/Log.jsx';
-import SettingsPlaceholder from './views/SettingsPlaceholder.jsx';
+import Settings from './views/Settings.jsx';
 import NotFound from './views/NotFound.jsx';
 import { api, ApiError, setUnauthorizedHandler } from './api/client.js';
 import { viewForPath } from './routes.js';
@@ -22,7 +22,7 @@ function ViewForRoute() {
     case 'log':
       return <Log />;
     case 'settings':
-      return <SettingsPlaceholder />;
+      return <Settings />;
     default:
       return <NotFound />;
   }

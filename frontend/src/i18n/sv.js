@@ -88,6 +88,65 @@ export default {
     save: 'Spara',
     close: 'Stäng',
     back: 'Tillbaka',
+    add: 'Lägg till',
+    remove: 'Ta bort',
+  },
+  settings: {
+    unsaved: 'Ändringar är inte sparade',
+    allSaved: 'Allt sparat',
+    save: 'Spara',
+    saving: 'Sparar…',
+    discard: 'Ångra',
+    automation: {
+      title: 'Automatisering',
+      lead: 'Hur ofta scanningen körs och när bot:en får skicka till Bezala utan granskning.',
+      scanInterval: 'Scanningsintervall',
+      interval15: '15 minuter',
+      interval30: '30 minuter',
+      interval60: '1 timme',
+      interval240: '4 timmar',
+      aiNaming: 'AI-namngivning och analys',
+      aiNamingHint:
+        'Låt Claude analysera varje bilaga, filtrera icke-kvitton och namnge filer.',
+      autoUpload: 'Auto-överför till Bezala',
+      autoUploadHint:
+        'Skicka direkt till Bezala när AI-konfidensen är tillräckligt hög.',
+      confidence: 'Konfidenströskel för auto-överföring',
+      confidenceHint:
+        'Kvitton med lägre konfidens än detta väntar på manuell granskning.',
+      confidenceDisabled: 'Aktivera auto-överföring för att använda tröskeln.',
+    },
+    filters: {
+      title: 'Gmail-filter',
+      lead: 'Styr vilka mail som tas med i scanningen.',
+      requireAttachments: 'Kräv bilaga',
+      requireAttachmentsHint: 'Hoppa över mail utan bifogade filer.',
+      excludePromotions: 'Exkludera Promotions',
+      excludePromotionsHint: 'Gmails reklam-flik skannas inte.',
+      excludeSocial: 'Exkludera Social',
+      excludeSocialHint: 'Notifikationer från LinkedIn och liknande.',
+      excludeCalendar: 'Exkludera kalenderinbjudningar',
+      excludeCalendarHint: '.ics-filer och mötesinbjudningar hoppas över.',
+    },
+    scanRules: {
+      title: 'Scanningsregler',
+      lead:
+        'Finkornig kontroll över vilka avsändare och ämnen som räknas med.',
+      include: 'Inkludera avsändare / domäner',
+      includeHint: 'Bara mail från dessa tas med (töm listan för att ta med alla).',
+      includePlaceholder: 'finnair.com eller kvitto@sl.se',
+      exclude: 'Exkludera avsändare / domäner',
+      excludeHint: 'Mail från dessa hoppas alltid över.',
+      excludePlaceholder: 'newsletter@example.com',
+      excludeSubjects: 'Exkludera ämnen',
+      excludeSubjectsHint:
+        'Substring-match i ämnesraden. Exempel: "Accepted", "Kickoff".',
+      excludeSubjectsPlaceholder: 'Kickoff',
+    },
+    toast: {
+      saved: 'Inställningar sparade',
+      saveFailed: 'Kunde inte spara',
+    },
   },
   review: {
     title: 'Granska innan överföring',
@@ -188,10 +247,7 @@ export default {
     dashboard: { title: 'Översikt' },
     review: { title: 'Granska' },
     log: { title: 'Kommandocenter' },
-    settings: {
-      title: 'Inställningar',
-      placeholder: 'Inställningar byggs i Commit 5 — automatisering, anslutningar och utseende.',
-    },
+    settings: { title: 'Inställningar' },
     notFound: {
       title: 'Sidan finns inte',
       body: 'Den adressen känner vi inte igen.',
