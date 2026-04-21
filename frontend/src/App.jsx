@@ -4,8 +4,8 @@ import { ThemeProvider } from './theme/ThemeProvider.jsx';
 import { RouterProvider, useRouter } from './router/useRouter.jsx';
 import AppShell from './components/AppShell.jsx';
 import Dashboard from './views/Dashboard.jsx';
-import ReviewPlaceholder from './views/ReviewPlaceholder.jsx';
-import LogPlaceholder from './views/LogPlaceholder.jsx';
+import Review from './views/Review.jsx';
+import Log from './views/Log.jsx';
 import SettingsPlaceholder from './views/SettingsPlaceholder.jsx';
 import NotFound from './views/NotFound.jsx';
 import { api, ApiError, setUnauthorizedHandler } from './api/client.js';
@@ -18,9 +18,9 @@ function ViewForRoute() {
     case 'dashboard':
       return <Dashboard />;
     case 'review':
-      return <ReviewPlaceholder />;
+      return <Review />;
     case 'log':
-      return <LogPlaceholder />;
+      return <Log />;
     case 'settings':
       return <SettingsPlaceholder />;
     default:
