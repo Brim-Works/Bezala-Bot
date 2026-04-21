@@ -78,6 +78,13 @@ export default {
       previewFailed: 'Could not load preview — open in Drive instead.',
       noFile: 'No file saved — the file never reached Drive.',
       openInDrive: 'Open in Drive',
+      downloadTitle: 'Receipt is behind a link',
+      downloadBody:
+        'This vendor does not attach PDF receipts. Click the link to preview, or let Bezala Bot fetch and save the PDF automatically.',
+      downloadAction: 'Fetch PDF and save',
+      downloading: 'Fetching…',
+      downloadSuccess: 'PDF fetched and saved to Drive',
+      downloadFailed: 'Could not fetch PDF',
     },
     bezala: {
       pendingTitle: 'Awaiting review',
@@ -139,6 +146,7 @@ export default {
     saved: 'Saved',
     error: 'Error',
     skipped: 'Skipped',
+    needs_download: 'Download',
   },
   bezalaStatus: {
     transferred: 'Uploaded',
@@ -158,6 +166,9 @@ export default {
   toast: {
     scanStarted: 'Scan started — refreshing list…',
     scanFailed: 'Scan failed',
+  },
+  dashboard: {
+    downloadRow: 'Fetch PDF from link',
   },
   common: {
     loading: 'Loading…',
@@ -194,6 +205,9 @@ export default {
       confidenceHint:
         'Receipts below this confidence wait for manual review.',
       confidenceDisabled: 'Enable auto-transfer to use the threshold.',
+      minConfidence: 'Minimum confidence to save',
+      minConfidenceHint:
+        'Mail where the AI is less confident than this is not saved to the database and not shown on the dashboard.',
     },
     filters: {
       title: 'Gmail filters',
@@ -220,6 +234,18 @@ export default {
       excludeSubjectsHint:
         'Substring match on the subject line. E.g. "Accepted", "Kickoff".',
       excludeSubjectsPlaceholder: 'Kickoff',
+    },
+    builtinSenders: {
+      title: 'Built-in senders (always active)',
+      hint: 'These addresses are always scanned. Contact support to change.',
+    },
+    linkFetch: {
+      title: 'Vendors with link-based receipts',
+      lead:
+        'Mail from these senders do not include a PDF attachment. Bezala Bot saves them and lets you fetch the PDF manually with one click.',
+      label: 'Senders / domains that need link fetch',
+      placeholder: 'noreply@arlandaexpress.se',
+      hint: 'Bezala Bot ignores attachments from these and looks for a receipt link in the mail body instead.',
     },
     toast: {
       saved: 'Settings saved',

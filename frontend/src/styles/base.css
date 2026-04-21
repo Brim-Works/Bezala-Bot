@@ -746,6 +746,56 @@ html[data-theme='B'] .vlogo {
   background: currentColor;
 }
 
+/* Pulsande dot för "Ladda ned"-badge så den sticker ut mjukt. */
+.pill--warn .pill__dot {
+  animation: pill-dot-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes pill-dot-pulse {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.55; transform: scale(1.25); }
+}
+
+.chip--builtin {
+  background: var(--surface-2);
+  opacity: 0.75;
+  cursor: default;
+}
+
+.chip-editor__box--readonly {
+  background: var(--surface-2);
+}
+
+.row-actions {
+  display: inline-flex;
+  gap: 4px;
+}
+
+.row-action--download {
+  color: var(--warn);
+}
+
+.row-action--download:hover {
+  background: var(--surface-2);
+  color: var(--warn);
+}
+
+.drawer-banner__link {
+  display: block;
+  padding: 8px 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  font-size: 11.5px;
+  color: var(--accent);
+  word-break: break-all;
+  text-decoration: none;
+}
+
+.drawer-banner__link:hover {
+  background: var(--surface-2);
+}
+
 .pill--ok {
   color: var(--ok);
   background: color-mix(in oklch, var(--ok) 14%, transparent);

@@ -101,6 +101,8 @@ export const api = {
       `/api/messages/trash?purge_drive=${purgeDrive ? 'true' : 'false'}`,
       { method: 'DELETE' },
     ),
+  fetchPdf: (id) =>
+    request(`/api/messages/${id}/fetch-pdf`, { method: 'POST' }),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {

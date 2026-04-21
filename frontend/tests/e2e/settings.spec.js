@@ -38,8 +38,9 @@ test('Settings — confidence-slider uppdaterar värdet', async ({ page }) => {
   await page.goto('/settings');
   // Aktivera auto-upload först så att slidern inte är disablad
   await page.getByTestId('toggle-auto-upload').check();
-  const slider = page.locator('input[type="range"]');
-  // Sätt värdet till 80 via fill (fungerar för range-inputs i Playwright)
+  // Target confidence-slider specifically — efter min-confidence-tillägget
+  // finns två range-inputs i dokumentet.
+  const slider = page.getByTestId('confidence-slider').locator('input[type="range"]');
   await slider.fill('80');
   await expect(page.getByTestId('confidence-value')).toHaveText('80%');
 });

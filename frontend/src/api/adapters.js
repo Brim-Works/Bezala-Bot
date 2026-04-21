@@ -26,7 +26,8 @@ export function deriveStatuses(message) {
   const fileRoot = rawFile.split(':')[0];
 
   let file;
-  if (fileRoot === 'saved') file = 'saved';
+  if (rawFile === 'needs_manual_download') file = 'needs_download';
+  else if (fileRoot === 'saved') file = 'saved';
   else if (fileRoot === 'error') file = 'error';
   else if (fileRoot === 'skipped') file = 'skipped';
   else file = 'error';

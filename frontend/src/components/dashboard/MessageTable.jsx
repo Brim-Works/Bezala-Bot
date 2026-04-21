@@ -4,7 +4,7 @@ import Confidence from '../Confidence.jsx';
 import StatusCell from '../StatusCell.jsx';
 import BulkCheckbox from '../trash/BulkCheckbox.jsx';
 import { SkeletonRow } from '../Skeleton.jsx';
-import { IconTrash } from '../../icons/index.jsx';
+import { IconDownload, IconTrash } from '../../icons/index.jsx';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount, fmtRelative } from '../../lib/format.js';
 
@@ -27,11 +27,13 @@ export default function MessageTable({
   isLoading,
   selection,
   onDeleteRow,
+  onDownloadRow,
 }) {
   const { t, lang } = useI18n();
   const tbodyRef = useRef(null);
   const hasSelection = selection != null;
   const hasDelete = typeof onDeleteRow === 'function';
+  const hasDownload = typeof onDownloadRow === 'function';
 
   const focusRow = useCallback((id) => {
     if (!tbodyRef.current) return;
@@ -177,19 +179,36 @@ export default function MessageTable({
                 </td>
                 {hasDelete ? (
                   <td>
-                    <button
-                      type="button"
-                      className="row-action"
-                      title={t.trash.deleteRow}
-                      aria-label={t.trash.deleteRow}
-                      data-testid={`row-delete-${m.id}`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onDeleteRow(m.id);
-                      }}
-                    >
-                      <IconTrash className="icon sm" />
-                    </button>
+                    <div className="row-actions">
+                      {hasDownload && m.file_status === 'needs_download' ? (
+                        <button
+                          type="button"
+                          className="row-action row-action--download"
+                          title={t.dashboard.downloadRow}
+                          aria-label={t.dashboard.downloadRow}
+                          data-testid={`row-download-${m.id}`}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            onDownloadRow(m.id);
+                          }}
+                        >
+                          <IconDownload className="icon sm" />
+                        </button>
+                      ) : null}
+                      <button
+                        type="button"
+                        className="row-action"
+                        title={t.trash.deleteRow}
+                        aria-label={t.trash.deleteRow}
+                        data-testid={`row-delete-${m.id}`}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onDeleteRow(m.id);
+                        }}
+                      >
+                        <IconTrash className="icon sm" />
+                      </button>
+                    </div>
                   </td>
                 ) : null}
               </tr>

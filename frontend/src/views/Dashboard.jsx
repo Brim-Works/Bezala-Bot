@@ -133,6 +133,14 @@ export default function Dashboard() {
     deleteFlow.openDialog([...selection.ids], 'bulk');
   }, [deleteFlow, selection]);
 
+  const onDownloadRow = useCallback(
+    (id) => {
+      const found = messages.find((m) => m.id === id);
+      if (found) openDrawer(found, 'drive');
+    },
+    [messages, openDrawer],
+  );
+
   const lastFinished = data?.stats?.last_run?.finished_at;
   const noNewLastRun = lastRunHadNoNewMail(data?.stats);
   const lastRunLabel = lastFinished
@@ -198,6 +206,7 @@ export default function Dashboard() {
         isLoading={isLoading}
         selection={selection}
         onDeleteRow={onDeleteRow}
+        onDownloadRow={onDownloadRow}
       />
 
       <div className="section-header">
