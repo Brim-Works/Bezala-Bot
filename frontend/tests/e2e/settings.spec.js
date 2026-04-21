@@ -87,3 +87,31 @@ test('Settings — båda teman + EN', async ({ page }) => {
   await page.getByRole('radio', { name: 'EN' }).click();
   await expect(page.getByText('Automation', { exact: true })).toBeVisible();
 });
+
+test('Settings — SaveBar nollställs efter lyckad save och aktiveras igen vid ny ändring', async ({
+  page,
+}) => {
+  await page.goto('/settings');
+  const saveButton = page.getByTestId('save-settings');
+  const saveBar = page.getByTestId('save-bar');
+
+  // Initialt: ingenting ändrat → Spara disabled, "Allt sparat" syns
+  await expect(saveButton).toBeDisabled();
+  await expect(saveBar).toContainText(/Allt sparat/i);
+
+  // Ändra scan-intervall → dirty blir true
+  await page.getByTestId('scan-interval').selectOption('30');
+  await expect(saveButton).toBeEnabled();
+  await expect(saveBar).toContainText(/Ändringar är inte sparade/i);
+
+  // Spara → toast + dirty nollställs
+  await saveButton.click();
+  await expect(page.getByText(/Inställningar sparade/i)).toBeVisible();
+  await expect(saveButton).toBeDisabled();
+  await expect(saveBar).toContainText(/Allt sparat/i);
+
+  // Ändra igen → dirty ska bli true på nytt
+  await page.getByTestId('scan-interval').selectOption('15');
+  await expect(saveButton).toBeEnabled();
+  await expect(saveBar).toContainText(/Ändringar är inte sparade/i);
+});

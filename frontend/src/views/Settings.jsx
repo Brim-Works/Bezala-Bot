@@ -24,6 +24,7 @@ const FIELDS_IN_PAYLOAD = [
 ];
 
 function pickPayload(form) {
+  if (!form) return null;
   const out = {};
   for (const key of FIELDS_IN_PAYLOAD) {
     out[key] = form[key];
@@ -31,23 +32,10 @@ function pickPayload(form) {
   return out;
 }
 
-function deepEqualSettings(a, b) {
-  if (!a || !b) return false;
-  for (const key of FIELDS_IN_PAYLOAD) {
-    const av = a[key];
-    const bv = b[key];
-    if (Array.isArray(av) && Array.isArray(bv)) {
-      if (av.length !== bv.length) return false;
-      for (let i = 0; i < av.length; i += 1) {
-        if (av[i] !== bv[i]) return false;
-      }
-    } else if (av !== bv) {
-      return false;
-    }
-  }
-  return true;
-}
-
+/* Dirty jämförs mellan form och en egen baseline (inte server-state från
+ * useApiData). Baseline flyttas fram synkront när PUT lyckats — så
+ * SaveBar-läget nollställs direkt, oberoende av om refetch resolvar, cachar
+ * eller returnerar något annat. */
 export default function Settings() {
   const { t } = useI18n();
   const toast = useToast();
@@ -55,31 +43,41 @@ export default function Settings() {
   const { data: server, isLoading, refetch } = useApiData(loader, []);
 
   const [form, setForm] = useState(null);
+  const [baseline, setBaseline] = useState(null);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (server && !form) setForm(server);
-  }, [server, form]);
+    if (server && !baseline) {
+      setBaseline(server);
+      setForm(server);
+    }
+  }, [server, baseline]);
 
   const update = useCallback((patch) => {
     setForm((f) => (f ? { ...f, ...patch } : f));
   }, []);
 
-  const dirty = useMemo(
-    () => (form && server ? !deepEqualSettings(form, server) : false),
-    [form, server],
-  );
+  const dirty = useMemo(() => {
+    if (!form || !baseline) return false;
+    return (
+      JSON.stringify(pickPayload(form)) !==
+      JSON.stringify(pickPayload(baseline))
+    );
+  }, [form, baseline]);
 
   const onReset = useCallback(() => {
-    if (server) setForm(server);
-  }, [server]);
+    if (baseline) setForm(baseline);
+  }, [baseline]);
 
   const onSave = useCallback(async () => {
     if (!form) return;
     setSaving(true);
     try {
       const updated = await api.updateSettings(pickPayload(form));
+      // Nollställ dirty synkront genom att flytta fram både form och baseline
+      // innan refetch hinner lura jämförelsen.
       setForm(updated);
+      setBaseline(updated);
       toast.show({ kind: 'ok', message: t.settings.toast.saved });
       refetch().catch(() => {});
     } catch (err) {
