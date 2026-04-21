@@ -6,6 +6,7 @@ import { useApiData } from '../hooks/useApiData.js';
 import AutomationSection from '../components/settings/AutomationSection.jsx';
 import FilterSection from '../components/settings/FilterSection.jsx';
 import ScanRulesSection from '../components/settings/ScanRulesSection.jsx';
+import TrashSection from '../components/settings/TrashSection.jsx';
 import SaveBar from '../components/settings/SaveBar.jsx';
 import { useToast } from '../lib/toast.jsx';
 
@@ -21,6 +22,7 @@ const FIELDS_IN_PAYLOAD = [
   'include_senders',
   'exclude_senders',
   'exclude_subjects',
+  'trash_auto_purge_days',
 ];
 
 function pickPayload(form) {
@@ -106,6 +108,7 @@ export default function Settings() {
         <AutomationSection form={form} update={update} />
         <FilterSection form={form} update={update} />
         <ScanRulesSection form={form} update={update} />
+        <TrashSection form={form} update={update} />
       </div>
       <SaveBar dirty={dirty} saving={saving} onSave={onSave} onReset={onReset} />
     </>

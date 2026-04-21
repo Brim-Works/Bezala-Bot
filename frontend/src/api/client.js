@@ -80,6 +80,27 @@ export const api = {
   scan: () => request('/api/scan', { method: 'POST' }),
   uploadToBezala: (id) => request(`/api/messages/${id}/upload-to-bezala`, { method: 'POST' }),
   deleteErrors: () => request('/api/messages/errors', { method: 'DELETE' }),
+  trashList: (limit = 200) => request(`/api/messages/trash?limit=${limit}`),
+  trashCount: () => request('/api/messages/trash/count'),
+  softDeleteMessage: (id, reason = 'manual') =>
+    request(`/api/messages/${id}`, { method: 'DELETE', body: { reason } }),
+  hardDeleteMessage: (id, { purgeDrive = false } = {}) =>
+    request(
+      `/api/messages/${id}?permanent=true&purge_drive=${purgeDrive ? 'true' : 'false'}`,
+      { method: 'DELETE' },
+    ),
+  restoreMessage: (id) =>
+    request(`/api/messages/${id}/restore`, { method: 'POST' }),
+  bulkDelete: ({ ids, reason = 'manual', permanent = false, purge_drive = false }) =>
+    request('/api/messages/bulk-delete', {
+      method: 'POST',
+      body: { ids, reason, permanent, purge_drive },
+    }),
+  emptyTrash: ({ purgeDrive = false } = {}) =>
+    request(
+      `/api/messages/trash?purge_drive=${purgeDrive ? 'true' : 'false'}`,
+      { method: 'DELETE' },
+    ),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {

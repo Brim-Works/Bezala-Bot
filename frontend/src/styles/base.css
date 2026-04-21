@@ -2406,6 +2406,205 @@ html[data-theme='A'] .error-boundary__title {
   font-weight: 600;
 }
 
+/* ========== Trash + bulk ========== */
+.bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 14px;
+  background: color-mix(in oklch, var(--accent) 8%, var(--surface));
+  border: 1px solid color-mix(in oklch, var(--accent) 30%, var(--border));
+  border-radius: var(--radius);
+  margin-bottom: 12px;
+}
+
+.bulk-bar__count {
+  font-size: 13px;
+}
+
+.bulk-bar__spacer {
+  flex: 1;
+}
+
+.bulk-checkbox {
+  display: inline-flex;
+  align-items: center;
+}
+
+.bulk-checkbox input[type='checkbox'] {
+  accent-color: var(--accent);
+}
+
+.tbl__col-check {
+  width: 36px;
+}
+
+.tbl__col-actions {
+  width: 60px;
+}
+
+.tbl tbody tr.is-checked {
+  background: color-mix(in oklch, var(--accent) 6%, var(--surface));
+}
+
+.row-action {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 6px;
+  border-radius: 6px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.row-action:hover {
+  background: var(--surface-2);
+  color: var(--err);
+}
+
+.trash-row__actions {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.btn.danger {
+  color: var(--err);
+  border-color: color-mix(in oklch, var(--err) 40%, transparent);
+  background: transparent;
+}
+
+.btn.danger:hover {
+  background: color-mix(in oklch, var(--err) 10%, transparent);
+}
+
+.toast__action {
+  border: 0;
+  background: transparent;
+  color: var(--accent);
+  font-weight: 600;
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.toast__action:hover {
+  text-decoration: underline;
+}
+
+.toast__msg {
+  flex: 1;
+}
+
+/* ========== Modaler ========== */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: color-mix(in oklch, black 40%, transparent);
+  z-index: 900;
+  animation: drawer-fade 0.15s ease;
+}
+
+.modal {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 460px;
+  max-width: calc(100vw - 32px);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: 0 24px 60px -20px rgba(0, 0, 0, 0.5);
+  z-index: 901;
+  padding: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal--danger {
+  border-color: color-mix(in oklch, var(--err) 40%, var(--border));
+}
+
+.modal__title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+html[data-theme='B'] .modal__title {
+  font-family: var(--font-display);
+  font-size: 22px;
+  font-weight: 500;
+}
+
+.modal__body {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.modal__reasons {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  border: 0;
+  padding: 0;
+  margin: 0;
+}
+
+.modal__reason {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.modal__reason:hover {
+  background: var(--surface-2);
+}
+
+.modal__reason input[type='radio'] {
+  margin-top: 3px;
+  accent-color: var(--accent);
+}
+
+.modal__reason-hint {
+  display: block;
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.modal__purge-toggle {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  background: color-mix(in oklch, var(--err) 8%, var(--surface-2));
+  border: 1px solid color-mix(in oklch, var(--err) 20%, var(--border));
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.modal__purge-toggle input[type='checkbox'] {
+  margin-top: 3px;
+  accent-color: var(--err);
+}
+
+.modal__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  margin-top: 4px;
+}
+
 /* ========== Print ========== */
 @media print {
   body {

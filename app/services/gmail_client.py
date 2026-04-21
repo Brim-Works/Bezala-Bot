@@ -118,6 +118,15 @@ class GmailClient:
             body={"addLabelIds": [label_id]},
         ).execute()
 
+    def remove_done(self, message_id: str) -> None:
+        """Ta bort Bezala-Klar-etiketten. Används vid soft-delete/restore."""
+        label_id = self._ensure_done_label()
+        self._service.users().messages().modify(
+            userId="me",
+            id=message_id,
+            body={"removeLabelIds": [label_id]},
+        ).execute()
+
     # ---------- Listing ----------
 
     def list_candidate_message_ids(

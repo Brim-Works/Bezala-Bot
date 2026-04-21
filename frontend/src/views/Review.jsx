@@ -11,6 +11,9 @@ import ReviewQueue from '../components/review/ReviewQueue.jsx';
 import PdfPreview from '../components/review/PdfPreview.jsx';
 import ReviewForm from '../components/review/ReviewForm.jsx';
 import EmptyReview from '../components/review/EmptyReview.jsx';
+import DeleteReasonDialog from '../components/trash/DeleteReasonDialog.jsx';
+import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
+import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 
 function sortOldestFirst(a, b) {
   const ta = new Date(a.processed_at || 0).getTime();
@@ -22,6 +25,7 @@ export default function Review() {
   const { t } = useI18n();
   const toast = useToast();
   const { closeIfFor } = useDrawer();
+  const { bump: bumpTrashCount } = useTrashCountContext();
   const [activeId, setActiveId] = useState(null);
   const [uploadingId, setUploadingId] = useState(null);
   // Optimistic-borttagna id:n — raden tas bort från kön direkt vid approve;
@@ -111,16 +115,18 @@ export default function Review() {
     [closeIfFor, refetch, t.review.toast.uploadFailed, t.review.toast.uploaded, toast, uploadingId],
   );
 
-  const onReject = useCallback(
+  const deleteFlow = useDeleteFlow({
+    refetch: () => refetch().catch(() => {}),
+    onCountChange: (delta) => bumpTrashCount(delta),
+  });
+
+  const onDelete = useCallback(
     (msg) => {
-      toast.show({ kind: 'warn', message: t.review.toast.rejectUnsupported });
-      if (currentIndex < queue.length - 1) {
-        setActiveId(queue[currentIndex + 1].id);
-      } else if (queue.length > 1) {
-        setActiveId(queue[0].id);
-      }
+      if (!msg) return;
+      closeIfFor(msg.id);
+      deleteFlow.openDialog([msg.id], 'row');
     },
-    [currentIndex, queue, t.review.toast.rejectUnsupported, toast],
+    [closeIfFor, deleteFlow],
   );
 
   const onSkip = useCallback(
@@ -155,11 +161,19 @@ export default function Review() {
           key={active?.id || 'empty'}
           message={active}
           onApprove={onApprove}
-          onReject={onReject}
+          onDelete={onDelete}
           onSkip={onSkip}
           isUploading={uploadingId === active?.id}
         />
       </div>
+
+      <DeleteReasonDialog
+        open={deleteFlow.dialogOpen}
+        count={deleteFlow.pendingTargets?.ids.length || 0}
+        onCancel={deleteFlow.closeDialog}
+        onConfirm={deleteFlow.confirmDelete}
+        busy={deleteFlow.busy}
+      />
     </>
   );
 }

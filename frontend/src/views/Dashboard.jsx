@@ -14,6 +14,11 @@ import StatGrid from '../components/dashboard/StatGrid.jsx';
 import FilterTabs from '../components/dashboard/FilterTabs.jsx';
 import MessageTable from '../components/dashboard/MessageTable.jsx';
 import RunBars from '../components/dashboard/RunBars.jsx';
+import BulkActionBar from '../components/trash/BulkActionBar.jsx';
+import DeleteReasonDialog from '../components/trash/DeleteReasonDialog.jsx';
+import { useSelection } from '../hooks/useSelection.js';
+import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
+import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 
 const POLL_INTERVAL_MS = 60_000;
 const MESSAGES_LIMIT = 100;
@@ -29,6 +34,8 @@ function lastRunHadNoNewMail(stats) {
 export default function Dashboard() {
   const { t, lang } = useI18n();
   const { selectMessage, openDrawer } = useDrawer();
+  const { bump: bumpTrashCount, refresh: refreshTrashCount } = useTrashCountContext();
+  const selection = useSelection();
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedIdLocal] = useState(null);
@@ -101,6 +108,25 @@ export default function Dashboard() {
     [messages, openDrawer],
   );
 
+  const deleteFlow = useDeleteFlow({
+    refetch: () => {
+      selection.clear();
+      refetch().catch(() => {});
+      refreshTrashCount();
+    },
+    onCountChange: (delta) => bumpTrashCount(delta),
+  });
+
+  const onDeleteRow = useCallback(
+    (id) => deleteFlow.openDialog([id], 'row'),
+    [deleteFlow],
+  );
+
+  const onBulkDelete = useCallback(() => {
+    if (selection.size === 0) return;
+    deleteFlow.openDialog([...selection.ids], 'bulk');
+  }, [deleteFlow, selection]);
+
   const lastFinished = data?.stats?.last_run?.finished_at;
   const noNewLastRun = lastRunHadNoNewMail(data?.stats);
   const lastRunLabel = lastFinished
@@ -151,12 +177,21 @@ export default function Dashboard() {
         counts={counts}
       />
 
+      <BulkActionBar
+        count={selection.size}
+        onDelete={onBulkDelete}
+        onClear={selection.clear}
+        busy={deleteFlow.busy}
+      />
+
       <MessageTable
         messages={filtered}
         selectedId={selectedId}
         onSelect={setSelectedId}
         onActivate={onRowActivate}
         isLoading={isLoading}
+        selection={selection}
+        onDeleteRow={onDeleteRow}
       />
 
       <div className="section-header">
@@ -164,6 +199,14 @@ export default function Dashboard() {
         <span className="muted">{t.runs.subtitle}</span>
       </div>
       <RunBars runs={runs} />
+
+      <DeleteReasonDialog
+        open={deleteFlow.dialogOpen}
+        count={deleteFlow.pendingTargets?.ids.length || 0}
+        onCancel={deleteFlow.closeDialog}
+        onConfirm={deleteFlow.confirmDelete}
+        busy={deleteFlow.busy}
+      />
     </>
   );
 }

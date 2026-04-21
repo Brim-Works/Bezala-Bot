@@ -7,6 +7,7 @@ export const ROUTES = {
   review: '/review',
   log: '/log',
   settings: '/settings',
+  trash: '/trash',
 };
 
 export function routeForView(view) {
@@ -23,6 +24,8 @@ export function viewForPath(path) {
       return 'log';
     case '/settings':
       return 'settings';
+    case '/trash':
+      return 'trash';
     default:
       return null;
   }

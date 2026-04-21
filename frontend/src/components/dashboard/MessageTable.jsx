@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useRef } from 'react';
+import { useCallback, useRef } from 'react';
 import VendorLogo from '../VendorLogo.jsx';
 import Confidence from '../Confidence.jsx';
 import StatusCell from '../StatusCell.jsx';
+import BulkCheckbox from '../trash/BulkCheckbox.jsx';
 import { SkeletonRow } from '../Skeleton.jsx';
+import { IconTrash } from '../../icons/index.jsx';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount, fmtRelative } from '../../lib/format.js';
 
@@ -14,16 +16,22 @@ const SKELETON_ROWS = 6;
  *  - ArrowUp / K flyttar till föregående
  *  - Enter aktiverar raden (öppnar drawer)
  *  - Space aktiverar raden (samma som Enter)
- * Rad-klick väljer raden + öppnar drawer. */
+ * Rad-klick väljer raden + öppnar drawer. Bulk-checkbox i första kolumnen
+ * (valfri via prop selection) stoppar click-propagation så raden inte
+ * aktiveras när user bara markerar. */
 export default function MessageTable({
   messages,
   selectedId,
   onSelect,
   onActivate,
   isLoading,
+  selection,
+  onDeleteRow,
 }) {
   const { t, lang } = useI18n();
   const tbodyRef = useRef(null);
+  const hasSelection = selection != null;
+  const hasDelete = typeof onDeleteRow === 'function';
 
   const focusRow = useCallback((id) => {
     if (!tbodyRef.current) return;
@@ -58,29 +66,43 @@ export default function MessageTable({
     [focusRow, messages, onActivate, onSelect],
   );
 
-  // När selectedId ändras via klick → flytta tabIndex till vald rad
-  useEffect(() => {
-    // ingen DOM-ändring — bara via attribut i JSX
-  }, [selectedId]);
+  const colCount = 7 + (hasSelection ? 1 : 0) + (hasDelete ? 1 : 0);
+
+  const headCells = (
+    <tr>
+      {hasSelection ? (
+        <th className="tbl__col-check">
+          <input
+            type="checkbox"
+            checked={messages.length > 0 && selection.size === messages.length}
+            onChange={() => {
+              if (selection.size === messages.length) selection.clear();
+              else selection.selectAll(messages.map((m) => m.id));
+            }}
+            aria-label={t.trash.bulk.selectAll}
+            data-testid="select-all"
+          />
+        </th>
+      ) : null}
+      <th className="tbl__col-time">{t.cols.time}</th>
+      <th className="tbl__col-vendor">{t.cols.vendor}</th>
+      <th className="tbl__col-subject">{t.cols.subject}</th>
+      <th className="tbl__col-file">{t.cols.file}</th>
+      <th className="tbl__col-amount">{t.cols.amount}</th>
+      <th className="tbl__col-conf">{t.cols.confidence}</th>
+      <th className="tbl__col-status">{t.cols.status}</th>
+      {hasDelete ? <th className="tbl__col-actions" /> : null}
+    </tr>
+  );
 
   if (isLoading && messages.length === 0) {
     return (
       <div className="card table-card" data-testid="message-table-loading">
         <table className="tbl">
-          <thead>
-            <tr>
-              <th className="tbl__col-time">{t.cols.time}</th>
-              <th className="tbl__col-vendor">{t.cols.vendor}</th>
-              <th className="tbl__col-subject">{t.cols.subject}</th>
-              <th className="tbl__col-file">{t.cols.file}</th>
-              <th className="tbl__col-amount">{t.cols.amount}</th>
-              <th className="tbl__col-conf">{t.cols.confidence}</th>
-              <th className="tbl__col-status">{t.cols.status}</th>
-            </tr>
-          </thead>
+          <thead>{headCells}</thead>
           <tbody>
             {Array.from({ length: SKELETON_ROWS }).map((_, i) => (
-              <SkeletonRow key={i} cols={7} testId={`skeleton-row-${i}`} />
+              <SkeletonRow key={i} cols={colCount} testId={`skeleton-row-${i}`} />
             ))}
           </tbody>
         </table>
@@ -99,27 +121,18 @@ export default function MessageTable({
   return (
     <div className="card table-card">
       <table className="tbl">
-        <thead>
-          <tr>
-            <th className="tbl__col-time">{t.cols.time}</th>
-            <th className="tbl__col-vendor">{t.cols.vendor}</th>
-            <th className="tbl__col-subject">{t.cols.subject}</th>
-            <th className="tbl__col-file">{t.cols.file}</th>
-            <th className="tbl__col-amount">{t.cols.amount}</th>
-            <th className="tbl__col-conf">{t.cols.confidence}</th>
-            <th className="tbl__col-status">{t.cols.status}</th>
-          </tr>
-        </thead>
+        <thead>{headCells}</thead>
         <tbody ref={tbodyRef}>
           {messages.map((m) => {
             const isSelected = selectedId === m.id;
             const isFocusable = isSelected || (selectedId == null && m === messages[0]);
+            const isChecked = hasSelection && selection.has(m.id);
             return (
               <tr
                 key={m.id}
                 tabIndex={isFocusable ? 0 : -1}
                 data-row-id={m.id}
-                className={isSelected ? 'is-selected' : ''}
+                className={`${isSelected ? 'is-selected' : ''} ${isChecked ? 'is-checked' : ''}`}
                 onClick={() => {
                   onSelect(m.id);
                   onActivate?.(m.id);
@@ -127,6 +140,15 @@ export default function MessageTable({
                 onKeyDown={(e) => handleKey(e, m.id)}
                 aria-selected={isSelected}
               >
+                {hasSelection ? (
+                  <td>
+                    <BulkCheckbox
+                      checked={isChecked}
+                      onToggle={() => selection.toggle(m.id)}
+                      ariaLabel={`${t.trash.bulk.selectRow}: ${m.vendor || m.subject || m.id}`}
+                    />
+                  </td>
+                ) : null}
                 <td className="mono tbl__time">{fmtRelative(m.processed_at, lang)}</td>
                 <td>
                   <span className="vchip">
@@ -153,6 +175,23 @@ export default function MessageTable({
                 <td>
                   <StatusCell fileStatus={m.file_status} bezalaStatus={m.bezala_status} />
                 </td>
+                {hasDelete ? (
+                  <td>
+                    <button
+                      type="button"
+                      className="row-action"
+                      title={t.trash.deleteRow}
+                      aria-label={t.trash.deleteRow}
+                      data-testid={`row-delete-${m.id}`}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onDeleteRow(m.id);
+                      }}
+                    >
+                      <IconTrash className="icon sm" />
+                    </button>
+                  </td>
+                ) : null}
               </tr>
             );
           })}
