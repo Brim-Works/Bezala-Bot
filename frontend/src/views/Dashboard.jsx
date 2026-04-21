@@ -34,7 +34,7 @@ function lastRunHadNoNewMail(stats) {
 export default function Dashboard() {
   const { t, lang } = useI18n();
   const { selectMessage, openDrawer } = useDrawer();
-  const { bump: bumpTrashCount, refresh: refreshTrashCount } = useTrashCountContext();
+  const { bump: bumpTrashCount, refresh: refreshTrashCount, messagesVersion } = useTrashCountContext();
   const selection = useSelection();
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
@@ -63,6 +63,12 @@ export default function Dashboard() {
     }, POLL_INTERVAL_MS);
     return () => clearInterval(id);
   }, [refetch]);
+
+  // Extern signal (t.ex. efter drawer-delete) → refetcha direkt.
+  useEffect(() => {
+    if (messagesVersion === 0) return;
+    refetch().catch(() => {});
+  }, [messagesVersion, refetch]);
 
   const { runScan } = useScanFeedback(() => refetch().catch(() => {}));
 

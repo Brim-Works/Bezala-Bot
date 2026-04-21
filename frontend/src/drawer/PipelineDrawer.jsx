@@ -6,7 +6,10 @@ import GmailTab from './GmailTab.jsx';
 import AiTab from './AiTab.jsx';
 import DriveTab from './DriveTab.jsx';
 import BezalaTab from './BezalaTab.jsx';
-import { IconMail } from '../icons/index.jsx';
+import { IconMail, IconTrash } from '../icons/index.jsx';
+import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
+import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
+import DeleteReasonDialog from '../components/trash/DeleteReasonDialog.jsx';
 
 function stepStatusMap(message) {
   if (!message) return {};
@@ -32,8 +35,28 @@ function stepStatusMap(message) {
  * React:s default-beteende). */
 export default function PipelineDrawer({ onRefetch }) {
   const { t } = useI18n();
-  const { selectedMessage, activeTab, isOpen, setTab, closeDrawer } = useDrawer();
+  const { selectedMessage, activeTab, isOpen, setTab, closeDrawer, closeIfFor } =
+    useDrawer();
+  const { bump: bumpTrashCount, bumpMessagesVersion } = useTrashCountContext();
   const closeBtnRef = useRef(null);
+
+  const deleteFlow = useDeleteFlow({
+    refetch: () => {
+      bumpMessagesVersion();
+      onRefetch?.();
+    },
+    onCountChange: (delta) => bumpTrashCount(delta),
+  });
+
+  const deletingId = selectedMessage?.id ?? null;
+
+  const openDeleteDialog = () => {
+    if (deletingId == null) return;
+    // Stäng drawern direkt — användaren har bekräftat val genom att klicka
+    // ikonen. Dialogen renderas utanför drawer-subträdet så den kvarstår.
+    closeIfFor(deletingId);
+    deleteFlow.openDialog([deletingId], 'row');
+  };
 
   useEffect(() => {
     if (!isOpen) return undefined;
@@ -53,7 +76,19 @@ export default function PipelineDrawer({ onRefetch }) {
     };
   }, [isOpen, closeDrawer]);
 
-  if (!isOpen || !selectedMessage) return null;
+  // Dialog hålls monterad även när drawern stängs så delete-flödet kan
+  // avslutas utanför drawer-subträdet.
+  const dialog = (
+    <DeleteReasonDialog
+      open={deleteFlow.dialogOpen}
+      count={deleteFlow.pendingTargets?.ids.length || 0}
+      onCancel={deleteFlow.closeDialog}
+      onConfirm={deleteFlow.confirmDelete}
+      busy={deleteFlow.busy}
+    />
+  );
+
+  if (!isOpen || !selectedMessage) return dialog;
 
   const statusMap = stepStatusMap(selectedMessage);
 
@@ -83,6 +118,16 @@ export default function PipelineDrawer({ onRefetch }) {
             </div>
           </div>
           <button
+            type="button"
+            className="drawer__head-action"
+            onClick={openDeleteDialog}
+            aria-label={t.drawer.deleteLabel}
+            title={t.drawer.delete}
+            data-testid="drawer-delete"
+          >
+            <IconTrash className="icon sm" />
+          </button>
+          <button
             ref={closeBtnRef}
             type="button"
             className="btn ghost"
@@ -109,6 +154,7 @@ export default function PipelineDrawer({ onRefetch }) {
           ) : null}
         </div>
       </aside>
+      {dialog}
     </>
   );
 }

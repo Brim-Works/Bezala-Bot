@@ -25,7 +25,7 @@ export default function Review() {
   const { t } = useI18n();
   const toast = useToast();
   const { closeIfFor } = useDrawer();
-  const { bump: bumpTrashCount } = useTrashCountContext();
+  const { bump: bumpTrashCount, messagesVersion } = useTrashCountContext();
   const [activeId, setActiveId] = useState(null);
   const [uploadingId, setUploadingId] = useState(null);
   // Optimistic-borttagna id:n — raden tas bort från kön direkt vid approve;
@@ -41,6 +41,12 @@ export default function Review() {
 
   const { data, refetch } = useApiData(loader, []);
   const allMessages = data || [];
+
+  // Extern signal (t.ex. efter drawer-delete) → refetcha direkt.
+  useEffect(() => {
+    if (messagesVersion === 0) return;
+    refetch().catch(() => {});
+  }, [messagesVersion, refetch]);
 
   const queue = useMemo(() => {
     return allMessages

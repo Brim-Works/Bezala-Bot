@@ -1,4 +1,3 @@
-import { useEffect, useRef } from 'react';
 import {
   IconMail,
   IconSparkle,
@@ -20,31 +19,22 @@ const TAB_ICONS = {
  * ArrowLeft/ArrowRight byter aktiv flik. */
 export default function DrawerTabs({ active, onChange, statusMap }) {
   const { t } = useI18n();
-  const listRef = useRef(null);
 
-  useEffect(() => {
-    const node = listRef.current;
-    if (!node) return undefined;
-
-    function onKey(e) {
-      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
-      e.preventDefault();
-      const idx = DRAWER_TABS.indexOf(active);
-      const delta = e.key === 'ArrowRight' ? 1 : -1;
-      const next = DRAWER_TABS[(idx + delta + DRAWER_TABS.length) % DRAWER_TABS.length];
-      onChange(next);
-    }
-
-    node.addEventListener('keydown', onKey);
-    return () => node.removeEventListener('keydown', onKey);
-  }, [active, onChange]);
+  function handleKeyDown(e) {
+    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    e.preventDefault();
+    const idx = DRAWER_TABS.indexOf(active);
+    const delta = e.key === 'ArrowRight' ? 1 : -1;
+    const next = DRAWER_TABS[(idx + delta + DRAWER_TABS.length) % DRAWER_TABS.length];
+    onChange(next);
+  }
 
   return (
     <div
-      ref={listRef}
       className="drawer-tabs"
       role="tablist"
       aria-label={t.drawer.tabsLabel}
+      onKeyDown={handleKeyDown}
     >
       {DRAWER_TABS.map((tab) => {
         const Icon = TAB_ICONS[tab];
