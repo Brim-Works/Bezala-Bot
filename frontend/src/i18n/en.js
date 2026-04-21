@@ -16,6 +16,70 @@ export default {
     themeLight: 'Light',
     themeForest: 'Forest',
   },
+  hero: {
+    before: 'Bezala Bot',
+    emphasis: 'automates',
+    after: 'receipts.',
+    waiting: 'awaiting review',
+  },
+  stats: {
+    pending: 'Awaiting review',
+    transferredToday: 'Auto-transferred today',
+    transferredTodaySub: 'Sent to Bezala without manual review',
+    errors: 'Errors',
+    errorsSub: 'Mails that need attention',
+    totalThisWeek: 'Total this week',
+    totalThisWeekSub: 'Processed in the last 7 days',
+    lastRun: 'Last scan',
+  },
+  sections: {
+    processed: 'Recently processed',
+    runs: 'Scan history',
+    rows: 'rows',
+  },
+  cols: {
+    time: 'Time',
+    vendor: 'Vendor',
+    subject: 'Subject',
+    file: 'Filename',
+    amount: 'Amount',
+    confidence: 'Confidence',
+    status: 'Status',
+  },
+  filters: {
+    all: 'All',
+    pending: 'Pending',
+    auto: 'Auto',
+    errors: 'Errors',
+  },
+  search: {
+    label: 'Search messages',
+    placeholder: 'Search vendor, filename, amount…',
+  },
+  fileStatus: {
+    saved: 'Saved',
+    error: 'Error',
+    skipped: 'Skipped',
+  },
+  bezalaStatus: {
+    transferred: 'Uploaded',
+    pending: 'Pending',
+    error: 'Error',
+  },
+  empty: {
+    noMessages: 'No mails processed yet — run a scan to start.',
+  },
+  runs: {
+    subtitle: 'Last 14 runs',
+    processed: 'processed',
+    errors: 'errors',
+    now: 'now',
+    empty: 'No runs yet.',
+  },
+  toast: {
+    scanStarted: 'Scan started — refreshing list…',
+    scanFailed: 'Scan failed',
+  },
   common: {
     loading: 'Loading…',
     error: 'Error',
@@ -26,10 +90,7 @@ export default {
     back: 'Back',
   },
   views: {
-    dashboard: {
-      title: 'Overview',
-      placeholder: 'Dashboard will be built in Commit 2 — stat cards, filter tabs, table and run bars.',
-    },
+    dashboard: { title: 'Overview' },
     review: {
       title: 'Review',
       placeholder: 'Review view will be built in Commit 3 — queue, PDF preview and editable AI fields.',

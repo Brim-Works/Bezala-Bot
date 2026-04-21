@@ -3,7 +3,7 @@ import { I18nProvider, useI18n } from './i18n/useI18n.jsx';
 import { ThemeProvider } from './theme/ThemeProvider.jsx';
 import { RouterProvider, useRouter } from './router/useRouter.jsx';
 import AppShell from './components/AppShell.jsx';
-import DashboardPlaceholder from './views/DashboardPlaceholder.jsx';
+import Dashboard from './views/Dashboard.jsx';
 import ReviewPlaceholder from './views/ReviewPlaceholder.jsx';
 import LogPlaceholder from './views/LogPlaceholder.jsx';
 import SettingsPlaceholder from './views/SettingsPlaceholder.jsx';
@@ -16,7 +16,7 @@ function ViewForRoute() {
   const view = viewForPath(path);
   switch (view) {
     case 'dashboard':
-      return <DashboardPlaceholder />;
+      return <Dashboard />;
     case 'review':
       return <ReviewPlaceholder />;
     case 'log':
