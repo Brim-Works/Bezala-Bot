@@ -18,8 +18,17 @@ from app.models import MaintenanceTask, ProcessedMessage, ScanRun
 from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
 from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.drive_client import DriveClient
+from app.services.gmail_client import GmailClient
 from app.services.pipeline import run_scan
 from app.services.settings_service import load_settings, settings_to_dict
+from app.services.trash_service import (
+    drive_delete_safe,
+    gmail_mark_done_safe,
+    gmail_remove_label_safe,
+    normalise_reason,
+    restore_row,
+    soft_delete_row,
+)
 
 settings = get_settings()
 
@@ -221,6 +230,7 @@ class SettingsPayload(BaseModel):
     include_senders: list[str] = Field(default_factory=list)
     exclude_senders: list[str] = Field(default_factory=list)
     exclude_subjects: list[str] = Field(default_factory=list)
+    trash_auto_purge_days: int = Field(default=0, ge=0, le=365)
 
 
 @app.get("/api/settings")
@@ -279,16 +289,212 @@ def delete_error_messages(
 @app.get("/api/messages")
 def list_messages(
     limit: int = 50,
+    include_deleted: bool = False,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    q = db.query(ProcessedMessage)
+    if not include_deleted:
+        q = q.filter(ProcessedMessage.deleted_at.is_(None))
+    rows = q.order_by(desc(ProcessedMessage.processed_at)).limit(limit).all()
+    return [_serialize_message(r) for r in rows]
+
+
+@app.get("/api/messages/trash")
+def list_trash(
+    limit: int = 200,
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
     rows = (
         db.query(ProcessedMessage)
-        .order_by(desc(ProcessedMessage.processed_at))
+        .filter(ProcessedMessage.deleted_at.is_not(None))
+        .order_by(desc(ProcessedMessage.deleted_at))
         .limit(limit)
         .all()
     )
     return [_serialize_message(r) for r in rows]
+
+
+@app.get("/api/messages/trash/count")
+def trash_count(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    count = (
+        db.query(func.count(ProcessedMessage.id))
+        .filter(ProcessedMessage.deleted_at.is_not(None))
+        .scalar()
+        or 0
+    )
+    return {"count": int(count)}
+
+
+class DeletePayload(BaseModel):
+    reason: str | None = None
+
+
+class BulkDeletePayload(BaseModel):
+    ids: list[int] = Field(default_factory=list)
+    reason: str | None = None
+    permanent: bool = False
+    purge_drive: bool = False
+
+
+def _get_gmail_client_safe() -> GmailClient | None:
+    """Instansiera Gmail-klient best-effort. Vid fel → None (operationen
+    fortsätter utan Gmail-sidoeffekt)."""
+    try:
+        return GmailClient()
+    except Exception:  # noqa: BLE001
+        logger.exception("Gmail-klient kunde inte initialiseras för trash-op.")
+        return None
+
+
+def _get_drive_client_safe() -> DriveClient | None:
+    try:
+        return DriveClient()
+    except Exception:  # noqa: BLE001
+        logger.exception("Drive-klient kunde inte initialiseras för trash-op.")
+        return None
+
+
+@app.delete("/api/messages/trash")
+def empty_trash(
+    purge_drive: bool = False,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    rows = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_not(None))
+        .all()
+    )
+    if not rows:
+        return {"deleted": 0}
+
+    drive_file_ids = [r.drive_file_id for r in rows if r.drive_file_id]
+    for row in rows:
+        db.delete(row)
+    db.commit()
+
+    if purge_drive and drive_file_ids:
+        drive = _get_drive_client_safe()
+        if drive:
+            for file_id in drive_file_ids:
+                drive_delete_safe(drive, file_id)
+
+    logger.info("Tömde papperskorgen — %d rader.", len(rows))
+    return {"deleted": len(rows)}
+
+
+@app.delete("/api/messages/{msg_id}")
+def delete_message(
+    msg_id: int,
+    payload: DeletePayload | None = None,
+    permanent: bool = False,
+    purge_drive: bool = False,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Soft-delete default. Permanent=true → hard-delete raden.
+    purge_drive=true → radera även Drive-fil (endast meningsfull vid permanent)."""
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+
+    reason = normalise_reason((payload.reason if payload else None))
+
+    if permanent:
+        file_id = row.drive_file_id
+        message_id = row.message_id
+        db.delete(row)
+        db.commit()
+        if purge_drive and file_id:
+            drive = _get_drive_client_safe()
+            if drive:
+                drive_delete_safe(drive, file_id)
+        logger.info("Hard-delete av msg_id=%s (purge_drive=%s)", msg_id, purge_drive)
+        return {"status": "deleted", "permanent": True}
+
+    soft_delete_row(row, reason)
+    db.commit()
+    gmail = _get_gmail_client_safe()
+    if gmail:
+        gmail_remove_label_safe(gmail, row.message_id)
+    logger.info("Soft-delete av msg_id=%s (reason=%s)", msg_id, reason)
+    return _serialize_message(row)
+
+
+@app.post("/api/messages/{msg_id}/restore")
+def restore_message(
+    msg_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    if row.deleted_at is None:
+        return _serialize_message(row)
+    restore_row(row)
+    db.commit()
+    gmail = _get_gmail_client_safe()
+    if gmail:
+        gmail_mark_done_safe(gmail, row.message_id)
+    logger.info("Restore av msg_id=%s", msg_id)
+    return _serialize_message(row)
+
+
+@app.post("/api/messages/bulk-delete")
+def bulk_delete_messages(
+    payload: BulkDeletePayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    ids = [int(i) for i in (payload.ids or []) if i]
+    if not ids:
+        return {"deleted": 0, "ids": []}
+
+    reason = normalise_reason(payload.reason)
+    rows = (
+        db.query(ProcessedMessage).filter(ProcessedMessage.id.in_(ids)).all()
+    )
+    if not rows:
+        return {"deleted": 0, "ids": []}
+
+    drive_file_ids: list[str] = []
+    gmail_ids: list[str] = []
+
+    if payload.permanent:
+        for row in rows:
+            if row.drive_file_id:
+                drive_file_ids.append(row.drive_file_id)
+            db.delete(row)
+        db.commit()
+        if payload.purge_drive:
+            drive = _get_drive_client_safe()
+            if drive:
+                for file_id in drive_file_ids:
+                    drive_delete_safe(drive, file_id)
+        logger.info("Bulk hard-delete av %d rader.", len(rows))
+        return {"deleted": len(rows), "ids": [r.id for r in rows], "permanent": True}
+
+    for row in rows:
+        soft_delete_row(row, reason)
+        if row.message_id:
+            gmail_ids.append(row.message_id)
+    db.commit()
+    gmail = _get_gmail_client_safe()
+    if gmail:
+        for gid in gmail_ids:
+            gmail_remove_label_safe(gmail, gid)
+    logger.info("Bulk soft-delete av %d rader (reason=%s).", len(rows), reason)
+    return {
+        "deleted": len(rows),
+        "ids": [r.id for r in rows],
+        "permanent": False,
+    }
 
 
 def _serialize_message(r: ProcessedMessage) -> dict:
@@ -314,6 +520,8 @@ def _serialize_message(r: ProcessedMessage) -> dict:
         "bezala_transaction_id": r.bezala_transaction_id,
         "bezala_upload_status": r.bezala_upload_status,
         "bezala_error_message": r.bezala_error_message,
+        "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
+        "delete_reason": r.delete_reason,
     }
 
 

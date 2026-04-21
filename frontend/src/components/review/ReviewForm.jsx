@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import Confidence from '../Confidence.jsx';
-import { IconSparkle } from '../../icons/index.jsx';
+import { IconSparkle, IconTrash } from '../../icons/index.jsx';
 
 /* Alla 10 fält enligt användarens spec.
  *
@@ -35,7 +35,7 @@ function buildInitial(message) {
 export default function ReviewForm({
   message,
   onApprove,
-  onReject,
+  onDelete,
   onSkip,
   isUploading,
 }) {
@@ -220,10 +220,11 @@ export default function ReviewForm({
         <div className="form-pane__footer-left">
           <button
             type="button"
-            className="btn ghost"
-            onClick={() => onReject(message)}
+            className="btn danger"
+            onClick={() => onDelete(message)}
+            data-testid="review-delete"
           >
-            {t.review.reject}
+            <IconTrash className="icon sm" /> {t.review.delete}
           </button>
           <button
             type="button"

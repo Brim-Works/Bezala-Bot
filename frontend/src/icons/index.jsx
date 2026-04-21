@@ -103,9 +103,30 @@ export function IconLogout(props) {
   );
 }
 
+export function IconTrash(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M4 5h12" />
+      <path d="M8 5V3h4v2" />
+      <path d="M5 5l1 12a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1l1-12" />
+      <path d="M9 9v6M11 9v6" />
+    </IconBase>
+  );
+}
+
+export function IconRestore(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M4 4v5h5" />
+      <path d="M4.5 9A7 7 0 1 1 3 13.5" />
+    </IconBase>
+  );
+}
+
 export const NAV_ICONS = {
   dashboard: IconDashboard,
   review: IconReview,
   log: IconLog,
   settings: IconSettings,
+  trash: IconTrash,
 };

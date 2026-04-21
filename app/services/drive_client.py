@@ -90,6 +90,13 @@ class DriveClient:
     def download_pdf(self, file_id: str) -> bytes:
         return self._service.files().get_media(fileId=file_id).execute()
 
+    def delete_file(self, file_id: str) -> None:
+        """Radera en fil permanent från Drive. Används bara vid hard-delete
+        när user explicit satt purge_drive=true."""
+        self._service.files().delete(
+            fileId=file_id, supportsAllDrives=True
+        ).execute()
+
     def filename_exists(self, filename: str) -> bool:
         safe = filename.replace("'", "\\'")
         query = (

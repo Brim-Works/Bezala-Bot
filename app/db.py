@@ -34,26 +34,74 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "bezala_transaction_id": "VARCHAR(255)",
     "bezala_upload_status": "VARCHAR(32)",
     "bezala_error_message": "TEXT",
+    # FAS 5.1 — soft-delete
+    "deleted_at": "TIMESTAMP WITH TIME ZONE",
+    "delete_reason": "VARCHAR(32)",
 }
+
+_APP_SETTINGS_ADDITIONS = {
+    # FAS 5.1 — auto-purge för papperskorg. 0 = aldrig (default).
+    "trash_auto_purge_days": "INTEGER NOT NULL DEFAULT 0",
+}
+
+_INDEXES = [
+    (
+        "ix_processed_messages_deleted_at",
+        "processed_messages",
+        "deleted_at",
+    ),
+]
 
 
 def _apply_schema_migrations() -> None:
-    """Idempotent: lägger till nya kolumner som saknas i existerande tabeller."""
+    """Idempotent: lägger till nya kolumner + index som saknas i existerande
+    tabeller. Körs vid varje startup — no-op när schemat redan är uppdaterat."""
     insp = inspect(engine)
-    if "processed_messages" not in insp.get_table_names():
-        return
-    existing = {col["name"] for col in insp.get_columns("processed_messages")}
+    tables = set(insp.get_table_names())
+
+    if "processed_messages" in tables:
+        existing = {col["name"] for col in insp.get_columns("processed_messages")}
+        with engine.begin() as conn:
+            for name, col_type in _PROCESSED_MESSAGES_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE processed_messages ADD COLUMN {name} {col_type}"
+                        )
+                    )
+                    logger.info("Lade till kolumn processed_messages.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
+    if "app_settings" in tables:
+        existing = {col["name"] for col in insp.get_columns("app_settings")}
+        with engine.begin() as conn:
+            for name, col_type in _APP_SETTINGS_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE app_settings ADD COLUMN {name} {col_type}")
+                    )
+                    logger.info("Lade till kolumn app_settings.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
     with engine.begin() as conn:
-        for name, col_type in _PROCESSED_MESSAGES_ADDITIONS.items():
-            if name in existing:
+        for index_name, table_name, column_name in _INDEXES:
+            if table_name not in tables:
                 continue
             try:
                 conn.execute(
-                    text(f"ALTER TABLE processed_messages ADD COLUMN {name} {col_type}")
+                    text(
+                        f"CREATE INDEX IF NOT EXISTS {index_name} "
+                        f"ON {table_name} ({column_name})"
+                    )
                 )
-                logger.info("Lade till kolumn processed_messages.%s", name)
             except Exception:
-                logger.exception("Kunde inte lägga till kolumn %s", name)
+                logger.exception("Kunde inte skapa index %s", index_name)
 
 
 def init_db() -> None:

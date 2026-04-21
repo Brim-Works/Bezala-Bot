@@ -5,17 +5,20 @@ from __future__ import annotations
 import logging
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 from app.config import get_settings
 from app.db import session_scope
 from app.services.pipeline import run_scan
 from app.services.settings_service import load_settings
+from app.services.trash_scheduler import purge_old_trash
 
 logger = logging.getLogger(__name__)
 
 _scheduler: BackgroundScheduler | None = None
 _JOB_ID = "gmail_scan"
+_TRASH_JOB_ID = "trash_purge"
 
 
 def _scan_job() -> None:
@@ -63,8 +66,19 @@ def start_scheduler() -> BackgroundScheduler | None:
         max_instances=1,
         coalesce=True,
     )
+    _scheduler.add_job(
+        purge_old_trash,
+        trigger=CronTrigger(hour=3, minute=0, timezone="UTC"),
+        id=_TRASH_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
     _scheduler.start()
-    logger.info("Scheduler startad — scanning var %d:e minut.", interval)
+    logger.info(
+        "Scheduler startad — scanning var %d:e minut, trash-purge 03:00 UTC.",
+        interval,
+    )
     return _scheduler
 
 

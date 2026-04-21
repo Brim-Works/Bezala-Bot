@@ -8,6 +8,10 @@ function isoAgo(ms) {
   return new Date(Date.now() - ms).toISOString();
 }
 
+function emptyTrashFields() {
+  return { deleted_at: null, delete_reason: null };
+}
+
 export function buildMessages() {
   return [
     {
@@ -23,7 +27,7 @@ export function buildMessages() {
       status: 'saved',
       error_message: null,
       vendor: 'Finnair',
-      amount: 503.00,
+      amount: 503.0,
       currency: 'EUR',
       receipt_date: '2026-04-20',
       category: 'Flyg',
@@ -32,6 +36,7 @@ export function buildMessages() {
       bezala_transaction_id: null,
       bezala_upload_status: 'pending',
       bezala_error_message: null,
+      ...emptyTrashFields(),
     },
     {
       id: 2,
@@ -46,7 +51,7 @@ export function buildMessages() {
       status: 'saved',
       error_message: null,
       vendor: 'SL',
-      amount: 970.00,
+      amount: 970.0,
       currency: 'SEK',
       receipt_date: '2026-04-15',
       category: 'Taxi',
@@ -55,6 +60,7 @@ export function buildMessages() {
       bezala_transaction_id: null,
       bezala_upload_status: 'pending',
       bezala_error_message: null,
+      ...emptyTrashFields(),
     },
     {
       id: 3,
@@ -69,7 +75,7 @@ export function buildMessages() {
       status: 'saved',
       error_message: null,
       vendor: 'Scandic',
-      amount: 1850.00,
+      amount: 1850.0,
       currency: 'SEK',
       receipt_date: '2026-04-10',
       category: 'Hotell',
@@ -78,6 +84,7 @@ export function buildMessages() {
       bezala_transaction_id: null,
       bezala_upload_status: 'pending',
       bezala_error_message: null,
+      ...emptyTrashFields(),
     },
     {
       id: 4,
@@ -92,7 +99,7 @@ export function buildMessages() {
       status: 'saved',
       error_message: null,
       vendor: 'Clas Ohlson',
-      amount: 249.00,
+      amount: 249.0,
       currency: 'SEK',
       receipt_date: '2026-04-21',
       category: 'Annat',
@@ -101,6 +108,7 @@ export function buildMessages() {
       bezala_transaction_id: 'bez-txn-004',
       bezala_upload_status: 'success',
       bezala_error_message: null,
+      ...emptyTrashFields(),
     },
     {
       id: 5,
@@ -115,7 +123,7 @@ export function buildMessages() {
       status: 'saved',
       error_message: null,
       vendor: 'Uber',
-      amount: 23.50,
+      amount: 23.5,
       currency: 'EUR',
       receipt_date: '2026-04-20',
       category: 'Taxi',
@@ -124,6 +132,7 @@ export function buildMessages() {
       bezala_transaction_id: null,
       bezala_upload_status: 'failed',
       bezala_error_message: '422 Unprocessable Entity',
+      ...emptyTrashFields(),
     },
   ];
 }
@@ -157,126 +166,208 @@ export function buildRuns() {
       messages_processed: processed,
       messages_skipped: 0,
       errors,
-      status: errors > 0 ? 'ok' : 'ok',
+      status: 'ok',
       notes: null,
     });
   }
   return runs;
 }
 
-/* Sätter upp alla nödvändiga mockar på en page. Tar en optional
- * override-map så enskilda tester kan svara annorlunda. */
+export function buildSettings(overrides = {}) {
+  return {
+    scan_interval_minutes: 60,
+    ai_naming_enabled: true,
+    auto_upload_enabled: false,
+    confidence_threshold: 90,
+    require_attachments: true,
+    exclude_promotions: true,
+    exclude_social: true,
+    exclude_calendar: true,
+    include_senders: [],
+    exclude_senders: [],
+    exclude_subjects: [],
+    trash_auto_purge_days: 0,
+    updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+function jsonResponse(body, status = 200) {
+  return {
+    status,
+    contentType: 'application/json',
+    body: JSON.stringify(body),
+  };
+}
+
+/* Sätter upp alla nödvändiga mockar på en page. Trash-relaterade routes
+ * hanteras via en central dispatcher på /api/messages/** som inspekterar
+ * URL + method — så vi slipper kolla glob-pattern-ordningen. */
 export async function setupApiMocks(page, overrides = {}) {
   const state = {
     messages: overrides.messages || buildMessages(),
     stats: overrides.stats || buildStats(),
     runs: overrides.runs || buildRuns(),
+    settings: overrides.settings || buildSettings(),
     uploadResponse: overrides.uploadResponse || null,
     deleteErrorsResponse: overrides.deleteErrorsResponse || { deleted: 1 },
+    lastDeleteRequest: null,
   };
 
+  // --- enklare globala routes ---
   await page.route('**/api/me', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ authenticated: true }),
-    }),
+    route.fulfill(jsonResponse({ authenticated: true })),
   );
 
-  await page.route('**/api/messages?**', (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(state.messages),
-    });
-  });
-
-  await page.route('**/api/messages', (route) => {
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(state.messages),
-    });
-  });
-
   await page.route('**/api/stats', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(state.stats),
-    }),
+    route.fulfill(jsonResponse(state.stats)),
   );
 
   await page.route('**/api/runs**', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(state.runs),
-    }),
-  );
-
-  await page.route('**/api/messages/*/upload-to-bezala', (route) => {
-    if (state.uploadResponse && state.uploadResponse.status) {
-      return route.fulfill(state.uploadResponse);
-    }
-    const url = new URL(route.request().url());
-    const match = url.pathname.match(/\/api\/messages\/(\d+)\/upload-to-bezala/);
-    const id = match ? Number(match[1]) : null;
-    // Simulera riktigt backend-beteende: muterar state.messages så att nästa
-    // /api/messages-refetch inte längre har raden som pending.
-    const idx = state.messages.findIndex((m) => m.id === id);
-    if (idx >= 0) {
-      state.messages[idx] = {
-        ...state.messages[idx],
-        bezala_transaction_id: 'bez-txn-new',
-        bezala_upload_status: 'success',
-        bezala_error_message: null,
-      };
-    }
-    const row = idx >= 0 ? state.messages[idx] : {};
-    return route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(row),
-    });
-  });
-
-  await page.route('**/api/messages/errors', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify(state.deleteErrorsResponse),
-    }),
+    route.fulfill(jsonResponse(state.runs)),
   );
 
   await page.route('**/api/scan', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({ status: 'started', max_results: 50 }),
-    }),
+    route.fulfill(jsonResponse({ status: 'started', max_results: 50 })),
   );
 
-  await page.route('**/api/settings', (route) =>
-    route.fulfill({
-      status: 200,
-      contentType: 'application/json',
-      body: JSON.stringify({
-        scan_interval_minutes: 60,
-        ai_naming_enabled: true,
-        auto_upload_enabled: false,
-        confidence_threshold: 90,
-        require_attachments: true,
-        exclude_promotions: true,
-        exclude_social: true,
-        exclude_calendar: true,
-        include_senders: [],
-        exclude_senders: [],
-        exclude_subjects: [],
-        updated_at: new Date().toISOString(),
-      }),
-    }),
-  );
+  await page.route('**/api/settings', async (route) => {
+    const request = route.request();
+    if (request.method() === 'PUT') {
+      const body = request.postDataJSON();
+      state.settings = { ...state.settings, ...body, updated_at: new Date().toISOString() };
+      return route.fulfill(jsonResponse(state.settings));
+    }
+    return route.fulfill(jsonResponse(state.settings));
+  });
+
+  // --- central dispatcher för /api/messages/** ---
+  await page.route('**/api/messages**', async (route) => {
+    const request = route.request();
+    const method = request.method();
+    const url = new URL(request.url());
+    const pathname = url.pathname;
+
+    // GET /api/messages/trash/count
+    if (method === 'GET' && pathname.endsWith('/api/messages/trash/count')) {
+      const count = state.messages.filter((m) => m.deleted_at).length;
+      return route.fulfill(jsonResponse({ count }));
+    }
+
+    // GET /api/messages/trash
+    if (method === 'GET' && pathname.endsWith('/api/messages/trash')) {
+      const trash = state.messages
+        .filter((m) => m.deleted_at)
+        .sort((a, b) => (b.deleted_at || '').localeCompare(a.deleted_at || ''));
+      return route.fulfill(jsonResponse(trash));
+    }
+
+    // DELETE /api/messages/trash — töm papperskorgen
+    if (method === 'DELETE' && pathname.endsWith('/api/messages/trash')) {
+      const before = state.messages.length;
+      state.messages = state.messages.filter((m) => !m.deleted_at);
+      const deleted = before - state.messages.length;
+      return route.fulfill(jsonResponse({ deleted }));
+    }
+
+    // DELETE /api/messages/errors
+    if (method === 'DELETE' && pathname.endsWith('/api/messages/errors')) {
+      return route.fulfill(jsonResponse(state.deleteErrorsResponse));
+    }
+
+    // POST /api/messages/bulk-delete
+    if (method === 'POST' && pathname.endsWith('/api/messages/bulk-delete')) {
+      const body = request.postDataJSON() || {};
+      const ids = (body.ids || []).map(Number);
+      const reason = body.reason || 'manual';
+      const permanent = Boolean(body.permanent);
+      state.lastDeleteRequest = { kind: 'bulk', body };
+      if (permanent) {
+        state.messages = state.messages.filter((m) => !ids.includes(m.id));
+      } else {
+        state.messages = state.messages.map((m) =>
+          ids.includes(m.id)
+            ? { ...m, deleted_at: new Date().toISOString(), delete_reason: reason }
+            : m,
+        );
+      }
+      return route.fulfill(jsonResponse({ deleted: ids.length, ids, permanent }));
+    }
+
+    // POST /api/messages/:id/upload-to-bezala
+    const uploadMatch = pathname.match(/\/api\/messages\/(\d+)\/upload-to-bezala$/);
+    if (method === 'POST' && uploadMatch) {
+      if (state.uploadResponse && state.uploadResponse.status) {
+        return route.fulfill(state.uploadResponse);
+      }
+      const id = Number(uploadMatch[1]);
+      const idx = state.messages.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        state.messages[idx] = {
+          ...state.messages[idx],
+          bezala_transaction_id: 'bez-txn-new',
+          bezala_upload_status: 'success',
+          bezala_error_message: null,
+        };
+      }
+      const row = idx >= 0 ? state.messages[idx] : {};
+      return route.fulfill(jsonResponse(row));
+    }
+
+    // POST /api/messages/:id/restore
+    const restoreMatch = pathname.match(/\/api\/messages\/(\d+)\/restore$/);
+    if (method === 'POST' && restoreMatch) {
+      const id = Number(restoreMatch[1]);
+      const idx = state.messages.findIndex((m) => m.id === id);
+      if (idx >= 0) {
+        state.messages[idx] = {
+          ...state.messages[idx],
+          deleted_at: null,
+          delete_reason: null,
+        };
+        return route.fulfill(jsonResponse(state.messages[idx]));
+      }
+      return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+    }
+
+    // DELETE /api/messages/:id (soft eller permanent)
+    const idMatch = pathname.match(/\/api\/messages\/(\d+)$/);
+    if (method === 'DELETE' && idMatch) {
+      const id = Number(idMatch[1]);
+      const permanent = url.searchParams.get('permanent') === 'true';
+      const idx = state.messages.findIndex((m) => m.id === id);
+      if (idx < 0) return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+      state.lastDeleteRequest = { kind: 'row', id, permanent };
+      if (permanent) {
+        state.messages.splice(idx, 1);
+        return route.fulfill(jsonResponse({ status: 'deleted', permanent: true }));
+      }
+      let reason = 'manual';
+      try {
+        const body = request.postDataJSON();
+        if (body && body.reason) reason = body.reason;
+      } catch {
+        // ingen body är OK
+      }
+      state.messages[idx] = {
+        ...state.messages[idx],
+        deleted_at: new Date().toISOString(),
+        delete_reason: reason,
+      };
+      return route.fulfill(jsonResponse(state.messages[idx]));
+    }
+
+    // GET /api/messages + GET /api/messages?limit=…&include_deleted=…
+    if (method === 'GET' && pathname.endsWith('/api/messages')) {
+      const includeDeleted = url.searchParams.get('include_deleted') === 'true';
+      const list = includeDeleted
+        ? state.messages
+        : state.messages.filter((m) => !m.deleted_at);
+      return route.fulfill(jsonResponse(list));
+    }
+
+    return route.fallback();
+  });
 
   return state;
 }

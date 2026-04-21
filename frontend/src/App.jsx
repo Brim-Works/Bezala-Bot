@@ -11,7 +11,9 @@ import Dashboard from './views/Dashboard.jsx';
 import Review from './views/Review.jsx';
 import Log from './views/Log.jsx';
 import Settings from './views/Settings.jsx';
+import Trash from './views/Trash.jsx';
 import NotFound from './views/NotFound.jsx';
+import { TrashCountProvider } from './hooks/TrashCountProvider.jsx';
 import { api, ApiError, setUnauthorizedHandler } from './api/client.js';
 import { viewForPath } from './routes.js';
 
@@ -41,6 +43,12 @@ function ViewForRoute() {
       return (
         <ViewErrorBoundary viewKey="settings">
           <Settings />
+        </ViewErrorBoundary>
+      );
+    case 'trash':
+      return (
+        <ViewErrorBoundary viewKey="trash">
+          <Trash />
         </ViewErrorBoundary>
       );
     default:
@@ -102,7 +110,9 @@ export default function App() {
         <RouterProvider>
           <DrawerProvider>
             <ToastProvider>
-              <AuthedApp />
+              <TrashCountProvider>
+                <AuthedApp />
+              </TrashCountProvider>
             </ToastProvider>
           </DrawerProvider>
         </RouterProvider>

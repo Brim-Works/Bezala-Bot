@@ -36,6 +36,7 @@ def load_settings(db) -> AppSettings:
         include_senders=[],
         exclude_senders=[],
         exclude_subjects=[],
+        trash_auto_purge_days=0,
     )
     db.add(row)
     db.flush()
@@ -55,6 +56,7 @@ def settings_to_dict(row: AppSettings) -> dict:
         "include_senders": list(row.include_senders or []),
         "exclude_senders": list(row.exclude_senders or []),
         "exclude_subjects": list(row.exclude_subjects or []),
+        "trash_auto_purge_days": int(row.trash_auto_purge_days or 0),
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }
 

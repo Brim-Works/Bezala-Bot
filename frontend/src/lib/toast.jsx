@@ -41,6 +41,7 @@ export function ToastProvider({ children }) {
         id,
         kind: toast.kind || 'ok',
         message: toast.message,
+        action: toast.action || null, // { label, onClick }
       };
       setToasts((list) => [...list, entry]);
       const timeout = toast.timeout ?? DEFAULT_TIMEOUT_MS;
@@ -84,7 +85,23 @@ function ToastStack({ toasts, onDismiss }) {
           className={`toast toast--${toast.kind}`}
           data-testid={`toast-${toast.kind}`}
         >
-          <span>{toast.message}</span>
+          <span className="toast__msg">{toast.message}</span>
+          {toast.action ? (
+            <button
+              type="button"
+              className="toast__action"
+              onClick={() => {
+                try {
+                  toast.action.onClick?.();
+                } finally {
+                  onDismiss(toast.id);
+                }
+              }}
+              data-testid="toast-action"
+            >
+              {toast.action.label}
+            </button>
+          ) : null}
           <button
             type="button"
             className="toast__close"

@@ -36,6 +36,11 @@ class ProcessedMessage(Base):
     bezala_upload_status = Column(String(32), nullable=True)
     bezala_error_message = Column(Text, nullable=True)
 
+    # Soft-delete (FAS 5.1). deleted_at = NULL → aktiv rad.
+    # delete_reason: manual | calendar | spam | misclassified
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
+    delete_reason = Column(String(32), nullable=True)
+
 
 class SavedFile(Base):
     """Unikhetsindex för filnamn + datum (tredje dubblettskiktet)."""
@@ -86,6 +91,10 @@ class AppSettings(Base):
     include_senders = Column(JSON, nullable=False, default=list)
     exclude_senders = Column(JSON, nullable=False, default=list)
     exclude_subjects = Column(JSON, nullable=False, default=list)
+
+    # Auto-purge för papperskorg. 0 = aldrig (default). 30/60/90 dagar
+    # är tillåtna värden i UI, men fältet lagrar vilken siffra som helst.
+    trash_auto_purge_days = Column(Integer, nullable=False, default=0)
 
     updated_at = Column(
         DateTime,
