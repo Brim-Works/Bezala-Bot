@@ -31,6 +31,7 @@ logger = logging.getLogger("bezala-bot")
 
 
 CLEANUP_ERRORS_TASK = "cleanup_error_messages_v1"
+FIX_SKIPPED_BEZALA_TASK = "fix_skipped_bezala_to_pending_v1"
 
 
 def _run_once_cleanup_errors() -> None:
@@ -50,6 +51,36 @@ def _run_once_cleanup_errors() -> None:
         logger.exception("Engångsrensning av error-rader misslyckades.")
 
 
+def _run_once_fix_skipped_bezala() -> None:
+    """Migrera sparade-till-Drive-rader med bezala_upload_status='skipped' till
+    'pending' så användaren kan ladda upp manuellt. Gammal logik satte
+    'skipped' även för kvitton när auto-upload var av."""
+    try:
+        with session_scope() as db:
+            if db.query(MaintenanceTask).filter(
+                MaintenanceTask.name == FIX_SKIPPED_BEZALA_TASK
+            ).first():
+                return
+            updated = (
+                db.query(ProcessedMessage)
+                .filter(
+                    ProcessedMessage.status == "saved",
+                    ProcessedMessage.bezala_upload_status == "skipped",
+                )
+                .update(
+                    {"bezala_upload_status": "pending"},
+                    synchronize_session=False,
+                )
+            )
+            db.add(MaintenanceTask(name=FIX_SKIPPED_BEZALA_TASK))
+            logger.info(
+                "Engångsmigration: bezala_upload_status skipped→pending för %d rader.",
+                updated,
+            )
+    except Exception:
+        logger.exception("Engångsmigration skipped→pending misslyckades.")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -60,6 +91,7 @@ async def lifespan(app: FastAPI):
     init_db()
     logger.info("Databas initialiserad.")
     _run_once_cleanup_errors()
+    _run_once_fix_skipped_bezala()
     start_scheduler()
     yield
     shutdown_scheduler()

@@ -173,13 +173,20 @@ def _attempt_bezala_upload(
 ) -> tuple[str, str | None, str | None]:
     """Försök ladda upp till Bezala. Returnerar (status, transaction_id, error).
 
-    Status: 'success' | 'failed' | 'pending' | 'skipped'.
+    Status: 'success' | 'failed' | 'pending'.
+
+    Funktionen kallas bara för filer som faktiskt sparats till Drive — alltså
+    kvitton. 'skipped' används aldrig här (reserverat för icke-kvitton som
+    aldrig når detta steg). När auto-upload är av, eller AI-data saknas, eller
+    confidence ligger under tröskeln, markeras raden 'pending' så användaren
+    kan ladda upp manuellt via UI-knappen.
     """
     if not auto_upload:
-        return "skipped", None, None
+        return "pending", None, None
     if analysis is None:
-        # Ingen AI-data = ingen grund för auto-upload
-        return "skipped", None, None
+        # Ingen AI-data = kan inte auto-fylla transaktionen. Låt användaren
+        # ladda upp manuellt via knappen.
+        return "pending", None, None
     if bezala is None:
         return "failed", None, "Bezala-klient kunde inte initialiseras"
     if analysis.confidence < confidence_threshold:
