@@ -2,10 +2,11 @@
  * design/src/log.jsx:narrative() givet den data backend faktiskt har —
  * ingen auto-rate eller stages-detalj, bara de aggregerade räknarna. */
 
+import { parseBackendDate } from './format.js';
+
 function formatTime(iso, lang) {
-  if (!iso) return '';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '';
+  const d = parseBackendDate(iso);
+  if (!d) return '';
   const locale = lang === 'en' ? 'en-FI' : 'sv-FI';
   return new Intl.DateTimeFormat(locale, {
     hour: '2-digit',
@@ -46,10 +47,10 @@ export function runStatusKind(run) {
 
 export function runDuration(run) {
   if (!run?.started_at || !run?.finished_at) return null;
-  const start = new Date(run.started_at).getTime();
-  const end = new Date(run.finished_at).getTime();
-  if (Number.isNaN(start) || Number.isNaN(end)) return null;
-  return Math.max(0, end - start);
+  const startDate = parseBackendDate(run.started_at);
+  const endDate = parseBackendDate(run.finished_at);
+  if (!startDate || !endDate) return null;
+  return Math.max(0, endDate.getTime() - startDate.getTime());
 }
 
 export function formatDuration(ms) {

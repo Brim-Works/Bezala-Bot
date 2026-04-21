@@ -84,7 +84,7 @@ export default function Dashboard() {
 
   const counts = useMemo(
     () => ({
-      all: messages.length,
+      all: messages.filter((m) => m.file_status !== 'skipped').length,
       pending: messages.filter((m) => m.bezala_status === 'pending').length,
       auto: messages.filter((m) => m.bezala_status === 'transferred').length,
       errors: messages.filter(

@@ -2,6 +2,7 @@ import { useCallback, useRef } from 'react';
 import { api } from '../api/client.js';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { useToast } from '../lib/toast.jsx';
+import { parseBackendDate } from '../lib/format.js';
 
 const POLL_INTERVAL_MS = 2500;
 const POLL_TIMEOUT_MS = 30_000;
@@ -39,8 +40,8 @@ export function useScanFeedback(onCompletion) {
         const runs = await api.runs(1);
         const latest = Array.isArray(runs) && runs.length > 0 ? runs[0] : null;
         if (latest && latest.finished_at) {
-          const finishedAt = new Date(latest.finished_at).getTime();
-          if (!Number.isNaN(finishedAt) && finishedAt >= scanStartedAt) {
+          const finishedDate = parseBackendDate(latest.finished_at);
+          if (finishedDate && finishedDate.getTime() >= scanStartedAt) {
             resolved = true;
             inFlight.current = false;
             const found = latest.messages_found || 0;

@@ -6,10 +6,30 @@ function localeFor(lang) {
   return lang === 'en' ? 'en-FI' : 'sv-FI';
 }
 
+/* Backend serialiserar naiva UTC-datetimes via .isoformat() → saknar
+ * tz-suffix (t.ex. "2026-04-21T10:30:00"). JavaScripts Date-parser tolkar
+ * sådana strängar som LOKAL tid, vilket ger fel tidsstämplar beroende på
+ * browserns tidszon. Här normaliserar vi: om strängen saknar Z / ±hh:mm
+ * sätter vi 'Z' så den tolkas som UTC.
+ *
+ * deleted_at använder DateTime(timezone=True) och kommer med offset —
+ * regex:en nedan släpper igenom sådana oförändrade. */
+export function parseBackendDate(input) {
+  if (input == null) return null;
+  if (input instanceof Date) {
+    return Number.isNaN(input.getTime()) ? null : input;
+  }
+  if (typeof input !== 'string') return null;
+  const trimmed = input.trim();
+  if (!trimmed) return null;
+  const hasTz = /([zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed);
+  const d = new Date(hasTz ? trimmed : `${trimmed}Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export function fmtDate(iso, lang) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
+  const d = parseBackendDate(iso);
+  if (!d) return '—';
   return new Intl.DateTimeFormat(localeFor(lang), {
     day: 'numeric',
     month: 'short',
@@ -29,9 +49,8 @@ const RT_DIVISIONS = [
 ];
 
 export function fmtRelative(iso, lang) {
-  if (!iso) return '—';
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return '—';
+  const d = parseBackendDate(iso);
+  if (!d) return '—';
   const rtf = new Intl.RelativeTimeFormat(localeFor(lang), { numeric: 'auto' });
   let duration = (d.getTime() - Date.now()) / 1000;
   for (const division of RT_DIVISIONS) {
@@ -69,9 +88,8 @@ export function fmtAmount(amount, currency, lang) {
 }
 
 export function isToday(iso) {
-  if (!iso) return false;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return false;
+  const d = parseBackendDate(iso);
+  if (!d) return false;
   const now = new Date();
   return (
     d.getFullYear() === now.getFullYear() &&
@@ -81,9 +99,8 @@ export function isToday(iso) {
 }
 
 export function isWithinDays(iso, days) {
-  if (!iso) return false;
-  const d = new Date(iso);
-  if (Number.isNaN(d.getTime())) return false;
+  const d = parseBackendDate(iso);
+  if (!d) return false;
   const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
   return d.getTime() >= cutoff;
 }
