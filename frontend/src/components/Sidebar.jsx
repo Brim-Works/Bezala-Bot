@@ -2,6 +2,7 @@ import { useI18n } from '../i18n/useI18n.jsx';
 import { useRouter } from '../router/useRouter.jsx';
 import { NAV_ICONS } from '../icons/index.jsx';
 import { routeForView, viewForPath } from '../routes.js';
+import PipelineNav from './PipelineNav.jsx';
 
 const ITEMS = [
   { id: 'dashboard' },
@@ -24,7 +25,7 @@ export default function Sidebar() {
           <div className="brand-tag">{t.tagline}</div>
         </div>
       </div>
-      <nav>
+      <nav className="sidebar__nav">
         {ITEMS.map((item) => {
           const Icon = NAV_ICONS[item.id];
           const isActive = activeView === item.id;
@@ -42,6 +43,10 @@ export default function Sidebar() {
           );
         })}
       </nav>
+      <div className="sidebar__pipeline">
+        <div className="sidebar__pipeline-label">{t.pipelineNav.label}</div>
+        <PipelineNav variant="sidebar" />
+      </div>
     </aside>
   );
 }

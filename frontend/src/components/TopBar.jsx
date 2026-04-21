@@ -4,6 +4,7 @@ import { useRouter } from '../router/useRouter.jsx';
 import { viewForPath } from '../routes.js';
 import { api } from '../api/client.js';
 import { IconLogout } from '../icons/index.jsx';
+import PipelineNav from './PipelineNav.jsx';
 
 export default function TopBar() {
   const { lang, setLang, t } = useI18n();
@@ -15,6 +16,7 @@ export default function TopBar() {
   return (
     <header className="topbar">
       <div className="title">{title}</div>
+      <PipelineNav variant="topbar" />
       <div className="spacer" />
 
       <div
