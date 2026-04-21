@@ -1,54 +1,88 @@
-import { useCallback, useEffect, useState } from 'react';
-import { api } from './api.js';
-import Dashboard from './Dashboard.jsx';
-import Settings from './Settings.jsx';
+import { useEffect, useState } from 'react';
+import { I18nProvider, useI18n } from './i18n/useI18n.jsx';
+import { ThemeProvider } from './theme/ThemeProvider.jsx';
+import { RouterProvider, useRouter } from './router/useRouter.jsx';
+import AppShell from './components/AppShell.jsx';
+import DashboardPlaceholder from './views/DashboardPlaceholder.jsx';
+import ReviewPlaceholder from './views/ReviewPlaceholder.jsx';
+import LogPlaceholder from './views/LogPlaceholder.jsx';
+import SettingsPlaceholder from './views/SettingsPlaceholder.jsx';
+import NotFound from './views/NotFound.jsx';
+import { api, ApiError, setUnauthorizedHandler } from './api/client.js';
+import { viewForPath } from './routes.js';
 
-function usePath() {
-  const [path, setPath] = useState(() =>
-    typeof window === 'undefined' ? '/' : window.location.pathname
-  );
-
-  useEffect(() => {
-    const onPop = () => setPath(window.location.pathname);
-    window.addEventListener('popstate', onPop);
-    return () => window.removeEventListener('popstate', onPop);
-  }, []);
-
-  const navigate = useCallback((to) => {
-    if (to === window.location.pathname) return;
-    window.history.pushState({}, '', to);
-    setPath(to);
-  }, []);
-
-  return [path, navigate];
+function ViewForRoute() {
+  const { path } = useRouter();
+  const view = viewForPath(path);
+  switch (view) {
+    case 'dashboard':
+      return <DashboardPlaceholder />;
+    case 'review':
+      return <ReviewPlaceholder />;
+    case 'log':
+      return <LogPlaceholder />;
+    case 'settings':
+      return <SettingsPlaceholder />;
+    default:
+      return <NotFound />;
+  }
 }
 
-export default function App() {
-  const [authChecked, setAuthChecked] = useState(false);
-  const [path, navigate] = usePath();
+function LoadingScreen() {
+  const { t } = useI18n();
+  return (
+    <div className="login-wrap">
+      <p style={{ color: 'var(--muted)' }}>{t.common.loading}</p>
+    </div>
+  );
+}
+
+function AuthedApp() {
+  const [status, setStatus] = useState('checking'); // checking | ready
 
   useEffect(() => {
     let cancelled = false;
-    api.me()
+    setUnauthorizedHandler(() => {
+      if (window.location.pathname !== '/login') {
+        window.location.href = '/login';
+      }
+    });
+    api
+      .me()
       .then(() => {
-        if (!cancelled) setAuthChecked(true);
+        if (!cancelled) setStatus('ready');
       })
-      .catch(() => {
-        // api.js har redan redirectat till /login vid 401
+      .catch((err) => {
+        if (err instanceof ApiError && err.status === 401) {
+          // client.js har redan redirectat
+          return;
+        }
+        if (!cancelled) setStatus('ready');
       });
     return () => {
       cancelled = true;
     };
   }, []);
 
-  if (!authChecked) {
-    return (
-      <div style={{ padding: '2rem', color: 'var(--muted, #888)' }}>Laddar…</div>
-    );
+  if (status !== 'ready') {
+    return <LoadingScreen />;
   }
 
-  if (path === '/settings') {
-    return <Settings navigate={navigate} />;
-  }
-  return <Dashboard navigate={navigate} />;
+  return (
+    <AppShell>
+      <ViewForRoute />
+    </AppShell>
+  );
+}
+
+export default function App() {
+  return (
+    <ThemeProvider>
+      <I18nProvider>
+        <RouterProvider>
+          <AuthedApp />
+        </RouterProvider>
+      </I18nProvider>
+    </ThemeProvider>
+  );
 }
