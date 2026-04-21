@@ -6,7 +6,7 @@ import { fmtAmount } from '../../lib/format.js';
 /* Meddelanden som föll inom körningens tidsintervall (processed_at mellan
  * run.started_at och run.finished_at). Oprecist när körningar överlappar
  * — se BACKEND-TODO (message_ids saknas på /api/runs). */
-export default function RunMessages({ messages }) {
+export default function RunMessages({ messages, onOpenMessage }) {
   const { t, lang } = useI18n();
   if (!messages || messages.length === 0) return null;
 
@@ -19,7 +19,11 @@ export default function RunMessages({ messages }) {
       <table className="tbl">
         <tbody>
           {messages.map((m) => (
-            <tr key={m.id}>
+            <tr
+              key={m.id}
+              onClick={() => onOpenMessage?.(m.id)}
+              data-testid={`run-message-${m.id}`}
+            >
               <td className="mono tbl__col-id" style={{ width: 80 }}>
                 #{String(m.id).padStart(4, '0')}
               </td>
