@@ -11,7 +11,7 @@ class Settings(BaseSettings):
 
     bezala_username: str = Field(default="", alias="BEZALA_USERNAME")
     bezala_password: str = Field(default="", alias="BEZALA_PASSWORD")
-    bezala_api_url: str = Field(default="https://api.bezala.com", alias="BEZALA_API_URL")
+    bezala_api_url: str = Field(default="https://app.bezala.com/api", alias="BEZALA_API_URL")
 
     gmail_client_id: str = Field(default="", alias="GMAIL_CLIENT_ID")
     gmail_client_secret: str = Field(default="", alias="GMAIL_CLIENT_SECRET")

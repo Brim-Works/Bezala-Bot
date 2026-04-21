@@ -32,6 +32,10 @@ class ProcessedMessage(Base):
     summary = Column(Text, nullable=True)
     ai_confidence = Column(Integer, nullable=True)
 
+    bezala_transaction_id = Column(String(255), nullable=True)
+    bezala_upload_status = Column(String(32), nullable=True)
+    bezala_error_message = Column(Text, nullable=True)
+
 
 class SavedFile(Base):
     """Unikhetsindex för filnamn + datum (tredje dubblettskiktet)."""

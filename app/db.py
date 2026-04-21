@@ -31,6 +31,9 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "category": "VARCHAR(64)",
     "summary": "TEXT",
     "ai_confidence": "INTEGER",
+    "bezala_transaction_id": "VARCHAR(255)",
+    "bezala_upload_status": "VARCHAR(32)",
+    "bezala_error_message": "TEXT",
 }
 
 

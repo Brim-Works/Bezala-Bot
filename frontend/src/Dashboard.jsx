@@ -19,6 +19,18 @@ function StatusBadge({ status }) {
   return <span className={`status-badge ${cls}`}>{status || '—'}</span>;
 }
 
+function BezalaBadge({ status }) {
+  if (!status) return <span className="muted">—</span>;
+  const map = {
+    success: { cls: 'status-saved', label: '✅ Uppladdad' },
+    pending: { cls: 'bezala-pending', label: '⏳ Väntar' },
+    failed: { cls: 'status-error', label: '❌ Fel' },
+    skipped: { cls: 'status-skipped', label: '—' },
+  };
+  const { cls, label } = map[status] || { cls: 'status-skipped', label: status };
+  return <span className={`status-badge ${cls}`}>{label}</span>;
+}
+
 function formatDate(iso) {
   if (!iso) return '—';
   const d = new Date(iso);
@@ -42,6 +54,7 @@ export default function Dashboard({ navigate }) {
   const [selected, setSelected] = useState(null);
   const [scanning, setScanning] = useState(false);
   const [clearing, setClearing] = useState(false);
+  const [uploadingId, setUploadingId] = useState(null);
   const [error, setError] = useState(null);
 
   const refresh = useCallback(async () => {
@@ -70,6 +83,23 @@ export default function Dashboard({ navigate }) {
       setError(e.message);
     } finally {
       setTimeout(() => setScanning(false), 2000);
+    }
+  };
+
+  const uploadToBezala = async (id) => {
+    setUploadingId(id);
+    setError(null);
+    try {
+      const updated = await api.uploadToBezala(id);
+      setMessages((ms) => ms.map((m) => (m.id === id ? updated : m)));
+      if (selected?.id === id) {
+        setSelected(updated);
+      }
+    } catch (e) {
+      setError(e.message);
+      await refresh();
+    } finally {
+      setUploadingId(null);
     }
   };
 
@@ -146,30 +176,53 @@ export default function Dashboard({ navigate }) {
                 <th>Kategori</th>
                 <th>Filnamn</th>
                 <th>Status</th>
+                <th>Bezala</th>
+                <th></th>
               </tr>
             </thead>
             <tbody>
               {messages.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="muted" style={{ textAlign: 'center', padding: '2rem' }}>
+                  <td colSpan={8} className="muted" style={{ textAlign: 'center', padding: '2rem' }}>
                     Inga mail bearbetade ännu.
                   </td>
                 </tr>
               )}
-              {messages.map((m) => (
-                <tr
-                  key={m.id}
-                  onClick={() => setSelected(m)}
-                  className={selected?.id === m.id ? 'selected' : ''}
-                >
-                  <td>{formatDate(m.processed_at)}</td>
-                  <td>{m.vendor || <span className="muted">—</span>}</td>
-                  <td>{formatAmount(m.amount, m.currency)}</td>
-                  <td>{m.category || <span className="muted">—</span>}</td>
-                  <td>{m.file_name || <span className="muted">—</span>}</td>
-                  <td><StatusBadge status={m.status} /></td>
-                </tr>
-              ))}
+              {messages.map((m) => {
+                const canUpload =
+                  (m.bezala_upload_status === 'pending' || m.bezala_upload_status === 'failed')
+                  && m.status === 'saved'
+                  && m.drive_file_id;
+                return (
+                  <tr
+                    key={m.id}
+                    onClick={() => setSelected(m)}
+                    className={selected?.id === m.id ? 'selected' : ''}
+                  >
+                    <td>{formatDate(m.processed_at)}</td>
+                    <td>{m.vendor || <span className="muted">—</span>}</td>
+                    <td>{formatAmount(m.amount, m.currency)}</td>
+                    <td>{m.category || <span className="muted">—</span>}</td>
+                    <td>{m.file_name || <span className="muted">—</span>}</td>
+                    <td><StatusBadge status={m.status} /></td>
+                    <td><BezalaBadge status={m.bezala_upload_status} /></td>
+                    <td>
+                      {canUpload && (
+                        <button
+                          className="inline-btn"
+                          disabled={uploadingId === m.id}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            uploadToBezala(m.id);
+                          }}
+                        >
+                          {uploadingId === m.id ? 'Laddar upp…' : 'Ladda upp till Bezala'}
+                        </button>
+                      )}
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
@@ -192,6 +245,20 @@ export default function Dashboard({ navigate }) {
                 )}
                 {selected.summary && <p className="muted">{selected.summary}</p>}
               </div>
+            )}
+            {selected.bezala_upload_status && (
+              <p>
+                <strong>Bezala:</strong>{' '}
+                <BezalaBadge status={selected.bezala_upload_status} />
+                {selected.bezala_transaction_id && (
+                  <span className="muted"> (id: {selected.bezala_transaction_id})</span>
+                )}
+              </p>
+            )}
+            {selected.bezala_error_message && (
+              <p style={{ color: 'var(--err)' }}>
+                Bezala-fel: {selected.bezala_error_message}
+              </p>
             )}
             {selected.error_message && (
               <p style={{ color: 'var(--err)' }}>Fel: {selected.error_message}</p>

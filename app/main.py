@@ -16,6 +16,8 @@ from app.config import get_settings
 from app.db import get_db, init_db, session_scope
 from app.models import MaintenanceTask, ProcessedMessage, ScanRun
 from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
+from app.services.bezala_client import BezalaClient, BezalaError
+from app.services.drive_client import DriveClient
 from app.services.pipeline import run_scan
 from app.services.settings_service import load_settings, settings_to_dict
 
@@ -254,29 +256,97 @@ def list_messages(
         .limit(limit)
         .all()
     )
-    return [
-        {
-            "id": r.id,
-            "message_id": r.message_id,
-            "sender": r.sender,
-            "subject": r.subject,
-            "received_at": r.received_at.isoformat() if r.received_at else None,
-            "processed_at": r.processed_at.isoformat() if r.processed_at else None,
-            "file_name": r.file_name,
-            "drive_file_id": r.drive_file_id,
-            "drive_link": r.drive_link,
-            "status": r.status,
-            "error_message": r.error_message,
-            "vendor": r.vendor,
-            "amount": r.amount,
-            "currency": r.currency,
-            "receipt_date": r.receipt_date,
-            "category": r.category,
-            "summary": r.summary,
-            "ai_confidence": r.ai_confidence,
-        }
-        for r in rows
-    ]
+    return [_serialize_message(r) for r in rows]
+
+
+def _serialize_message(r: ProcessedMessage) -> dict:
+    return {
+        "id": r.id,
+        "message_id": r.message_id,
+        "sender": r.sender,
+        "subject": r.subject,
+        "received_at": r.received_at.isoformat() if r.received_at else None,
+        "processed_at": r.processed_at.isoformat() if r.processed_at else None,
+        "file_name": r.file_name,
+        "drive_file_id": r.drive_file_id,
+        "drive_link": r.drive_link,
+        "status": r.status,
+        "error_message": r.error_message,
+        "vendor": r.vendor,
+        "amount": r.amount,
+        "currency": r.currency,
+        "receipt_date": r.receipt_date,
+        "category": r.category,
+        "summary": r.summary,
+        "ai_confidence": r.ai_confidence,
+        "bezala_transaction_id": r.bezala_transaction_id,
+        "bezala_upload_status": r.bezala_upload_status,
+        "bezala_error_message": r.bezala_error_message,
+    }
+
+
+@app.post("/api/messages/{msg_id}/upload-to-bezala")
+def upload_message_to_bezala(
+    msg_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    if not row.drive_file_id or not row.file_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Meddelandet saknar Drive-fil — kan inte ladda upp till Bezala",
+        )
+
+    try:
+        drive = DriveClient()
+    except Exception as exc:
+        logger.exception("Drive-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        logger.exception("Bezala-klient kunde inte initialiseras")
+        row.bezala_upload_status = "failed"
+        row.bezala_error_message = str(exc)
+        db.commit()
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+
+    try:
+        pdf_bytes = drive.download_pdf(row.drive_file_id)
+        attachment = bezala.upload_attachment(row.file_name, pdf_bytes)
+        description = row.summary or row.subject
+        transaction = bezala.create_transaction(
+            attachment_ids=[attachment.attachment_id],
+            vendor=row.vendor,
+            amount=row.amount,
+            currency=row.currency,
+            date=row.receipt_date,
+            category=row.category,
+            description=description,
+        )
+        row.bezala_transaction_id = transaction.transaction_id
+        row.bezala_upload_status = "success"
+        row.bezala_error_message = None
+        db.commit()
+        logger.info(
+            "Manuell Bezala-upload klar: msg_id=%s transaction_id=%s",
+            msg_id, transaction.transaction_id,
+        )
+        return _serialize_message(row)
+    except BezalaError as exc:
+        logger.exception("Manuell Bezala-upload misslyckades för msg_id=%s", msg_id)
+        row.bezala_upload_status = "failed"
+        row.bezala_error_message = str(exc)
+        db.commit()
+        raise HTTPException(
+            status_code=502, detail=f"Bezala-upload misslyckades: {exc}"
+        ) from exc
+    finally:
+        bezala.close()
 
 
 @app.get("/api/runs")

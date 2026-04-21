@@ -23,6 +23,7 @@ export const api = {
   runs: (limit = 20) => req(`/api/runs?limit=${limit}`),
   scan: () => req('/api/scan', { method: 'POST' }),
   deleteErrors: () => req('/api/messages/errors', { method: 'DELETE' }),
+  uploadToBezala: (id) => req(`/api/messages/${id}/upload-to-bezala`, { method: 'POST' }),
   getSettings: () => req('/api/settings'),
   updateSettings: (payload) => req('/api/settings', {
     method: 'PUT',

@@ -87,6 +87,9 @@ class DriveClient:
             name=created.get("name", filename),
         )
 
+    def download_pdf(self, file_id: str) -> bytes:
+        return self._service.files().get_media(fileId=file_id).execute()
+
     def filename_exists(self, filename: str) -> bool:
         safe = filename.replace("'", "\\'")
         query = (

@@ -23,6 +23,7 @@ from sqlalchemy.exc import IntegrityError
 from app.db import session_scope
 from app.models import ProcessedMessage, SavedFile, ScanRun
 from app.services.ai_namer import FileNamer
+from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.drive_client import DriveClient
 from app.services.gmail_client import DONE_LABEL, GmailClient, GmailMessage
 from app.services.pdf_validator import looks_like_pdf
@@ -81,6 +82,8 @@ def run_scan(max_results: int = 50) -> ScanResult:
         gmail_query = build_gmail_query(app_settings, done_label=DONE_LABEL)
         excluded_subjects = list(app_settings.exclude_subjects or [])
         ai_enabled = bool(app_settings.ai_naming_enabled)
+        auto_upload = bool(app_settings.auto_upload_enabled)
+        confidence_threshold = int(app_settings.confidence_threshold or 0)
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
@@ -108,6 +111,17 @@ def run_scan(max_results: int = 50) -> ScanResult:
             "ai_naming_enabled=true men ANTHROPIC_API_KEY saknas — faller tillbaka på heuristisk namngivning."
         )
 
+    bezala: BezalaClient | None = None
+    if auto_upload:
+        try:
+            bezala = BezalaClient()
+            logger.info(
+                "Bezala auto-upload aktivt (confidence_threshold=%d).",
+                confidence_threshold,
+            )
+        except BezalaError as exc:
+            logger.warning("Bezala-klienten kunde inte initialiseras: %s", exc)
+
     try:
         message_ids = gmail.list_candidate_message_ids(
             query=gmail_query, max_results=max_results
@@ -128,9 +142,11 @@ def run_scan(max_results: int = 50) -> ScanResult:
     for mid in message_ids:
         try:
             _process_one_message(
-                mid, gmail, drive, namer, analyzer, result,
+                mid, gmail, drive, namer, analyzer, bezala, result,
                 excluded_subjects=excluded_subjects,
                 use_ai=use_ai,
+                auto_upload=auto_upload,
+                confidence_threshold=confidence_threshold,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fel under bearbetning av %s: %s", mid, exc)
@@ -138,8 +154,56 @@ def run_scan(max_results: int = 50) -> ScanResult:
             result.notes.append(f"{mid}: {exc}")
             _log_error(mid, str(exc))
 
+    if bezala is not None:
+        bezala.close()
+
     _finalize_run(run_id, result, status="ok")
     return result
+
+
+def _attempt_bezala_upload(
+    bezala: BezalaClient | None,
+    analysis: ReceiptAnalysis | None,
+    msg: GmailMessage,
+    pdf_bytes: bytes,
+    filename: str,
+    *,
+    auto_upload: bool,
+    confidence_threshold: int,
+) -> tuple[str, str | None, str | None]:
+    """Försök ladda upp till Bezala. Returnerar (status, transaction_id, error).
+
+    Status: 'success' | 'failed' | 'pending' | 'skipped'.
+    """
+    if not auto_upload:
+        return "skipped", None, None
+    if analysis is None:
+        # Ingen AI-data = ingen grund för auto-upload
+        return "skipped", None, None
+    if bezala is None:
+        return "failed", None, "Bezala-klient kunde inte initialiseras"
+    if analysis.confidence < confidence_threshold:
+        logger.info(
+            "Bezala: confidence %d < tröskel %d — väntar på manuell upload (%s)",
+            analysis.confidence, confidence_threshold, filename,
+        )
+        return "pending", None, None
+
+    try:
+        attachment = bezala.upload_attachment(filename, pdf_bytes)
+        transaction = bezala.create_transaction(
+            attachment_ids=[attachment.attachment_id],
+            vendor=analysis.vendor,
+            amount=analysis.amount,
+            currency=analysis.currency,
+            date=analysis.date,
+            category=analysis.category,
+            description=analysis.summary or msg.subject,
+        )
+        return "success", transaction.transaction_id, None
+    except BezalaError as exc:
+        logger.exception("Bezala-upload misslyckades för %s", filename)
+        return "failed", None, str(exc)
 
 
 def _process_one_message(
@@ -148,10 +212,13 @@ def _process_one_message(
     drive: DriveClient,
     namer: FileNamer,
     analyzer: ReceiptAnalyzer,
+    bezala: BezalaClient | None,
     result: ScanResult,
     *,
     excluded_subjects: list[str] | None = None,
     use_ai: bool = False,
+    auto_upload: bool = False,
+    confidence_threshold: int = 0,
 ) -> None:
     with session_scope() as db:
         if _message_already_processed(db, message_id):
@@ -243,6 +310,12 @@ def _process_one_message(
 
         upload = drive.upload_pdf(new_name, att.data)
 
+        bezala_status, bezala_txn_id, bezala_err = _attempt_bezala_upload(
+            bezala, analysis, msg, att.data, new_name,
+            auto_upload=auto_upload,
+            confidence_threshold=confidence_threshold,
+        )
+
         try:
             with session_scope() as db:
                 db.add(
@@ -263,6 +336,9 @@ def _process_one_message(
                         category=analysis.category if analysis else None,
                         summary=analysis.summary if analysis else None,
                         ai_confidence=analysis.confidence if analysis else None,
+                        bezala_transaction_id=bezala_txn_id,
+                        bezala_upload_status=bezala_status,
+                        bezala_error_message=bezala_err,
                     )
                 )
                 db.add(

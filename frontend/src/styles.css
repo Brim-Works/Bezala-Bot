@@ -128,6 +128,14 @@ button:disabled { opacity: 0.5; cursor: not-allowed; }
 .status-saved { background: rgba(52, 211, 153, 0.2); color: var(--ok); }
 .status-error { background: rgba(248, 113, 113, 0.2); color: var(--err); }
 .status-skipped { background: rgba(148, 163, 184, 0.2); color: var(--muted); }
+.bezala-pending { background: rgba(251, 191, 36, 0.2); color: var(--warn); }
+
+.inline-btn {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  background: var(--surface-2);
+  color: var(--text);
+}
 
 .section-header {
   display: flex;
