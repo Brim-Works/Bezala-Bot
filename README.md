@@ -70,48 +70,58 @@ cd frontend && npm install && npm run dev
 Hälsokoll: `curl http://localhost:8000/health`
 Dashboard: `http://localhost:5173`
 
-## Engångssetup — Google OAuth (Gmail + Drive)
+## Engångssetup — Google OAuth (två konton)
 
-Både Gmail- och Drive-integrationen använder samma OAuth-credentials. Drive
-autentiseras som ditt personliga konto (inte en service account) eftersom
-service accounts saknar storage quota i personligt Drive.
+Gmail-scanning körs mot ett **Visma-konto** medan Drive-uppladdning sker mot
+ett **privat Gmail-konto**. Anledningen: Visma Workspace blockerar extern
+delning av Drive-mappar till tredje-parts OAuth-klienter, så mappen där
+kvitton sparas måste ligga i ett privat Drive.
 
-Refresh-tokenen måste ha godkänt alla fyra scopes nedan:
+Samma OAuth-klient (CLIENT_ID/SECRET) används i båda fallen — bara två olika
+användare godkänner. Du får **två separata refresh-tokens**:
 
-- `https://www.googleapis.com/auth/gmail.modify`
-- `https://www.googleapis.com/auth/gmail.readonly`
-- `https://www.googleapis.com/auth/gmail.labels`
-- `https://www.googleapis.com/auth/drive.file`
+| Token | Konto | Scopes |
+| --- | --- | --- |
+| `GMAIL_REFRESH_TOKEN` | Visma-kontot | `gmail.modify`, `gmail.readonly`, `gmail.labels` |
+| `DRIVE_REFRESH_TOKEN` | Privat Gmail | `drive.file`, `drive.readonly` |
 
-`drive.file` ger appen access endast till filer den själv skapar — inte din
-hela Drive.
+`drive.file` ger appen access endast till filer den själv skapar. `drive.readonly`
+läggs till så att dubblettkontrollen kan se befintliga filer i mappen även om
+de inte laddats upp av appen.
 
-1. Skapa projekt i [Google Cloud Console](https://console.cloud.google.com/).
+1. Skapa projekt i [Google Cloud Console](https://console.cloud.google.com/)
+   (gör detta i det privata Google-kontot — där Drive-mappen ligger).
 2. Aktivera **Gmail API** och **Google Drive API**.
 3. Skapa OAuth-credentials av typen **Desktop app**.
 4. Ladda ner JSON-filen och spara som `gmail_credentials.json` i projektroten.
-5. Kör:
+5. Generera Gmail-tokenen (Visma-kontot):
 
    ```bash
-   python scripts/generate_token.py
+   python scripts/generate_token.py --target gmail
    ```
 
-6. Logga in i webbläsaren som öppnas, godkänn alla scopes. Skriptet skriver ut:
+   Logga in med **Visma-kontot** i webbläsaren som öppnas. Skriptet skriver ut
+   `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET` och `GMAIL_REFRESH_TOKEN`.
 
-   ```
-   GMAIL_CLIENT_ID=...
-   GMAIL_CLIENT_SECRET=...
-   GMAIL_REFRESH_TOKEN=...
+6. Generera Drive-tokenen (privata kontot):
+
+   ```bash
+   python scripts/generate_token.py --target drive
    ```
 
-7. Klistra in i Railway → **Variables**.
-8. Sätt `GOOGLE_DRIVE_FOLDER_ID` till ID:t på Drive-mappen där kvitton ska
-   sparas (syns i URL:en när du öppnar mappen).
+   Logga in med **privata Gmail-kontot** (samma som äger Drive-mappen).
+   Skriptet skriver ut `DRIVE_REFRESH_TOKEN`.
+
+7. Klistra in alla fyra värden i Railway → **Variables**
+   (`GMAIL_CLIENT_ID` och `GMAIL_CLIENT_SECRET` är samma för båda).
+8. Sätt `GOOGLE_DRIVE_FOLDER_ID` till ID:t på Drive-mappen i det privata
+   kontot (syns i URL:en när du öppnar mappen).
 
 > `gmail_credentials.json` finns i `.gitignore` och checkas aldrig in.
 
-> Om du redan har en refresh-token utan `drive.file` / `gmail.labels` —
-> kör skriptet igen för att få en ny token med alla scopes.
+> OAuth-klienten i Google Cloud Console måste ha både Visma- och privatkontots
+> e-post listade under **OAuth consent screen → Test users** (om appen är i
+> testläge).
 
 ## Railway — miljövariabler
 
@@ -121,9 +131,10 @@ hela Drive.
 | `BEZALA_USERNAME` | Bezala-användarnamn |
 | `BEZALA_PASSWORD` | Bezala-lösenord |
 | `BEZALA_API_URL` | Bezala API (default `https://api.bezala.com`) |
-| `GMAIL_CLIENT_ID` | Från Google Cloud OAuth (används för både Gmail & Drive) |
-| `GMAIL_CLIENT_SECRET` | Från Google Cloud OAuth |
-| `GMAIL_REFRESH_TOKEN` | Från `scripts/generate_token.py` — måste ha `drive.file`-scope |
+| `GMAIL_CLIENT_ID` | OAuth-klient (samma för Gmail + Drive) |
+| `GMAIL_CLIENT_SECRET` | OAuth-klient (samma för Gmail + Drive) |
+| `GMAIL_REFRESH_TOKEN` | Visma-kontots token — `python scripts/generate_token.py --target gmail` |
+| `DRIVE_REFRESH_TOKEN` | Privata kontots token — `python scripts/generate_token.py --target drive` |
 | `GOOGLE_DRIVE_FOLDER_ID` | Drive-mappens ID (default: `1FoK-nmaDLgIUnMUImECjxXBO9XqLgFZb`) |
 | `DATABASE_URL` | **Sätts automatiskt av Railway PostgreSQL** |
 | `SCAN_INTERVAL_MINUTES` | Default 60 |
@@ -188,11 +199,15 @@ Vid race conditions fångar `UniqueConstraint` dubletter på DB-nivå.
 
 ## Felsökning
 
-- **`Gmail OAuth saknar konfiguration`** → saknar `GMAIL_CLIENT_ID/SECRET/REFRESH_TOKEN`.
-- **`Drive OAuth saknar konfiguration`** → samma som ovan; refresh-tokenen måste
-  dessutom ha godkänt scopet `drive.file`. Regenerera med `scripts/generate_token.py`.
-- **`insufficientScopes` från Drive-API** → refresh-tokenen har inte `drive.file`.
-  Kör `scripts/generate_token.py` igen och godkänn alla scopes i webbläsaren.
+- **`Gmail OAuth saknar konfiguration`** → saknar `GMAIL_CLIENT_ID/SECRET` eller `GMAIL_REFRESH_TOKEN`.
+- **`Drive OAuth saknar konfiguration`** → saknar `DRIVE_REFRESH_TOKEN`, eller
+  tokenen är genererad med fel konto / utan scopen `drive.file` + `drive.readonly`.
+  Regenerera med `python scripts/generate_token.py --target drive`.
+- **`insufficientScopes` från Drive-API** → refresh-tokenen saknar `drive.file`
+  eller `drive.readonly`. Generera om och godkänn alla scopes i webbläsaren.
+- **`storageQuotaExceeded` vid Drive-upload** → Drive-tokenen är skapad med ett
+  Visma/Workspace-konto som saknar kvot eller blockerar extern delning. Generera
+  Drive-tokenen mot ditt privata Gmail istället.
 - **Inga mail hittas** → testa query manuellt i Gmail:
   `has:attachment -category:promotions -label:"Bezala-Klar"`.
 - **Claude-namngivning saknas** → `ANTHROPIC_API_KEY` saknas eller felaktig;

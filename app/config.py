@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     gmail_client_id: str = Field(default="", alias="GMAIL_CLIENT_ID")
     gmail_client_secret: str = Field(default="", alias="GMAIL_CLIENT_SECRET")
     gmail_refresh_token: str = Field(default="", alias="GMAIL_REFRESH_TOKEN")
+    drive_refresh_token: str = Field(default="", alias="DRIVE_REFRESH_TOKEN")
 
     google_drive_folder_id: str = Field(
         default="1FoK-nmaDLgIUnMUImECjxXBO9XqLgFZb",

@@ -1,9 +1,13 @@
-"""Google Drive-klient via OAuth2 (samma credentials som Gmail).
+"""Google Drive-klient via OAuth2.
 
-Använder GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET / GMAIL_REFRESH_TOKEN och
-scopet drive.file (begränsad access — bara filer som appen själv skapar).
-Service accounts använder vi inte längre eftersom de saknar storage quota
-i personligt Drive.
+Drive autentiseras med ett SEPARAT konto från Gmail — Visma Workspace blockerar
+extern delning av Drive-mappar till tredje-parts OAuth-klienter, så Drive-
+uppladdningarna går mot ett privat Gmail-konto där OAuth-klienten är skapad
+och där Drive-mappen ligger.
+
+OAuth-klienten är dock samma (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET) —
+bara användaren som godkänner är en annan. Drive-kontots refresh-token
+lagras som DRIVE_REFRESH_TOKEN.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
+    "https://www.googleapis.com/auth/drive.readonly",
 ]
 
 
@@ -39,17 +44,18 @@ class DriveClient:
         if not (
             settings.gmail_client_id
             and settings.gmail_client_secret
-            and settings.gmail_refresh_token
+            and settings.drive_refresh_token
         ):
             raise RuntimeError(
                 "Drive OAuth saknar konfiguration. Sätt GMAIL_CLIENT_ID, "
-                "GMAIL_CLIENT_SECRET och GMAIL_REFRESH_TOKEN (refresh-tokenen "
-                "måste ha godkänt scopet drive.file)."
+                "GMAIL_CLIENT_SECRET och DRIVE_REFRESH_TOKEN (refresh-tokenen "
+                "måste vara skapad från Drive-kontot och ha godkänt scopen "
+                "drive.file + drive.readonly)."
             )
 
         creds = Credentials(
             token=None,
-            refresh_token=settings.gmail_refresh_token,
+            refresh_token=settings.drive_refresh_token,
             client_id=settings.gmail_client_id,
             client_secret=settings.gmail_client_secret,
             token_uri="https://oauth2.googleapis.com/token",
