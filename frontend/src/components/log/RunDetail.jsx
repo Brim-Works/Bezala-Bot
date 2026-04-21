@@ -17,7 +17,7 @@ function pillLabel(t, run) {
   return t.log.pill.ok;
 }
 
-export default function RunDetail({ run, messages }) {
+export default function RunDetail({ run, messages, onOpenMessage }) {
   const { t, lang } = useI18n();
   if (!run) {
     return (
@@ -51,7 +51,7 @@ export default function RunDetail({ run, messages }) {
 
       <PipelineTimeline run={run} />
 
-      <RunMessages messages={messages} />
+      <RunMessages messages={messages} onOpenMessage={onOpenMessage} />
     </div>
   );
 }

@@ -3,13 +3,14 @@ import { useI18n } from '../i18n/useI18n.jsx';
 import { api, ApiError } from '../api/client.js';
 import { withStatuses } from '../api/adapters.js';
 import { useApiData } from '../hooks/useApiData.js';
+import { useToast } from '../lib/toast.jsx';
+import { useDrawer } from '../drawer/DrawerProvider.jsx';
 
 import ReviewHeader from '../components/review/ReviewHeader.jsx';
 import ReviewQueue from '../components/review/ReviewQueue.jsx';
 import PdfPreview from '../components/review/PdfPreview.jsx';
 import ReviewForm from '../components/review/ReviewForm.jsx';
 import EmptyReview from '../components/review/EmptyReview.jsx';
-import Toast from '../components/Toast.jsx';
 
 function sortOldestFirst(a, b) {
   const ta = new Date(a.processed_at || 0).getTime();
@@ -19,9 +20,10 @@ function sortOldestFirst(a, b) {
 
 export default function Review() {
   const { t } = useI18n();
+  const toast = useToast();
+  const { closeIfFor } = useDrawer();
   const [activeId, setActiveId] = useState(null);
   const [uploadingId, setUploadingId] = useState(null);
-  const [toast, setToast] = useState(null);
   // Optimistic-borttagna id:n — raden tas bort från kön direkt vid approve;
   // återställs om servern returnerar fel.
   const [optimisticallyRemoved, setOptimisticallyRemoved] = useState(
@@ -83,22 +85,22 @@ export default function Review() {
       });
       try {
         await api.uploadToBezala(msg.id);
-        setToast({ kind: 'ok', message: t.review.toast.uploaded });
-        // Refetcha så optimistic-setet kan släppas när servern bekräftar.
+        toast.show({ kind: 'ok', message: t.review.toast.uploaded });
+        // Stäng drawern om den var öppen för den godkända raden.
+        closeIfFor(msg.id);
         refetch()
           .then(() => {
             setOptimisticallyRemoved(new Set());
           })
           .catch(() => {});
       } catch (err) {
-        // Lägg tillbaka raden i kön + visa felet.
         setOptimisticallyRemoved((s) => {
           const next = new Set(s);
           next.delete(msg.id);
           return next;
         });
         const detail = err instanceof ApiError ? err.message : String(err);
-        setToast({
+        toast.show({
           kind: 'err',
           message: `${t.review.toast.uploadFailed}: ${detail}`,
         });
@@ -106,20 +108,19 @@ export default function Review() {
         setUploadingId(null);
       }
     },
-    [refetch, t.review.toast.uploadFailed, t.review.toast.uploaded, uploadingId],
+    [closeIfFor, refetch, t.review.toast.uploadFailed, t.review.toast.uploaded, toast, uploadingId],
   );
 
   const onReject = useCallback(
     (msg) => {
-      // Ingen backend-endpoint för reject — visa toast + gå till nästa rad.
-      setToast({ kind: 'warn', message: t.review.toast.rejectUnsupported });
+      toast.show({ kind: 'warn', message: t.review.toast.rejectUnsupported });
       if (currentIndex < queue.length - 1) {
         setActiveId(queue[currentIndex + 1].id);
       } else if (queue.length > 1) {
         setActiveId(queue[0].id);
       }
     },
-    [currentIndex, queue, t.review.toast.rejectUnsupported],
+    [currentIndex, queue, t.review.toast.rejectUnsupported, toast],
   );
 
   const onSkip = useCallback(
@@ -133,12 +134,7 @@ export default function Review() {
   );
 
   if (queue.length === 0) {
-    return (
-      <>
-        <EmptyReview />
-        <Toast toast={toast} onDismiss={() => setToast(null)} />
-      </>
-    );
+    return <EmptyReview />;
   }
 
   return (
@@ -164,8 +160,6 @@ export default function Review() {
           isUploading={uploadingId === active?.id}
         />
       </div>
-
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </>
   );
 }

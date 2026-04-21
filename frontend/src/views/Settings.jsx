@@ -7,7 +7,7 @@ import AutomationSection from '../components/settings/AutomationSection.jsx';
 import FilterSection from '../components/settings/FilterSection.jsx';
 import ScanRulesSection from '../components/settings/ScanRulesSection.jsx';
 import SaveBar from '../components/settings/SaveBar.jsx';
-import Toast from '../components/Toast.jsx';
+import { useToast } from '../lib/toast.jsx';
 
 const FIELDS_IN_PAYLOAD = [
   'scan_interval_minutes',
@@ -50,12 +50,12 @@ function deepEqualSettings(a, b) {
 
 export default function Settings() {
   const { t } = useI18n();
+  const toast = useToast();
   const loader = useCallback(() => api.settings(), []);
   const { data: server, isLoading, refetch } = useApiData(loader, []);
 
   const [form, setForm] = useState(null);
   const [saving, setSaving] = useState(false);
-  const [toast, setToast] = useState(null);
 
   useEffect(() => {
     if (server && !form) setForm(server);
@@ -80,17 +80,17 @@ export default function Settings() {
     try {
       const updated = await api.updateSettings(pickPayload(form));
       setForm(updated);
-      setToast({ kind: 'ok', message: t.settings.toast.saved });
+      toast.show({ kind: 'ok', message: t.settings.toast.saved });
       refetch().catch(() => {});
     } catch (err) {
-      setToast({
+      toast.show({
         kind: 'err',
         message: `${t.settings.toast.saveFailed}: ${err.message || err}`,
       });
     } finally {
       setSaving(false);
     }
-  }, [form, refetch, t.settings.toast.saveFailed, t.settings.toast.saved]);
+  }, [form, refetch, t.settings.toast.saveFailed, t.settings.toast.saved, toast]);
 
   if (isLoading || !form) {
     return (
@@ -108,7 +108,6 @@ export default function Settings() {
         <ScanRulesSection form={form} update={update} />
       </div>
       <SaveBar dirty={dirty} saving={saving} onSave={onSave} onReset={onReset} />
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </>
   );
 }

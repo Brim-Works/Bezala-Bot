@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react';
 import { I18nProvider, useI18n } from './i18n/useI18n.jsx';
 import { ThemeProvider } from './theme/ThemeProvider.jsx';
 import { RouterProvider, useRouter } from './router/useRouter.jsx';
+import { ToastProvider } from './lib/toast.jsx';
+import { DrawerProvider } from './drawer/DrawerProvider.jsx';
+import PipelineDrawer from './drawer/PipelineDrawer.jsx';
 import AppShell from './components/AppShell.jsx';
+import ViewErrorBoundary from './components/ViewErrorBoundary.jsx';
 import Dashboard from './views/Dashboard.jsx';
 import Review from './views/Review.jsx';
 import Log from './views/Log.jsx';
@@ -16,13 +20,29 @@ function ViewForRoute() {
   const view = viewForPath(path);
   switch (view) {
     case 'dashboard':
-      return <Dashboard />;
+      return (
+        <ViewErrorBoundary viewKey="dashboard">
+          <Dashboard />
+        </ViewErrorBoundary>
+      );
     case 'review':
-      return <Review />;
+      return (
+        <ViewErrorBoundary viewKey="review">
+          <Review />
+        </ViewErrorBoundary>
+      );
     case 'log':
-      return <Log />;
+      return (
+        <ViewErrorBoundary viewKey="log">
+          <Log />
+        </ViewErrorBoundary>
+      );
     case 'settings':
-      return <Settings />;
+      return (
+        <ViewErrorBoundary viewKey="settings">
+          <Settings />
+        </ViewErrorBoundary>
+      );
     default:
       return <NotFound />;
   }
@@ -38,7 +58,7 @@ function LoadingScreen() {
 }
 
 function AuthedApp() {
-  const [status, setStatus] = useState('checking'); // checking | ready
+  const [status, setStatus] = useState('checking');
 
   useEffect(() => {
     let cancelled = false;
@@ -54,7 +74,6 @@ function AuthedApp() {
       })
       .catch((err) => {
         if (err instanceof ApiError && err.status === 401) {
-          // client.js har redan redirectat
           return;
         }
         if (!cancelled) setStatus('ready');
@@ -71,6 +90,7 @@ function AuthedApp() {
   return (
     <AppShell>
       <ViewForRoute />
+      <PipelineDrawer />
     </AppShell>
   );
 }
@@ -80,7 +100,11 @@ export default function App() {
     <ThemeProvider>
       <I18nProvider>
         <RouterProvider>
-          <AuthedApp />
+          <DrawerProvider>
+            <ToastProvider>
+              <AuthedApp />
+            </ToastProvider>
+          </DrawerProvider>
         </RouterProvider>
       </I18nProvider>
     </ThemeProvider>

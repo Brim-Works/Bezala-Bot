@@ -1,14 +1,17 @@
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { api } from '../api/client.js';
 import { withStatuses } from '../api/adapters.js';
 import { useApiData } from '../hooks/useApiData.js';
 import { isWithinDays } from '../lib/format.js';
+import { useToast } from '../lib/toast.jsx';
+import { useDrawer } from '../drawer/DrawerProvider.jsx';
 
 import KpiStrip from '../components/log/KpiStrip.jsx';
 import RunList from '../components/log/RunList.jsx';
 import RunDetail from '../components/log/RunDetail.jsx';
-import Toast from '../components/Toast.jsx';
+
+const POLL_INTERVAL_MS = 60_000;
 
 function messagesForRun(run, allMessages) {
   if (!run || !run.started_at) return [];
@@ -26,9 +29,10 @@ function messagesForRun(run, allMessages) {
 
 export default function Log() {
   const { t } = useI18n();
+  const toast = useToast();
+  const { openDrawer } = useDrawer();
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [clearingErrors, setClearingErrors] = useState(false);
-  const [toast, setToast] = useState(null);
 
   const loader = useCallback(async () => {
     const [runs, rawMessages] = await Promise.all([
@@ -44,6 +48,13 @@ export default function Log() {
   const { data, refetch } = useApiData(loader, []);
   const runs = data?.runs || [];
   const messages = data?.messages || [];
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      refetch().catch(() => {});
+    }, POLL_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [refetch]);
 
   const selectedRun = useMemo(() => {
     if (selectedRunId != null) {
@@ -94,20 +105,28 @@ export default function Log() {
     try {
       const result = await api.deleteErrors();
       const count = result?.deleted ?? 0;
-      setToast({
+      toast.show({
         kind: 'ok',
         message: `${t.log.toast.cleared} (${count})`,
       });
       refetch().catch(() => {});
     } catch (err) {
-      setToast({
+      toast.show({
         kind: 'err',
         message: `${t.log.toast.clearFailed}: ${err.message || err}`,
       });
     } finally {
       setClearingErrors(false);
     }
-  }, [refetch, t.log.confirmClear, t.log.toast.cleared, t.log.toast.clearFailed]);
+  }, [refetch, t.log.confirmClear, t.log.toast.cleared, t.log.toast.clearFailed, toast]);
+
+  const onOpenMessage = useCallback(
+    (id) => {
+      const row = messages.find((m) => m.id === id);
+      if (row) openDrawer(row, 'gmail');
+    },
+    [messages, openDrawer],
+  );
 
   return (
     <>
@@ -127,10 +146,12 @@ export default function Log() {
           onClearErrors={clearErrors}
           clearingErrors={clearingErrors}
         />
-        <RunDetail run={selectedRun} messages={runMessages} />
+        <RunDetail
+          run={selectedRun}
+          messages={runMessages}
+          onOpenMessage={onOpenMessage}
+        />
       </div>
-
-      <Toast toast={toast} onDismiss={() => setToast(null)} />
     </>
   );
 }
