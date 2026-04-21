@@ -4,6 +4,7 @@ import { api, ApiError } from '../api/client.js';
 import { withStatuses } from '../api/adapters.js';
 import { useApiData } from '../hooks/useApiData.js';
 import { useToast } from '../lib/toast.jsx';
+import { parseBackendDate } from '../lib/format.js';
 import { useDrawer } from '../drawer/DrawerProvider.jsx';
 
 import ReviewHeader from '../components/review/ReviewHeader.jsx';
@@ -16,8 +17,8 @@ import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
 import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 
 function sortOldestFirst(a, b) {
-  const ta = new Date(a.processed_at || 0).getTime();
-  const tb = new Date(b.processed_at || 0).getTime();
+  const ta = parseBackendDate(a.processed_at)?.getTime() ?? 0;
+  const tb = parseBackendDate(b.processed_at)?.getTime() ?? 0;
   return ta - tb;
 }
 

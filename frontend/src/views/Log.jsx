@@ -3,7 +3,7 @@ import { useI18n } from '../i18n/useI18n.jsx';
 import { api } from '../api/client.js';
 import { withStatuses } from '../api/adapters.js';
 import { useApiData } from '../hooks/useApiData.js';
-import { isWithinDays } from '../lib/format.js';
+import { isWithinDays, parseBackendDate } from '../lib/format.js';
 import { useToast } from '../lib/toast.jsx';
 import { useDrawer } from '../drawer/DrawerProvider.jsx';
 
@@ -15,14 +15,15 @@ const POLL_INTERVAL_MS = 60_000;
 
 function messagesForRun(run, allMessages) {
   if (!run || !run.started_at) return [];
-  const start = new Date(run.started_at).getTime();
-  const end = run.finished_at
-    ? new Date(run.finished_at).getTime()
-    : Date.now();
+  const startDate = parseBackendDate(run.started_at);
+  if (!startDate) return [];
+  const start = startDate.getTime();
+  const endDate = run.finished_at ? parseBackendDate(run.finished_at) : null;
+  const end = endDate ? endDate.getTime() : Date.now();
   return allMessages.filter((m) => {
-    if (!m.processed_at) return false;
-    const t = new Date(m.processed_at).getTime();
-    if (Number.isNaN(t)) return false;
+    const mDate = parseBackendDate(m.processed_at);
+    if (!mDate) return false;
+    const t = mDate.getTime();
     return t >= start && t <= end;
   });
 }

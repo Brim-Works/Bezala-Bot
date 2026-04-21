@@ -244,6 +244,9 @@ export default function Trash() {
                     <BulkCheckbox
                       checked={selection.has(m.id)}
                       onToggle={() => selection.toggle(m.id)}
+                      onRangeSelect={() =>
+                        selection.selectRange(rows.map((r) => r.id), m.id)
+                      }
                       ariaLabel={`${t.trash.cols.select} ${m.vendor || m.subject || m.id}`}
                     />
                   </td>
