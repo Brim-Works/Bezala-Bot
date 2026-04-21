@@ -78,6 +78,13 @@ export default {
       previewFailed: 'Kunde inte ladda förhandsgranskningen — öppna i Drive istället.',
       noFile: 'Ingen fil sparad — filen hamnade aldrig i Drive.',
       openInDrive: 'Öppna i Drive',
+      downloadTitle: 'Kvittot ligger bakom en länk',
+      downloadBody:
+        'Denna leverantör skickar inte PDF som bilaga. Klicka på länken för att förhandsgranska, eller låt Bezala Bot hämta och spara PDF:en automatiskt.',
+      downloadAction: 'Hämta PDF och spara',
+      downloading: 'Hämtar…',
+      downloadSuccess: 'PDF hämtad och sparad till Drive',
+      downloadFailed: 'Kunde inte hämta PDF',
     },
     bezala: {
       pendingTitle: 'Väntar på granskning',
@@ -139,6 +146,7 @@ export default {
     saved: 'Sparad',
     error: 'Fel',
     skipped: 'Hoppad',
+    needs_download: 'Ladda ned',
   },
   bezalaStatus: {
     transferred: 'Uppladdad',
@@ -158,6 +166,9 @@ export default {
   toast: {
     scanStarted: 'Scanning startad — uppdaterar listan…',
     scanFailed: 'Scanning misslyckades',
+  },
+  dashboard: {
+    downloadRow: 'Hämta PDF via länk',
   },
   common: {
     loading: 'Laddar…',
@@ -194,6 +205,9 @@ export default {
       confidenceHint:
         'Kvitton med lägre konfidens än detta väntar på manuell granskning.',
       confidenceDisabled: 'Aktivera auto-överföring för att använda tröskeln.',
+      minConfidence: 'Minimumkonfidens för att spara',
+      minConfidenceHint:
+        'Mail där AI:n är mindre säker än detta sparas inte i databasen och visas inte i Dashboard.',
     },
     filters: {
       title: 'Gmail-filter',
@@ -221,6 +235,18 @@ export default {
       excludeSubjectsHint:
         'Substring-match i ämnesraden. Exempel: "Accepted", "Kickoff".',
       excludeSubjectsPlaceholder: 'Kickoff',
+    },
+    builtinSenders: {
+      title: 'Inbyggda avsändare (alltid aktiva)',
+      hint: 'Dessa adresser scannas alltid. Kontakta support för att ändra.',
+    },
+    linkFetch: {
+      title: 'Leverantörer med länk-baserade kvitton',
+      lead:
+        'Mail från dessa avsändare saknar PDF-bilaga. Bezala Bot sparar dem och låter dig hämta PDF manuellt med ett klick.',
+      label: 'Avsändare / domäner som kräver länk-fetch',
+      placeholder: 'noreply@arlandaexpress.se',
+      hint: 'Bezala Bot ignorerar bilagor från dessa och letar efter en kvitto-länk i mail-bodyn istället.',
     },
     toast: {
       saved: 'Inställningar sparade',

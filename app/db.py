@@ -37,11 +37,16 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     # FAS 5.1 — soft-delete
     "deleted_at": "TIMESTAMP WITH TIME ZONE",
     "delete_reason": "VARCHAR(32)",
+    # FAS 5.1+ — länk-baserad PDF-hantering
+    "pending_link": "VARCHAR(2048)",
 }
 
 _APP_SETTINGS_ADDITIONS = {
     # FAS 5.1 — auto-purge för papperskorg. 0 = aldrig (default).
     "trash_auto_purge_days": "INTEGER NOT NULL DEFAULT 0",
+    # FAS 5.1+ — AI-konfidens + länk-fetch
+    "ai_min_confidence_to_save": "INTEGER NOT NULL DEFAULT 40",
+    "link_fetch_senders": "JSON NOT NULL DEFAULT '[]'",
 }
 
 _INDEXES = [

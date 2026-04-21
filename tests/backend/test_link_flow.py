@@ -1,0 +1,635 @@
+"""Backend-tester för link-fetch-flöde + AI confidence-tröskel.
+
+Täcker:
+- extract_receipt_link keyword-match + fallback
+- fetch_pdf_from_link SSRF-skydd (localhost)
+- POST /api/messages/{id}/fetch-pdf lyckad/HTML/timeout
+- Pipeline ignorerar bilagor för link-fetch-avsändare
+- AI confidence under tröskel → sparas INTE
+
+Körs med:
+    python -m unittest tests.backend.test_link_flow
+"""
+
+import os
+import unittest
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
+
+os.environ.setdefault("APP_PASSWORD", "test-password")
+os.environ.setdefault("SESSION_SECRET", "test-secret")
+os.environ.setdefault("ANTHROPIC_API_KEY", "")
+os.environ.setdefault("GMAIL_CLIENT_ID", "")
+os.environ.setdefault("GMAIL_CLIENT_SECRET", "")
+os.environ.setdefault("GMAIL_REFRESH_TOKEN", "")
+os.environ.setdefault("DRIVE_REFRESH_TOKEN", "")
+os.environ.setdefault("BEZALA_USERNAME", "")
+os.environ.setdefault("BEZALA_PASSWORD", "")
+os.environ.setdefault("SCAN_ENABLED", "false")
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+
+
+def _configure_memory_engine():
+    """SQLAlchemy memory-DB delas inte mellan connections per default.
+    Vi byter engine till en StaticPool så alla sessions ser samma DB."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app import db as db_module
+
+    db_module.engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    db_module.SessionLocal = sessionmaker(
+        bind=db_module.engine, autoflush=False, autocommit=False
+    )
+    return db_module
+
+
+# ============================================================
+# Rena unit-tester — ingen app/DB behövs
+# ============================================================
+
+
+class ExtractReceiptLinkTest(unittest.TestCase):
+    def test_finds_url_with_keyword(self):
+        from app.services.link_extractor import extract_receipt_link
+
+        body_text = (
+            "Tack för din resa! Hämta ditt kvitto här: "
+            "https://arlandaexpress.se/receipt/abc123?token=xyz\n"
+        )
+        url = extract_receipt_link(body_text, "")
+        self.assertIsNotNone(url)
+        self.assertIn("receipt", url)
+        self.assertIn("arlandaexpress.se", url)
+
+    def test_returns_none_when_no_url(self):
+        from app.services.link_extractor import extract_receipt_link
+
+        url = extract_receipt_link("Inget här.", "<p>Inga länkar</p>")
+        self.assertIsNone(url)
+
+    def test_falls_back_to_first_url_with_path(self):
+        """Om inget nyckelord matchar men det finns URL:er med path:
+        returnera första som fallback."""
+        from app.services.link_extractor import extract_receipt_link
+
+        # Inget keyword: ingen av URL:erna innehåller receipt/invoice/download/etc
+        body = "Besök https://arlandaexpress.se/ticket/42 för detaljer."
+        url = extract_receipt_link(body, "")
+        self.assertEqual(url, "https://arlandaexpress.se/ticket/42")
+
+
+class FetchPdfFromLinkTest(unittest.TestCase):
+    def test_rejects_localhost_ssrf(self):
+        from app.services.link_fetcher import fetch_pdf_from_link, LinkFetchError
+
+        with self.assertRaises(LinkFetchError) as ctx:
+            fetch_pdf_from_link("http://127.0.0.1/evil.pdf")
+        self.assertIn("blockerad", ctx.exception.message.lower())
+
+    def test_rejects_private_ip(self):
+        from app.services.link_fetcher import fetch_pdf_from_link, LinkFetchError
+
+        with self.assertRaises(LinkFetchError):
+            fetch_pdf_from_link("http://10.0.0.1/x.pdf")
+
+    def test_rejects_non_http_scheme(self):
+        from app.services.link_fetcher import fetch_pdf_from_link, LinkFetchError
+
+        with self.assertRaises(LinkFetchError):
+            fetch_pdf_from_link("file:///etc/passwd")
+
+    def test_rejects_non_pdf_response(self):
+        """Mocka httpx-klient som svarar med HTML → LinkFetchError."""
+        from app.services.link_fetcher import fetch_pdf_from_link, LinkFetchError
+
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "text/html; charset=utf-8"}
+        mock_resp.content = b"<html><body>Inte en PDF</body></html>"
+        mock_client.get.return_value = mock_resp
+
+        with self.assertRaises(LinkFetchError) as ctx:
+            fetch_pdf_from_link(
+                "https://example.com/receipt.pdf", client=mock_client
+            )
+        self.assertIn("pdf", ctx.exception.message.lower())
+
+    def test_accepts_valid_pdf(self):
+        from app.services.link_fetcher import fetch_pdf_from_link
+
+        pdf_bytes = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\nfake pdf content"
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.headers = {"content-type": "application/pdf"}
+        mock_resp.content = pdf_bytes
+        mock_client.get.return_value = mock_resp
+
+        result = fetch_pdf_from_link(
+            "https://example.com/ok.pdf", client=mock_client
+        )
+        self.assertEqual(result, pdf_bytes)
+
+
+# ============================================================
+# Integrations-tester — riktig FastAPI + SQLite
+# ============================================================
+
+
+class FetchPdfEndpointTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+
+        from app import main as app_module
+        from app.models import ProcessedMessage
+        from fastapi.testclient import TestClient
+        from app.db import Base
+        from app import models  # noqa: F401
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from app.services import (
+            trash_scheduler as ts_module,
+            settings_service as ss_module,
+        )
+        cls._patch_sessions(db_module, app_module, ts_module, ss_module)
+
+        cls.app_module = app_module
+        cls.SessionLocal = db_module.SessionLocal
+        cls.ProcessedMessage = ProcessedMessage
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[app_module.require_auth] = fake_require_auth
+        cls.client = TestClient(app_module.app)
+
+    @staticmethod
+    def _patch_sessions(db_module, app_module, ts_module, ss_module):
+        SessionLocal = db_module.SessionLocal
+        from contextlib import contextmanager
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        ts_module.session_scope = session_scope
+
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed_pending(self, link="https://example.com/ticket/xyz"):
+        with self.SessionLocal() as db:
+            row = self.ProcessedMessage(
+                message_id="gm-pending-1",
+                sender="noreply@arlandaexpress.se",
+                subject="Din biljett",
+                status="needs_manual_download",
+                pending_link=link,
+            )
+            db.add(row)
+            db.flush()
+            mid = row.id
+            db.commit()
+        return mid
+
+    def test_fetch_pdf_success_marks_row_saved(self):
+        """Monkeypatchar _fetch_pdf_helper + DriveClient + GmailClient.
+        Resultat: status='saved' + drive_file_id."""
+        mid = self._seed_pending()
+        pdf_bytes = b"%PDF-1.4\nfejk"
+
+        fake_drive = MagicMock()
+        fake_upload = MagicMock()
+        fake_upload.file_id = "drive-id-123"
+        fake_upload.web_view_link = "https://drive.google.com/file/d/drive-id-123"
+        fake_drive.upload_pdf.return_value = fake_upload
+
+        fake_gmail = MagicMock()
+
+        fake_analyzer = MagicMock()
+        fake_analyzer.enabled = False
+
+        with patch.object(self.app_module, "_fetch_pdf_helper", return_value=pdf_bytes), \
+             patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "GmailClient", return_value=fake_gmail), \
+             patch.object(self.app_module, "ReceiptAnalyzer", return_value=fake_analyzer):
+            resp = self.client.post(f"/api/messages/{mid}/fetch-pdf")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["status"], "saved")
+        self.assertEqual(body["drive_file_id"], "drive-id-123")
+        self.assertIsNone(body["pending_link"])
+        fake_drive.upload_pdf.assert_called_once()
+        fake_gmail.mark_done.assert_called_once()
+
+    def test_fetch_pdf_html_response_keeps_pending_link(self):
+        """LinkFetchError → 502, raden behåller status + pending_link."""
+        from app.services.link_fetcher import LinkFetchError
+
+        mid = self._seed_pending()
+
+        def raise_html(_url):
+            raise LinkFetchError("Länken gav text/html istället för PDF")
+
+        with patch.object(self.app_module, "_fetch_pdf_helper", side_effect=raise_html):
+            resp = self.client.post(f"/api/messages/{mid}/fetch-pdf")
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertIn("html", resp.json()["detail"].lower())
+
+        # Raden ska vara orörd
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(id=mid).first()
+            self.assertEqual(row.status, "needs_manual_download")
+            self.assertEqual(row.pending_link, "https://example.com/ticket/xyz")
+
+    def test_fetch_pdf_timeout_keeps_pending_link(self):
+        from app.services.link_fetcher import LinkFetchError
+
+        mid = self._seed_pending()
+
+        def raise_timeout(_url):
+            raise LinkFetchError("Timeout efter 15.0s")
+
+        with patch.object(self.app_module, "_fetch_pdf_helper", side_effect=raise_timeout):
+            resp = self.client.post(f"/api/messages/{mid}/fetch-pdf")
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertIn("timeout", resp.json()["detail"].lower())
+
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(id=mid).first()
+            self.assertEqual(row.status, "needs_manual_download")
+            self.assertIsNotNone(row.pending_link)
+
+    def test_fetch_pdf_rejects_row_without_pending_link(self):
+        """Rad utan pending_link → 400."""
+        with self.SessionLocal() as db:
+            row = self.ProcessedMessage(
+                message_id="gm-saved-1",
+                sender="a@b.com",
+                subject="Klar",
+                status="saved",
+            )
+            db.add(row)
+            db.flush()
+            mid = row.id
+            db.commit()
+
+        resp = self.client.post(f"/api/messages/{mid}/fetch-pdf")
+        self.assertEqual(resp.status_code, 400)
+
+
+class PipelineLinkFetchTest(unittest.TestCase):
+    """Verifiera att pipeline ignorerar bilagor för link-fetch-avsändare
+    och sparar raden som needs_manual_download."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app.services import pipeline as pipeline_module
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        pipeline_module.session_scope = session_scope
+
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = models.ProcessedMessage
+        cls.pipeline = pipeline_module
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def test_link_fetch_sender_with_attachment_ignores_attachment(self):
+        """Mail från link_fetch_senders med bilaga + kvitto-länk i body:
+        bilagan ignoreras, raden sparas som needs_manual_download."""
+        from app.services.gmail_client import GmailMessage, Attachment
+        from app.services.pipeline import _process_one_message, ScanResult
+
+        msg = GmailMessage(
+            message_id="link-1",
+            thread_id="t-1",
+            sender="noreply@arlandaexpress.se",
+            subject="Din resa",
+            received_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+            snippet="",
+            attachments=[
+                Attachment(
+                    filename="boarding.pdf",
+                    mime_type="application/pdf",
+                    data=b"%PDF-1.4\nfake",
+                )
+            ],
+            body_text="Hämta kvitto: https://arlandaexpress.se/receipt/abc",
+            body_html="",
+        )
+
+        fake_gmail = MagicMock()
+        fake_gmail.fetch_message.return_value = msg
+        fake_drive = MagicMock()
+        fake_namer = MagicMock()
+        fake_analyzer = MagicMock()
+        fake_analyzer.enabled = False
+
+        result = ScanResult()
+        _process_one_message(
+            "link-1",
+            fake_gmail,
+            fake_drive,
+            fake_namer,
+            fake_analyzer,
+            None,
+            result,
+            link_fetch_senders=["noreply@arlandaexpress.se"],
+        )
+
+        # Bilagan får INTE röra Drive
+        fake_drive.upload_pdf.assert_not_called()
+        # Gmail SKA INTE markeras klar — användaren behöver trigga fetch-pdf
+        fake_gmail.mark_done.assert_not_called()
+        # Raden ska finnas i DB som needs_manual_download
+        with self.SessionLocal() as db:
+            row = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="link-1")
+                .first()
+            )
+            self.assertIsNotNone(row)
+            self.assertEqual(row.status, "needs_manual_download")
+            self.assertIn("receipt/abc", row.pending_link)
+        self.assertEqual(result.processed, 1)
+
+    def test_link_fetch_sender_without_link_marks_done(self):
+        """Mail från link_fetch_senders men ingen URL → mark_done + skipped."""
+        from app.services.gmail_client import GmailMessage
+        from app.services.pipeline import _process_one_message, ScanResult
+
+        msg = GmailMessage(
+            message_id="link-2",
+            thread_id="t-2",
+            sender="noreply@arlandaexpress.se",
+            subject="Tack",
+            received_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+            snippet="",
+            attachments=[],
+            body_text="Tack för att du reste med oss.",
+            body_html="",
+        )
+
+        fake_gmail = MagicMock()
+        fake_gmail.fetch_message.return_value = msg
+        fake_drive = MagicMock()
+        fake_namer = MagicMock()
+        fake_analyzer = MagicMock()
+        fake_analyzer.enabled = False
+
+        result = ScanResult()
+        _process_one_message(
+            "link-2",
+            fake_gmail,
+            fake_drive,
+            fake_namer,
+            fake_analyzer,
+            None,
+            result,
+            link_fetch_senders=["noreply@arlandaexpress.se"],
+        )
+
+        fake_drive.upload_pdf.assert_not_called()
+        fake_gmail.mark_done.assert_called_once_with("link-2")
+        self.assertEqual(result.skipped, 1)
+
+
+class AiConfidenceThresholdTest(unittest.TestCase):
+    """Verifiera att AI confidence < tröskel INTE sparar till DB."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app.services import pipeline as pipeline_module
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        pipeline_module.session_scope = session_scope
+
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = models.ProcessedMessage
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _build_msg(self, mid="low-1"):
+        from app.services.gmail_client import GmailMessage, Attachment
+
+        return GmailMessage(
+            message_id=mid,
+            thread_id="t",
+            sender="sender@example.com",
+            subject="Kvitto",
+            received_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+            snippet="",
+            attachments=[
+                Attachment(
+                    filename="r.pdf",
+                    mime_type="application/pdf",
+                    data=b"%PDF-1.4\nfake",
+                )
+            ],
+        )
+
+    def test_confidence_below_threshold_not_saved(self):
+        from app.services.pipeline import _process_one_message, ScanResult
+        from app.services.receipt_analyzer import ReceiptAnalysis
+
+        msg = self._build_msg("low-1")
+        analysis = ReceiptAnalysis(
+            is_receipt=True,
+            confidence=35,
+            filename="Kvitto.pdf",
+            vendor="X",
+            amount=10.0,
+            currency="EUR",
+            date="2026-04-21",
+            category="Annat",
+            summary="test",
+        )
+
+        fake_gmail = MagicMock()
+        fake_gmail.fetch_message.return_value = msg
+        fake_drive = MagicMock()
+        fake_namer = MagicMock()
+        fake_analyzer = MagicMock()
+        fake_analyzer.enabled = True
+        fake_analyzer.analyze.return_value = analysis
+
+        result = ScanResult()
+        _process_one_message(
+            "low-1",
+            fake_gmail,
+            fake_drive,
+            fake_namer,
+            fake_analyzer,
+            None,
+            result,
+            use_ai=True,
+            ai_min_confidence=40,
+        )
+
+        # Ingen Drive-upload (sparas INTE)
+        fake_drive.upload_pdf.assert_not_called()
+        # Gmail ska markeras klar (så mailet inte scannas igen)
+        fake_gmail.mark_done.assert_called_once_with("low-1")
+        # Inget rad i DB
+        with self.SessionLocal() as db:
+            row = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="low-1")
+                .first()
+            )
+            self.assertIsNone(row)
+        # Men loggad i result.notes
+        self.assertTrue(
+            any("låg confidence" in n for n in result.notes),
+            f"Förväntade not-log, fick: {result.notes}",
+        )
+
+    def test_confidence_at_threshold_is_saved(self):
+        """Confidence = tröskel → sparas (strikt <)."""
+        from app.services.pipeline import _process_one_message, ScanResult
+        from app.services.receipt_analyzer import ReceiptAnalysis
+
+        msg = self._build_msg("ok-1")
+        analysis = ReceiptAnalysis(
+            is_receipt=True,
+            confidence=45,
+            filename="OK Kvitto.pdf",
+            vendor="Y",
+            amount=50.0,
+            currency="EUR",
+            date="2026-04-21",
+            category="Annat",
+            summary="test",
+        )
+
+        fake_gmail = MagicMock()
+        fake_gmail.fetch_message.return_value = msg
+        fake_drive = MagicMock()
+        fake_upload = MagicMock()
+        fake_upload.file_id = "drv-1"
+        fake_upload.web_view_link = "https://drive/drv-1"
+        fake_drive.upload_pdf.return_value = fake_upload
+        fake_drive.filename_exists.return_value = False
+        fake_namer = MagicMock()
+        fake_analyzer = MagicMock()
+        fake_analyzer.enabled = True
+        fake_analyzer.analyze.return_value = analysis
+
+        result = ScanResult()
+        _process_one_message(
+            "ok-1",
+            fake_gmail,
+            fake_drive,
+            fake_namer,
+            fake_analyzer,
+            None,
+            result,
+            use_ai=True,
+            ai_min_confidence=40,
+        )
+
+        fake_drive.upload_pdf.assert_called_once()
+        with self.SessionLocal() as db:
+            row = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="ok-1")
+                .first()
+            )
+            self.assertIsNotNone(row)
+            self.assertEqual(row.status, "saved")
+            self.assertEqual(row.ai_confidence, 45)
+
+
+if __name__ == "__main__":
+    unittest.main()

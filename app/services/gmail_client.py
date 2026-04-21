@@ -56,6 +56,8 @@ class GmailMessage:
     received_at: datetime | None
     snippet: str
     attachments: list[Attachment] = field(default_factory=list)
+    body_text: str = ""
+    body_html: str = ""
 
 
 class GmailClient:
@@ -171,12 +173,14 @@ class GmailClient:
         received_at = _parse_date(headers.get("date"))
 
         attachments: list[Attachment] = []
+        payload = raw.get("payload", {})
         _collect_attachments(
-            raw.get("payload", {}),
+            payload,
             self._service,
             message_id,
             attachments,
         )
+        body_text, body_html = _collect_body(payload)
 
         return GmailMessage(
             message_id=raw["id"],
@@ -186,6 +190,8 @@ class GmailClient:
             received_at=received_at,
             snippet=raw.get("snippet", ""),
             attachments=attachments,
+            body_text=body_text,
+            body_html=body_html,
         )
 
 
@@ -217,6 +223,39 @@ def _collect_attachments(part: dict, service, message_id: str, sink: list[Attach
             )
     for sub in part.get("parts", []) or []:
         _collect_attachments(sub, service, message_id, sink)
+
+
+def _collect_body(part: dict) -> tuple[str, str]:
+    """Rekursivt extrahera text/plain + text/html från MIME-trädet.
+    Returnerar (text, html). Saknade delar blir tomma strängar."""
+    text = ""
+    html = ""
+    mime = (part.get("mimeType") or "").lower()
+    body = part.get("body") or {}
+    data = body.get("data")
+    if data and not part.get("filename"):
+        try:
+            decoded = base64.urlsafe_b64decode(data.encode("utf-8")).decode(
+                "utf-8", errors="replace"
+            )
+        except Exception:  # noqa: BLE001
+            decoded = ""
+        if decoded:
+            if mime == "text/plain":
+                text = decoded
+            elif mime == "text/html":
+                html = decoded
+    for sub in part.get("parts", []) or []:
+        sub_text, sub_html = _collect_body(sub)
+        if sub_text and not text:
+            text = sub_text
+        elif sub_text:
+            text = text + "\n" + sub_text
+        if sub_html and not html:
+            html = sub_html
+        elif sub_html:
+            html = html + "\n" + sub_html
+    return text, html
 
 
 def _load_attachment_data(service, message_id: str, body: dict) -> bytes | None:

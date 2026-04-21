@@ -187,7 +187,43 @@ export function buildSettings(overrides = {}) {
     exclude_senders: [],
     exclude_subjects: [],
     trash_auto_purge_days: 0,
+    ai_min_confidence_to_save: 40,
+    link_fetch_senders: ['noreply@arlandaexpress.se'],
+    builtin_senders: [
+      'eticket@amadeus.com',
+      'noreply@finnair.com',
+      'noreply@arlandaexpress.se',
+    ],
     updated_at: new Date().toISOString(),
+    ...overrides,
+  };
+}
+
+export function buildPendingDownloadMessage(overrides = {}) {
+  return {
+    id: 99,
+    message_id: 'gmail-pending-99',
+    sender: 'Arlanda Express <noreply@arlandaexpress.se>',
+    subject: 'Din resa — kvitto',
+    received_at: isoAgo(1 * ONE_HOUR),
+    processed_at: isoAgo(1 * ONE_HOUR),
+    file_name: null,
+    drive_file_id: null,
+    drive_link: null,
+    status: 'needs_manual_download',
+    error_message: null,
+    vendor: 'Arlanda Express',
+    amount: null,
+    currency: null,
+    receipt_date: null,
+    category: null,
+    summary: null,
+    ai_confidence: null,
+    bezala_transaction_id: null,
+    bezala_upload_status: null,
+    bezala_error_message: null,
+    pending_link: 'https://arlandaexpress.se/receipt/abc-token-xyz',
+    ...emptyTrashFields(),
     ...overrides,
   };
 }
@@ -211,7 +247,9 @@ export async function setupApiMocks(page, overrides = {}) {
     settings: overrides.settings || buildSettings(),
     uploadResponse: overrides.uploadResponse || null,
     deleteErrorsResponse: overrides.deleteErrorsResponse || { deleted: 1 },
+    fetchPdfResponse: overrides.fetchPdfResponse || null,
     lastDeleteRequest: null,
+    lastFetchPdfId: null,
   };
 
   // --- enklare globala routes ---
@@ -292,6 +330,34 @@ export async function setupApiMocks(page, overrides = {}) {
         );
       }
       return route.fulfill(jsonResponse({ deleted: ids.length, ids, permanent }));
+    }
+
+    // POST /api/messages/:id/fetch-pdf
+    const fetchPdfMatch = pathname.match(/\/api\/messages\/(\d+)\/fetch-pdf$/);
+    if (method === 'POST' && fetchPdfMatch) {
+      const id = Number(fetchPdfMatch[1]);
+      state.lastFetchPdfId = id;
+      if (state.fetchPdfResponse && state.fetchPdfResponse.status) {
+        return route.fulfill(state.fetchPdfResponse);
+      }
+      const idx = state.messages.findIndex((m) => m.id === id);
+      if (idx < 0) {
+        return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+      }
+      state.messages[idx] = {
+        ...state.messages[idx],
+        status: 'saved',
+        file_name: '20260421 Arlanda Express Resa.pdf',
+        drive_file_id: `drive-fetched-${id}`,
+        drive_link: `https://drive.google.com/file/d/drive-fetched-${id}/view`,
+        pending_link: null,
+        vendor: state.messages[idx].vendor || 'Arlanda Express',
+        amount: 320.0,
+        currency: 'SEK',
+        ai_confidence: 92,
+        bezala_upload_status: 'pending',
+      };
+      return route.fulfill(jsonResponse(state.messages[idx]));
     }
 
     // POST /api/messages/:id/upload-to-bezala

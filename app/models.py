@@ -41,6 +41,11 @@ class ProcessedMessage(Base):
     deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
     delete_reason = Column(String(32), nullable=True)
 
+    # Länk-baserad PDF-hantering (ny): när leverantören skickar kvitto
+    # bakom en klick-länk sparas URL:en här och status sätts till
+    # 'needs_manual_download' tills användaren triggar /fetch-pdf.
+    pending_link = Column(String(2048), nullable=True)
+
 
 class SavedFile(Base):
     """Unikhetsindex för filnamn + datum (tredje dubblettskiktet)."""
@@ -95,6 +100,14 @@ class AppSettings(Base):
     # Auto-purge för papperskorg. 0 = aldrig (default). 30/60/90 dagar
     # är tillåtna värden i UI, men fältet lagrar vilken siffra som helst.
     trash_auto_purge_days = Column(Integer, nullable=False, default=0)
+
+    # AI-tröskel: mail med confidence lägre än detta SPARAS INTE i DB
+    # (raden hoppas permanent över — mark_done sätts i Gmail). Default 40.
+    ai_min_confidence_to_save = Column(Integer, nullable=False, default=40)
+
+    # Leverantörer där Bezala Bot ignorerar bilagor och letar efter en
+    # kvitto-länk i mailets body istället. Förifylld med Arlanda Express.
+    link_fetch_senders = Column(JSON, nullable=False, default=list)
 
     updated_at = Column(
         DateTime,

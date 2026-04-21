@@ -1,7 +1,8 @@
 import ChipEditor from './ChipEditor.jsx';
+import BuiltinSendersBlock from './BuiltinSendersBlock.jsx';
 import { useI18n } from '../../i18n/useI18n.jsx';
 
-export default function ScanRulesSection({ form, update }) {
+export default function ScanRulesSection({ form, update, builtinSenders }) {
   const { t } = useI18n();
   return (
     <section className="settings-section" data-testid="scan-rules">
@@ -11,6 +12,8 @@ export default function ScanRulesSection({ form, update }) {
           {t.settings.scanRules.lead}
         </p>
       </header>
+
+      <BuiltinSendersBlock senders={builtinSenders} />
 
       <ChipEditor
         label={t.settings.scanRules.include}

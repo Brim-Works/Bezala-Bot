@@ -32,9 +32,11 @@ from app.services.receipt_analyzer import (
     ReceiptAnalysis,
     ReceiptAnalyzer,
 )
+from app.services.link_extractor import extract_receipt_link
 from app.services.settings_service import (
     build_gmail_query,
     load_settings,
+    sender_matches_link_fetch,
     subject_matches_exclusion,
 )
 
@@ -84,6 +86,8 @@ def run_scan(max_results: int = 50) -> ScanResult:
         ai_enabled = bool(app_settings.ai_naming_enabled)
         auto_upload = bool(app_settings.auto_upload_enabled)
         confidence_threshold = int(app_settings.confidence_threshold or 0)
+        ai_min_confidence = int(app_settings.ai_min_confidence_to_save or 0)
+        link_fetch_senders = list(app_settings.link_fetch_senders or [])
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
@@ -147,6 +151,8 @@ def run_scan(max_results: int = 50) -> ScanResult:
                 use_ai=use_ai,
                 auto_upload=auto_upload,
                 confidence_threshold=confidence_threshold,
+                ai_min_confidence=ai_min_confidence,
+                link_fetch_senders=link_fetch_senders,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fel under bearbetning av %s: %s", mid, exc)
@@ -226,6 +232,8 @@ def _process_one_message(
     use_ai: bool = False,
     auto_upload: bool = False,
     confidence_threshold: int = 0,
+    ai_min_confidence: int = 0,
+    link_fetch_senders: list[str] | None = None,
 ) -> None:
     with session_scope() as db:
         if _message_already_processed(db, message_id):
@@ -234,6 +242,47 @@ def _process_one_message(
             return
 
     msg = gmail.fetch_message(message_id)
+
+    # Länk-fetch-gren: avsändare matchar link_fetch_senders → ignorera
+    # alla befintliga bilagor och leta i body:n efter kvitto-länk. Raden
+    # sparas som 'needs_manual_download' och väntar på manuell /fetch-pdf.
+    if link_fetch_senders and sender_matches_link_fetch(msg.sender, link_fetch_senders):
+        link = extract_receipt_link(msg.body_text, msg.body_html)
+        if link:
+            try:
+                with session_scope() as db:
+                    db.add(
+                        ProcessedMessage(
+                            message_id=msg.message_id,
+                            thread_id=msg.thread_id,
+                            sender=msg.sender,
+                            subject=msg.subject,
+                            received_at=msg.received_at,
+                            status="needs_manual_download",
+                            pending_link=link,
+                        )
+                    )
+                result.processed += 1
+                logger.info(
+                    "Link-fetch: sparade %s som needs_manual_download (%s)",
+                    message_id, link,
+                )
+            except IntegrityError:
+                result.skipped += 1
+                logger.warning("Race: %s redan loggat — hoppar", message_id)
+            # INTE mark_done — användaren ska kunna trigga hämtning.
+        else:
+            result.skipped += 1
+            logger.info(
+                "Link-fetch: ingen kvitto-länk hittades i %s — hoppar",
+                message_id,
+            )
+            _log_skip(msg, reason="no_link")
+            try:
+                gmail.mark_done(message_id)
+            except Exception:
+                logger.exception("Kunde inte sätta etikett på %s", message_id)
+        return
 
     if excluded_subjects and subject_matches_exclusion(msg.subject, excluded_subjects):
         result.skipped += 1
@@ -288,6 +337,21 @@ def _process_one_message(
                     "Claude: %s är inte ett kvitto (confidence=%d) — hoppar utan logg",
                     message_id,
                     analysis.confidence,
+                )
+                continue
+
+            # Låg confidence → SPARA INTE i DB. Samma beteende som
+            # is_receipt=False: mark_done i Gmail + logga i scan_run.notes.
+            if ai_min_confidence > 0 and analysis.confidence < ai_min_confidence:
+                any_non_receipt = True
+                result.notes.append(
+                    f"{message_id}: låg confidence {analysis.confidence}% < {ai_min_confidence}% — sparas ej"
+                )
+                logger.info(
+                    "Low-confidence: %s confidence=%d%% < %d%% — hoppar utan logg",
+                    message_id,
+                    analysis.confidence,
+                    ai_min_confidence,
                 )
                 continue
 

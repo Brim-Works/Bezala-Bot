@@ -104,6 +104,34 @@ export default function AutomationSection({ form, update }) {
             : t.settings.automation.confidenceDisabled}
         </div>
       </div>
+
+      <div className="settings-slider" data-testid="min-confidence-slider">
+        <div className="settings-slider__head">
+          <span className="settings-field__label">
+            {t.settings.automation.minConfidence}
+          </span>
+          <span className="mono settings-slider__val" data-testid="min-confidence-value">
+            {form.ai_min_confidence_to_save ?? 40}%
+          </span>
+        </div>
+        <input
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          value={form.ai_min_confidence_to_save ?? 40}
+          onChange={(e) =>
+            update({ ai_min_confidence_to_save: parseInt(e.target.value, 10) })
+          }
+          className="settings-slider__range"
+          aria-valuemin={0}
+          aria-valuemax={100}
+          aria-valuenow={form.ai_min_confidence_to_save ?? 40}
+        />
+        <div className="settings-slider__hint muted">
+          {t.settings.automation.minConfidenceHint}
+        </div>
+      </div>
     </section>
   );
 }

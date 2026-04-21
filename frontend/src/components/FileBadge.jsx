@@ -5,6 +5,7 @@ const KIND = {
   saved: 'ok',
   error: 'err',
   skipped: 'muted',
+  needs_download: 'warn',
 };
 
 export default function FileBadge({ status }) {

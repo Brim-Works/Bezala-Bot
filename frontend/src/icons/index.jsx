@@ -114,6 +114,16 @@ export function IconTrash(props) {
   );
 }
 
+export function IconDownload(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M10 3v10" />
+      <path d="M6 9l4 4 4-4" />
+      <path d="M3.5 15v1.5A1.5 1.5 0 0 0 5 18h10a1.5 1.5 0 0 0 1.5-1.5V15" />
+    </IconBase>
+  );
+}
+
 export function IconRestore(props) {
   return (
     <IconBase {...props}>

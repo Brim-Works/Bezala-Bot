@@ -19,7 +19,9 @@ from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_schedu
 from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.drive_client import DriveClient
 from app.services.gmail_client import GmailClient
+from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import run_scan
+from app.services.receipt_analyzer import AnalyzerError, ReceiptAnalyzer
 from app.services.settings_service import load_settings, settings_to_dict
 from app.services.trash_service import (
     drive_delete_safe,
@@ -231,6 +233,8 @@ class SettingsPayload(BaseModel):
     exclude_senders: list[str] = Field(default_factory=list)
     exclude_subjects: list[str] = Field(default_factory=list)
     trash_auto_purge_days: int = Field(default=0, ge=0, le=365)
+    ai_min_confidence_to_save: int = Field(default=40, ge=0, le=100)
+    link_fetch_senders: list[str] = Field(default_factory=list)
 
 
 @app.get("/api/settings")
@@ -446,6 +450,105 @@ def restore_message(
     return _serialize_message(row)
 
 
+def _fetch_pdf_helper(url: str) -> bytes:
+    """Wrapper som finns som funktion för att kunna mockas i tester."""
+    return fetch_pdf_from_link(url)
+
+
+@app.post("/api/messages/{msg_id}/fetch-pdf")
+def fetch_pdf_for_message(
+    msg_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Hämtar PDF från pending_link och lyfter raden till status='saved'.
+    Kör AI-analys, laddar upp till Drive, sätter Bezala-Klar i Gmail."""
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    if row.status != "needs_manual_download" or not row.pending_link:
+        raise HTTPException(
+            status_code=400,
+            detail="Raden har ingen väntande länk",
+        )
+
+    try:
+        pdf_bytes = _fetch_pdf_helper(row.pending_link)
+    except LinkFetchError as exc:
+        logger.warning("fetch-pdf: %s misslyckades: %s", msg_id, exc.message)
+        raise HTTPException(status_code=502, detail=exc.message) from exc
+
+    # Drive + AI + Gmail
+    try:
+        drive = DriveClient()
+    except Exception as exc:
+        logger.exception("Drive-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+
+    analyzer = ReceiptAnalyzer()
+    analysis = None
+    filename = (row.file_name
+                or f"{row.vendor or 'Okand'} {row.subject or ''}".strip()
+                or f"Kvitto-{msg_id}")
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+    filename = filename.replace("/", "-").replace("\\", "-")
+
+    if analyzer.enabled:
+        try:
+            analysis = analyzer.analyze(
+                attachment_bytes=pdf_bytes,
+                mime_type="application/pdf",
+                original_filename=filename,
+                sender=row.sender or "",
+                subject=row.subject or "",
+                snippet="",
+                received_at=row.received_at,
+            )
+            filename = analysis.filename or filename
+        except AnalyzerError as exc:
+            logger.exception("AI-analys misslyckades för fetch-pdf %s", msg_id)
+            # Vi fortsätter ändå — PDF sparas utan AI-data.
+
+    try:
+        upload = drive.upload_pdf(filename, pdf_bytes)
+    except Exception as exc:
+        logger.exception("Drive-upload misslyckades för fetch-pdf %s", msg_id)
+        raise HTTPException(
+            status_code=502, detail=f"Drive-upload: {exc}"
+        ) from exc
+
+    row.status = "saved"
+    row.file_name = filename
+    row.drive_file_id = upload.file_id
+    row.drive_link = upload.web_view_link
+    row.pending_link = None
+    if analysis:
+        row.vendor = analysis.vendor
+        row.amount = analysis.amount
+        row.currency = analysis.currency
+        row.receipt_date = analysis.date
+        row.category = analysis.category
+        row.summary = analysis.summary
+        row.ai_confidence = analysis.confidence
+    row.bezala_upload_status = row.bezala_upload_status or "pending"
+    db.commit()
+
+    # Gmail-etikett best-effort
+    if row.message_id:
+        try:
+            gmail = GmailClient()
+            gmail.mark_done(row.message_id)
+        except Exception:
+            logger.exception(
+                "Kunde inte sätta Bezala-Klar efter fetch-pdf för %s", msg_id,
+            )
+
+    db.refresh(row)
+    logger.info("fetch-pdf: msg_id=%s sparades till Drive (%s)", msg_id, filename)
+    return _serialize_message(row)
+
+
 @app.post("/api/messages/bulk-delete")
 def bulk_delete_messages(
     payload: BulkDeletePayload,
@@ -522,6 +625,7 @@ def _serialize_message(r: ProcessedMessage) -> dict:
         "bezala_error_message": r.bezala_error_message,
         "deleted_at": r.deleted_at.isoformat() if r.deleted_at else None,
         "delete_reason": r.delete_reason,
+        "pending_link": r.pending_link,
     }
 
 

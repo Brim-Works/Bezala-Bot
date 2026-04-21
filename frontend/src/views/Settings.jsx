@@ -6,6 +6,7 @@ import { useApiData } from '../hooks/useApiData.js';
 import AutomationSection from '../components/settings/AutomationSection.jsx';
 import FilterSection from '../components/settings/FilterSection.jsx';
 import ScanRulesSection from '../components/settings/ScanRulesSection.jsx';
+import LinkFetchSection from '../components/settings/LinkFetchSection.jsx';
 import TrashSection from '../components/settings/TrashSection.jsx';
 import SaveBar from '../components/settings/SaveBar.jsx';
 import { useToast } from '../lib/toast.jsx';
@@ -23,6 +24,8 @@ const FIELDS_IN_PAYLOAD = [
   'exclude_senders',
   'exclude_subjects',
   'trash_auto_purge_days',
+  'ai_min_confidence_to_save',
+  'link_fetch_senders',
 ];
 
 function pickPayload(form) {
@@ -105,7 +108,12 @@ export default function Settings() {
       <div className="settings-wrap" data-testid="settings-view">
         <AutomationSection form={form} update={update} />
         <FilterSection form={form} update={update} />
-        <ScanRulesSection form={form} update={update} />
+        <ScanRulesSection
+          form={form}
+          update={update}
+          builtinSenders={form.builtin_senders || baseline?.builtin_senders || []}
+        />
+        <LinkFetchSection form={form} update={update} />
         <TrashSection form={form} update={update} />
       </div>
       <SaveBar dirty={dirty} saving={saving} onSave={onSave} onReset={onReset} />
