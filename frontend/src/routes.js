@@ -1,0 +1,29 @@
+/* Route-mappning — används av både Sidebar (navigering) och App-skalet
+ * (matcha path → vy). Hålls i en liten separat fil för att undvika
+ * cirkulära imports mellan Sidebar och App. */
+
+export const ROUTES = {
+  dashboard: '/',
+  review: '/review',
+  log: '/log',
+  settings: '/settings',
+};
+
+export function routeForView(view) {
+  return ROUTES[view] || ROUTES.dashboard;
+}
+
+export function viewForPath(path) {
+  switch (path) {
+    case '/':
+      return 'dashboard';
+    case '/review':
+      return 'review';
+    case '/log':
+      return 'log';
+    case '/settings':
+      return 'settings';
+    default:
+      return null;
+  }
+}

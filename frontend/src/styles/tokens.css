@@ -1,0 +1,79 @@
+/* Design-tokens — se design_handoff_bezala_bot v5/design/src/theme.jsx.
+ * Tema-aktivering via data-theme på <html>. Ingen hårdkodad färg får finnas
+ * utanför denna fil — allt refererar var(--…). */
+
+:root {
+  --font-sans: 'IBM Plex Sans', system-ui, sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, monospace;
+  --font-display: 'Instrument Serif', Georgia, serif;
+
+  /* Spacing: uppdateras av ThemeProvider utifrån density */
+  --pad: 0.75rem;
+  --pad-2: 1.125rem;
+  --row-h: 44px;
+
+  /* Swatches — representerar respektive temas bas-bg så tema-växlaren
+   * kan visa det andra temats färg utan att vara temaberoende. */
+  --swatch-a-bg: #f7f7f4;
+  --swatch-a-border: #cfcec2;
+  --swatch-b-bg: #12221c;
+  --swatch-b-border: #35574a;
+}
+
+/* ========== Tema A — Bezala Modern Light (default) ========== */
+html[data-theme='A'],
+:root {
+  --bg: #f7f7f4;
+  --bg-2: #efefe9;
+  --surface: #ffffff;
+  --surface-2: #f3f3ee;
+  --surface-3: #e7e7df;
+  --border: #e4e3db;
+  --border-strong: #cfcec2;
+  --text: #111412;
+  --text-2: #4b524c;
+  --muted: #8a8f88;
+  --accent: oklch(48% 0.09 165);
+  --accent-2: oklch(48% 0.09 40);
+  --accent-ink: #ffffff;
+  --ok: oklch(52% 0.10 160);
+  --warn: oklch(60% 0.14 65);
+  --err: oklch(52% 0.16 25);
+  --info: oklch(55% 0.10 230);
+  --ring: color-mix(in oklch, var(--accent) 28%, transparent);
+  --radius: 8px;
+  --radius-sm: 5px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --shadow-sm: 0 1px 0 rgba(0, 0, 0, 0.02), 0 1px 3px rgba(20, 40, 30, 0.04);
+  --shadow-md: 0 2px 6px rgba(20, 40, 30, 0.06);
+}
+
+/* ========== Tema B — Forest & Cream ========== */
+html[data-theme='B'] {
+  --bg: #12221c;
+  --bg-2: #0e1b17;
+  --surface: #1a2d26;
+  --surface-2: #203830;
+  --surface-3: #2a483d;
+  --border: #264037;
+  --border-strong: #35574a;
+  --text: #f1ead8;
+  --text-2: #b5b09c;
+  --muted: #7d8078;
+  --accent: oklch(80% 0.13 90);
+  --accent-2: oklch(70% 0.12 25);
+  --accent-ink: #12221c;
+  --ok: oklch(78% 0.13 160);
+  --warn: oklch(82% 0.14 80);
+  --err: oklch(70% 0.16 25);
+  --info: oklch(75% 0.11 230);
+  --ring: color-mix(in oklch, var(--accent) 30%, transparent);
+  --radius: 10px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.02) inset,
+    0 10px 30px -12px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.35);
+}

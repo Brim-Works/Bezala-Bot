@@ -433,3 +433,16 @@ def stats(db: Session = Depends(get_db), _: None = Depends(require_auth)):
             "messages_processed": last_run.messages_processed if last_run else 0,
         },
     }
+
+
+# SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
+# /api/*, /health) matchas före. Returnerar index.html för alla client-side
+# routes (/review, /log m.fl.) så browser-reload och deep-linking fungerar.
+# Okända /api/*- och /assets/*-paths 404-ar som vanligt.
+@app.get("/{spa_path:path}")
+def spa_fallback(spa_path: str):
+    if spa_path.startswith("api/") or spa_path.startswith("assets/"):
+        raise HTTPException(status_code=404, detail="Not Found")
+    if not FRONTEND_DIST.exists():
+        raise HTTPException(status_code=404, detail="Not Found")
+    return FileResponse(FRONTEND_DIST / "index.html")
