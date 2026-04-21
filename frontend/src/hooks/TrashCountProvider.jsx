@@ -10,6 +10,9 @@ const POLL_INTERVAL_MS = 60_000;
 
 export function TrashCountProvider({ children }) {
   const [count, setCount] = useState(0);
+  // Global "messages changed"-signal som vyer kan lyssna på för att refetcha
+  // efter t.ex. drawer-delete. Ökas av bumpMessagesVersion().
+  const [messagesVersion, setMessagesVersion] = useState(0);
   const mounted = useRef(true);
 
   const refresh = useCallback(async () => {
@@ -25,6 +28,10 @@ export function TrashCountProvider({ children }) {
     setCount((c) => Math.max(0, c + delta));
   }, []);
 
+  const bumpMessagesVersion = useCallback(() => {
+    setMessagesVersion((v) => v + 1);
+  }, []);
+
   useEffect(() => {
     mounted.current = true;
     refresh();
@@ -36,7 +43,9 @@ export function TrashCountProvider({ children }) {
   }, [refresh]);
 
   return (
-    <TrashCountContext.Provider value={{ count, refresh, bump }}>
+    <TrashCountContext.Provider
+      value={{ count, refresh, bump, messagesVersion, bumpMessagesVersion }}
+    >
       {children}
     </TrashCountContext.Provider>
   );

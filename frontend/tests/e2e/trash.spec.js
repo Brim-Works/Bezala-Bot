@@ -176,3 +176,43 @@ test('Trash — sidebar-räknare uppdateras optimistic efter delete', async ({
   // Badgen syns med siffran 1
   await expect(page.getByTestId('trash-count-badge')).toHaveText('1');
 });
+
+test('Drawer — delete-knapp i header stänger drawer + tar bort raden', async ({
+  page,
+}) => {
+  await page.goto('/');
+  // Öppna drawer via rad-klick
+  await page.locator('tr[data-row-id="1"]').click();
+  await expect(page.getByTestId('drawer')).toBeVisible();
+
+  // Klicka delete i drawer-headern
+  await page.getByTestId('drawer-delete').click();
+
+  // Drawer stängs, dialog öppnas
+  await expect(page.getByTestId('drawer')).toHaveCount(0);
+  await expect(page.getByTestId('delete-reason-dialog')).toBeVisible();
+
+  await page.getByTestId('reason-calendar').click();
+  await page.getByTestId('confirm-delete').click();
+
+  // Toast + rad borta + badge uppdaterad
+  await expect(page.getByText(/Rad borttagen/i)).toBeVisible();
+  await expect(page.locator('tr[data-row-id="1"]')).toHaveCount(0);
+  await expect(page.getByTestId('trash-count-badge')).toHaveText('1');
+});
+
+test('Drawer — Ångra efter drawer-delete återställer rad utan att öppna drawer', async ({
+  page,
+}) => {
+  await page.goto('/');
+  await page.locator('tr[data-row-id="2"]').click();
+  await page.getByTestId('drawer-delete').click();
+  await page.getByTestId('confirm-delete').click();
+  await expect(page.locator('tr[data-row-id="2"]')).toHaveCount(0);
+
+  await page.getByTestId('toast-action').click();
+
+  // Rad tillbaka, drawer förblir stängd
+  await expect(page.locator('tr[data-row-id="2"]')).toBeVisible();
+  await expect(page.getByTestId('drawer')).toHaveCount(0);
+});

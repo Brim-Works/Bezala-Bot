@@ -2081,6 +2081,30 @@ html[data-theme='B'] .chip-editor__box {
   border-bottom: 1px solid var(--border);
 }
 
+.drawer__head-action {
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  width: 34px;
+  height: 34px;
+  border-radius: var(--radius-sm);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.drawer__head-action:hover {
+  background: var(--surface-2);
+  color: var(--err);
+}
+
+.drawer__head-action:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
 .drawer__head-icon {
   width: 36px;
   height: 36px;

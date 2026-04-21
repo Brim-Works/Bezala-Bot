@@ -42,6 +42,8 @@ export default {
   drawer: {
     title: 'Pipeline details',
     tabsLabel: 'Pipeline steps',
+    delete: 'Delete',
+    deleteLabel: 'Delete mail',
     tabs: {
       gmail: 'Gmail',
       ai: 'AI',
