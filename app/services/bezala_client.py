@@ -24,6 +24,7 @@ loglevel till ERROR så felet inte drunknar i INFO-strömmen.
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -400,6 +401,102 @@ class BezalaClient:
                     logger.warning("Bezala har varken /vat_rates eller /vat_codes — returnerar tom lista.")
                     return []
             raise
+
+    # --------- receipt upload (Gate 0 fix) ---------
+    #
+    # Bezalas /attachments-endpoint är en RECEIPT-POST, inte bara filupload.
+    # 422-responsen bekräftade: {description, date, vat_lines} måste skickas
+    # tillsammans med filen i samma multipart-request.
+
+    def upload_receipt(
+        self,
+        *,
+        filename: str,
+        pdf_bytes: bytes,
+        description: str,
+        date: str,
+        amount: float | None,
+        currency: str | None,
+        vat_lines: list[dict] | None = None,
+        account_id: int | str | None = None,
+        cost_center_id: int | str | None = None,
+        vendor: str | None = None,
+        extra_fields: dict[str, Any] | None = None,
+    ) -> BezalaAttachment:
+        """Ladda upp ett kvitto till Bezala i en enda multipart-request.
+
+        Kräver: filename, pdf_bytes, description, date.
+        vat_lines: lista av {amount, vat_code_id} — JSON-serialiseras till
+        form-fältet 'vat_lines' (Bezala-serializern läser det som array).
+
+        Returnerar BezalaAttachment med id:t som Bezala genererade för
+        receipt-raden."""
+        if not filename:
+            raise BezalaError("upload_receipt: filename saknas")
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            raise BezalaError("upload_receipt: pdf_bytes är inte en giltig PDF")
+        if not description:
+            raise BezalaError("upload_receipt: description saknas")
+        if not date:
+            raise BezalaError("upload_receipt: date saknas (ÅÅÅÅ-MM-DD)")
+
+        form: dict[str, Any] = {
+            "description": description,
+            "date": date,
+        }
+        if amount is not None:
+            form["amount"] = str(amount)
+        if currency:
+            form["currency"] = currency
+        if vendor:
+            form["vendor"] = vendor
+        if account_id is not None:
+            form["account_id"] = str(account_id)
+        if cost_center_id is not None:
+            form["cost_center_id"] = str(cost_center_id)
+        if vat_lines:
+            # Bezala-serializern läser fältet som JSON-sträng → array.
+            form["vat_lines"] = json.dumps(vat_lines, ensure_ascii=False)
+        if extra_fields:
+            for k, v in extra_fields.items():
+                if v is None:
+                    continue
+                form[k] = v if isinstance(v, str) else json.dumps(v)
+
+        resp = self._request(
+            "POST",
+            "/attachments",
+            files={"file": (filename, pdf_bytes, "application/pdf")},
+            data=form,
+        )
+        if resp.status_code >= 400:
+            raise BezalaError(
+                f"Bezala upload_receipt: {resp.status_code}",
+                status_code=resp.status_code,
+                body=_safe_body_snippet(resp),
+            )
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise BezalaError(
+                f"Bezala upload_receipt: icke-JSON svar ({exc})"
+            ) from exc
+
+        receipt_id = (
+            data.get("id")
+            or data.get("attachment_id")
+            or (data.get("attachment") or {}).get("id")
+            or (data.get("receipt") or {}).get("id")
+        )
+        if not receipt_id:
+            raise BezalaError(
+                f"Bezala upload_receipt: saknar id i svar ({data})"
+            )
+        logger.info(
+            "Bezala: laddade upp kvitto %s som id=%s (account_id=%s, vat_lines=%d)",
+            filename, receipt_id, account_id, len(vat_lines or []),
+        )
+        return BezalaAttachment(attachment_id=str(receipt_id))
 
     def close(self) -> None:
         self._client.close()

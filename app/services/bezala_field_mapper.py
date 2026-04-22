@@ -297,6 +297,75 @@ def build_description(file_name: str | None, *, fallback: str | None = None) -> 
     return (fallback or "").strip()
 
 
+def build_vat_lines(
+    amount: float | None,
+    vat_rate: dict | None,
+) -> list[dict]:
+    """Bezala kräver minst en vat_line per receipt. Vi skapar EN rad där
+    hela beloppet allokeras till vat_rate-ID:t.
+
+    Returnerar [] om någon av argumenten saknas — anroparen får då själv
+    fatta beslut (sänd tomt eller stoppa). Bezala svarar 422 på tom lista
+    så pipelinen bör stoppa före upload_receipt om så är fallet."""
+    if amount is None or vat_rate is None:
+        return []
+    vat_id = vat_rate.get("id") or vat_rate.get("vat_rate_id") or vat_rate.get("vat_code_id")
+    if vat_id is None:
+        return []
+    return [{"amount": amount, "vat_code_id": vat_id}]
+
+
+def build_receipt_params(
+    *,
+    file_name: str | None,
+    sender: str | None,
+    vendor: str | None,
+    category: str | None,
+    amount: float | None,
+    currency: str | None,
+    receipt_date: str | None,
+    accounts: list[dict],
+    cost_centers: list[dict],
+    vat_rates: list[dict],
+    preferred_cost_center: str | None = None,
+) -> dict:
+    """Bygger en komplett kwargs-dict för BezalaClient.upload_receipt().
+
+    Returnerar en dict med:
+      description, date, amount, currency, vendor,
+      account_id, cost_center_id, vat_lines
+    Värden som inte kunde mappas utelämnas så upload_receipt kan validera
+    och höja BezalaError med tydligt meddelande."""
+    country = sender_to_country(sender, vendor)
+    account = select_account(accounts, category)
+    cost_center = select_default_cost_center(
+        cost_centers, preferred_name=preferred_cost_center,
+    )
+    vat_rate = select_vat_rate(vat_rates, country=country, category=category)
+
+    params: dict = {
+        "description": build_description(file_name),
+        "date": receipt_date,
+        "amount": amount,
+        "currency": currency,
+        "vendor": vendor,
+        "vat_lines": build_vat_lines(amount, vat_rate),
+    }
+    if account:
+        params["account_id"] = account.get("id") or account.get("account_id")
+    if cost_center:
+        params["cost_center_id"] = cost_center.get("id") or cost_center.get("cost_center_id")
+
+    logger.info(
+        "bezala-mapper(receipt): country=%s category=%s → account=%s cost_center=%s vat_rate=%s",
+        country, category,
+        (account or {}).get("name"),
+        (cost_center or {}).get("name"),
+        (vat_rate or {}).get("name"),
+    )
+    return params
+
+
 # ---------------------------------------------------------------------------
 # High-level: bygg extras-dict för create_transaction
 # ---------------------------------------------------------------------------

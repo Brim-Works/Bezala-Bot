@@ -1,0 +1,690 @@
+"""Backend-tester för Gate 0-fix: upload_receipt + /api/bezala/metadata +
+pipeline auto-upload med fältmappning.
+
+Täcker:
+- BezalaClient.upload_receipt skickar file + description + date + vat_lines
+  i samma multipart-request
+- upload_receipt validerar obligatoriska fält (description, date, PDF-bytes)
+- upload_receipt bubblar 422 med full response.text
+- GET /api/bezala/metadata returnerar accounts/cost_centers/vat_rates
+  med error-field när endpoints fallerar
+- POST /api/messages/{id}/upload-to-bezala använder upload_receipt + mapper
+- Pipeline _attempt_bezala_upload använder metadata
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import unittest
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
+
+os.environ.setdefault("APP_PASSWORD", "test-password")
+os.environ.setdefault("SESSION_SECRET", "test-secret")
+os.environ.setdefault("ANTHROPIC_API_KEY", "")
+os.environ.setdefault("GMAIL_CLIENT_ID", "")
+os.environ.setdefault("GMAIL_CLIENT_SECRET", "")
+os.environ.setdefault("GMAIL_REFRESH_TOKEN", "")
+os.environ.setdefault("DRIVE_REFRESH_TOKEN", "")
+os.environ.setdefault("BEZALA_USERNAME", "test@example.com")
+os.environ.setdefault("BEZALA_PASSWORD", "secret")
+os.environ.setdefault("SCAN_ENABLED", "false")
+os.environ["DATABASE_URL"] = "sqlite:///:memory:"
+
+PDF_BYTES = b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\nfake"
+
+
+def _configure_memory_engine():
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+    from app import db as db_module
+
+    db_module.engine = create_engine(
+        "sqlite://",
+        connect_args={"check_same_thread": False},
+        poolclass=StaticPool,
+    )
+    db_module.SessionLocal = sessionmaker(
+        bind=db_module.engine, autoflush=False, autocommit=False
+    )
+    return db_module
+
+
+def _make_client():
+    from app.services.bezala_client import BezalaClient
+
+    client = BezalaClient.__new__(BezalaClient)
+    client._email = "test@example.com"
+    client._password = "secret"
+    client._base_url = "https://mock.bezala"
+    client._client = MagicMock()
+    client._token = "fake-token"
+    client._token_expires_at = 9e18
+    return client
+
+
+class UploadReceiptTest(unittest.TestCase):
+    """BezalaClient.upload_receipt — single-step multipart med metadata."""
+
+    def test_happy_path_sends_all_fields(self):
+        """Verifiera att file + description + date + amount + vat_lines
+        + account_id + cost_center_id går ut i samma request."""
+        captured: dict = {}
+
+        client = _make_client()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": "receipt-42"}'
+        resp.json = MagicMock(return_value={"id": "receipt-42"})
+
+        def fake_request(method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured["files"] = kwargs.get("files")
+            captured["data"] = kwargs.get("data")
+            return resp
+
+        client._client.request = fake_request
+
+        receipt = client.upload_receipt(
+            filename="20260422 Finnair.pdf",
+            pdf_bytes=PDF_BYTES,
+            description="20260422 Finnair HEL-CPH",
+            date="2026-04-22",
+            amount=503.0,
+            currency="EUR",
+            vat_lines=[{"amount": 503.0, "vat_code_id": 11}],
+            account_id=101,
+            cost_center_id=77,
+            vendor="Finnair",
+        )
+
+        self.assertEqual(receipt.attachment_id, "receipt-42")
+        self.assertEqual(captured["method"], "POST")
+        self.assertTrue(captured["url"].endswith("/attachments"))
+
+        data = captured["data"]
+        self.assertEqual(data["description"], "20260422 Finnair HEL-CPH")
+        self.assertEqual(data["date"], "2026-04-22")
+        self.assertEqual(data["amount"], "503.0")
+        self.assertEqual(data["currency"], "EUR")
+        self.assertEqual(data["account_id"], "101")
+        self.assertEqual(data["cost_center_id"], "77")
+        self.assertEqual(data["vendor"], "Finnair")
+        # vat_lines skickas som JSON-sträng (Bezala-serializern parser den)
+        self.assertIsInstance(data["vat_lines"], str)
+        self.assertEqual(
+            json.loads(data["vat_lines"]),
+            [{"amount": 503.0, "vat_code_id": 11}],
+        )
+
+        # Filen skickas som "file" i multipart
+        files = captured["files"]
+        self.assertIn("file", files)
+        fname, bytes_, mime = files["file"]
+        self.assertEqual(fname, "20260422 Finnair.pdf")
+        self.assertEqual(bytes_, PDF_BYTES)
+        self.assertEqual(mime, "application/pdf")
+
+    def test_rejects_missing_description(self):
+        from app.services.bezala_client import BezalaError
+
+        client = _make_client()
+        with self.assertRaises(BezalaError) as ctx:
+            client.upload_receipt(
+                filename="x.pdf",
+                pdf_bytes=PDF_BYTES,
+                description="",
+                date="2026-04-22",
+                amount=10.0,
+                currency="EUR",
+            )
+        self.assertIn("description", str(ctx.exception).lower())
+
+    def test_rejects_missing_date(self):
+        from app.services.bezala_client import BezalaError
+
+        client = _make_client()
+        with self.assertRaises(BezalaError):
+            client.upload_receipt(
+                filename="x.pdf",
+                pdf_bytes=PDF_BYTES,
+                description="x",
+                date="",
+                amount=10.0,
+                currency="EUR",
+            )
+
+    def test_rejects_invalid_pdf(self):
+        from app.services.bezala_client import BezalaError
+
+        client = _make_client()
+        with self.assertRaises(BezalaError) as ctx:
+            client.upload_receipt(
+                filename="x.pdf",
+                pdf_bytes=b"not a pdf",
+                description="x",
+                date="2026-04-22",
+                amount=10.0,
+                currency="EUR",
+            )
+        self.assertIn("pdf", str(ctx.exception).lower())
+
+    def test_422_bubbles_full_body(self):
+        """Bezalas 422 → BezalaError.body innehåller hela response.text."""
+        from app.services.bezala_client import BezalaError
+
+        client = _make_client()
+        resp = MagicMock()
+        resp.status_code = 422
+        resp.headers = {"content-type": "application/json"}
+        resp.text = (
+            '{"errors":{"vat_lines":["är för kort (minst 1 tecken)"],'
+            '"account_id":["kan inte vara tom"]}}'
+        )
+        resp.json = MagicMock(return_value={})
+
+        def fake_request(method, url, **kwargs):
+            return resp
+
+        client._client.request = fake_request
+
+        with self.assertRaises(BezalaError) as ctx:
+            client.upload_receipt(
+                filename="x.pdf",
+                pdf_bytes=PDF_BYTES,
+                description="Test",
+                date="2026-04-22",
+                amount=10.0,
+                currency="EUR",
+                vat_lines=[{"amount": 10, "vat_code_id": 1}],
+            )
+        err = ctx.exception
+        self.assertEqual(err.status_code, 422)
+        self.assertIn("vat_lines", err.body)
+        self.assertIn("account_id", err.body)
+
+
+class PipelineAutoUploadTest(unittest.TestCase):
+    """_attempt_bezala_upload använder metadata + field-mapper."""
+
+    def test_happy_path_calls_upload_receipt(self):
+        from app.services.pipeline import _attempt_bezala_upload
+        from app.services.receipt_analyzer import ReceiptAnalysis
+        from app.services.gmail_client import GmailMessage
+
+        analysis = ReceiptAnalysis(
+            is_receipt=True,
+            confidence=95,
+            filename="20260422 Finnair HEL-CPH.pdf",
+            vendor="Finnair",
+            amount=503.0,
+            currency="EUR",
+            date="2026-04-22",
+            category="Flyg",
+            summary="Flyg HEL-CPH",
+        )
+        msg = GmailMessage(
+            message_id="m1",
+            thread_id="t1",
+            sender="noreply@finnair.com",
+            subject="Finnair kvitto",
+            received_at=datetime(2026, 4, 22, tzinfo=timezone.utc),
+            snippet="",
+        )
+        metadata = {
+            "accounts": [{"id": 101, "name": "Matkaliput"}],
+            "cost_centers": [{"id": 77, "name": "Default", "default": True}],
+            "vat_rates": [{"id": 11, "name": "Finland Transport 13.5%"}],
+        }
+
+        fake_bezala = MagicMock()
+        fake_receipt = MagicMock()
+        fake_receipt.attachment_id = "receipt-99"
+        fake_bezala.upload_receipt.return_value = fake_receipt
+
+        status, txn_id, err = _attempt_bezala_upload(
+            fake_bezala,
+            analysis,
+            msg,
+            PDF_BYTES,
+            "20260422 Finnair HEL-CPH.pdf",
+            auto_upload=True,
+            confidence_threshold=90,
+            metadata=metadata,
+        )
+
+        self.assertEqual(status, "success")
+        self.assertEqual(txn_id, "receipt-99")
+        self.assertIsNone(err)
+        fake_bezala.upload_receipt.assert_called_once()
+        kwargs = fake_bezala.upload_receipt.call_args.kwargs
+        self.assertEqual(kwargs["account_id"], 101)
+        self.assertEqual(kwargs["cost_center_id"], 77)
+        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 11}])
+        self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
+        self.assertEqual(kwargs["date"], "2026-04-22")
+
+    def test_missing_vat_rate_returns_pending_not_error(self):
+        """Om ingen vat_rate matchar → 'pending' (user laddar upp manuellt),
+        inte 'failed' (så scanningen inte havererar)."""
+        from app.services.pipeline import _attempt_bezala_upload
+        from app.services.receipt_analyzer import ReceiptAnalysis
+        from app.services.gmail_client import GmailMessage
+
+        analysis = ReceiptAnalysis(
+            is_receipt=True,
+            confidence=95,
+            filename="x.pdf",
+            vendor="X",
+            amount=10.0,
+            currency="EUR",
+            date="2026-04-22",
+            category="Flyg",
+            summary="s",
+        )
+        msg = GmailMessage(
+            message_id="m1", thread_id="t", sender="a@b.com", subject="s",
+            received_at=datetime(2026, 4, 22, tzinfo=timezone.utc), snippet="",
+        )
+        # Ingen vat_rate alls
+        metadata = {"accounts": [], "cost_centers": [], "vat_rates": []}
+
+        fake_bezala = MagicMock()
+        status, txn_id, err = _attempt_bezala_upload(
+            fake_bezala, analysis, msg, PDF_BYTES, "x.pdf",
+            auto_upload=True, confidence_threshold=90, metadata=metadata,
+        )
+        self.assertEqual(status, "pending")
+        self.assertIsNone(txn_id)
+        self.assertIn("vat_rate", err)
+        fake_bezala.upload_receipt.assert_not_called()
+
+    def test_missing_amount_or_date_returns_pending(self):
+        from app.services.pipeline import _attempt_bezala_upload
+        from app.services.receipt_analyzer import ReceiptAnalysis
+        from app.services.gmail_client import GmailMessage
+
+        analysis = ReceiptAnalysis(
+            is_receipt=True,
+            confidence=95,
+            filename="x.pdf",
+            vendor="X",
+            amount=None,  # ← saknas
+            currency="EUR",
+            date="2026-04-22",
+            category="Flyg",
+            summary="s",
+        )
+        msg = GmailMessage(
+            message_id="m1", thread_id="t", sender="a@b.com", subject="s",
+            received_at=datetime(2026, 4, 22, tzinfo=timezone.utc), snippet="",
+        )
+
+        fake_bezala = MagicMock()
+        status, _, err = _attempt_bezala_upload(
+            fake_bezala, analysis, msg, PDF_BYTES, "x.pdf",
+            auto_upload=True, confidence_threshold=90,
+            metadata={"accounts": [], "cost_centers": [], "vat_rates": []},
+        )
+        self.assertEqual(status, "pending")
+        self.assertIn("amount", err.lower())
+        fake_bezala.upload_receipt.assert_not_called()
+
+    def test_bezala_422_bubbles_body_in_error(self):
+        from app.services.pipeline import _attempt_bezala_upload
+        from app.services.bezala_client import BezalaError
+        from app.services.receipt_analyzer import ReceiptAnalysis
+        from app.services.gmail_client import GmailMessage
+
+        analysis = ReceiptAnalysis(
+            is_receipt=True, confidence=95, filename="x.pdf", vendor="X",
+            amount=10.0, currency="EUR", date="2026-04-22",
+            category="Flyg", summary="s",
+        )
+        msg = GmailMessage(
+            message_id="m1", thread_id="t", sender="noreply@finnair.com",
+            subject="s", received_at=datetime(2026, 4, 22, tzinfo=timezone.utc),
+            snippet="",
+        )
+        metadata = {
+            "accounts": [{"id": 1, "name": "Matkaliput"}],
+            "cost_centers": [{"id": 2, "name": "Default"}],
+            "vat_rates": [{"id": 3, "name": "Finland Transport 13.5%"}],
+        }
+
+        fake_bezala = MagicMock()
+        fake_bezala.upload_receipt.side_effect = BezalaError(
+            "Bezala upload_receipt: 422",
+            status_code=422,
+            body='{"errors":{"account_id":["kan inte vara tom"]}}',
+        )
+
+        status, _, err = _attempt_bezala_upload(
+            fake_bezala, analysis, msg, PDF_BYTES, "x.pdf",
+            auto_upload=True, confidence_threshold=90, metadata=metadata,
+        )
+        self.assertEqual(status, "failed")
+        self.assertIn("account_id", err)  # body bevarad
+
+
+class FetchBezalaMetadataTest(unittest.TestCase):
+    def test_metadata_swallows_per_endpoint_errors(self):
+        from app.services.bezala_client import BezalaError
+        from app.services.pipeline import fetch_bezala_metadata
+
+        fake = MagicMock()
+        fake.list_accounts.return_value = [{"id": 1, "name": "A"}]
+        fake.list_cost_centers.side_effect = BezalaError(
+            "500", status_code=500, body="server error",
+        )
+        fake.list_vat_rates.return_value = [{"id": 2, "name": "FI 25.5%"}]
+
+        metadata = fetch_bezala_metadata(fake)
+        self.assertEqual(len(metadata["accounts"]), 1)
+        self.assertEqual(metadata["cost_centers"], [])  # swallowed
+        self.assertEqual(len(metadata["vat_rates"]), 1)
+
+
+# ============================================================
+# /api/bezala/metadata endpoint
+# ============================================================
+
+
+class BezalaMetadataEndpointTest(unittest.TestCase):
+    """Verifiera att GET /api/bezala/metadata returnerar rätt shape även
+    när enskilda Bezala-endpoints fallerar."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app import main as app_module
+        from fastapi.testclient import TestClient
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[app_module.require_auth] = fake_require_auth
+        cls.client = TestClient(app_module.app)
+        cls.app_module = app_module
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def test_metadata_returns_rows_from_all_three(self):
+        fake_bezala = MagicMock()
+        fake_bezala.list_accounts.return_value = [{"id": 1, "name": "Matkaliput"}]
+        fake_bezala.list_cost_centers.return_value = [{"id": 2, "name": "Default"}]
+        fake_bezala.list_vat_rates.return_value = [
+            {"id": 3, "name": "Finland Transport 13.5%"},
+        ]
+
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/metadata")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["accounts"]["count"], 1)
+        self.assertEqual(body["accounts"]["rows"][0]["name"], "Matkaliput")
+        self.assertIsNone(body["accounts"]["error"])
+        self.assertEqual(body["cost_centers"]["count"], 1)
+        self.assertEqual(body["vat_rates"]["count"], 1)
+
+    def test_metadata_shows_per_endpoint_errors(self):
+        """Om /vat_rates kastar BezalaError → error-fältet innehåller
+        status + body istället för att hela requesten 500:ar."""
+        from app.services.bezala_client import BezalaError
+
+        fake_bezala = MagicMock()
+        fake_bezala.list_accounts.return_value = [{"id": 1}]
+        fake_bezala.list_cost_centers.return_value = []
+        fake_bezala.list_vat_rates.side_effect = BezalaError(
+            "500", status_code=500, body="internal error",
+        )
+
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/metadata")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["accounts"]["count"], 1)
+        self.assertIsNotNone(body["vat_rates"]["error"])
+        self.assertIn("500", body["vat_rates"]["error"])
+
+
+# ============================================================
+# /api/messages/{id}/upload-to-bezala integration
+# ============================================================
+
+
+class UploadToBezalaEndpointTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app import main as app_module
+        from app.models import ProcessedMessage
+        from fastapi.testclient import TestClient
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[app_module.require_auth] = fake_require_auth
+        cls.client = TestClient(app_module.app)
+        cls.app_module = app_module
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = ProcessedMessage
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed(self, **overrides) -> int:
+        defaults = dict(
+            message_id="gm-1",
+            sender="noreply@finnair.com",
+            subject="Kvitto",
+            status="saved",
+            file_name="20260422 Finnair HEL-CPH.pdf",
+            drive_file_id="drv-1",
+            drive_link="https://drive/drv-1",
+            vendor="Finnair",
+            amount=503.0,
+            currency="EUR",
+            receipt_date="2026-04-22",
+            category="Flyg",
+            summary="Flyg HEL-CPH",
+            ai_confidence=95,
+            bezala_upload_status="pending",
+        )
+        defaults.update(overrides)
+        with self.SessionLocal() as db:
+            row = self.ProcessedMessage(**defaults)
+            db.add(row)
+            db.flush()
+            mid = row.id
+            db.commit()
+        return mid
+
+    def test_happy_path_calls_upload_receipt_with_mapped_fields(self):
+        mid = self._seed()
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+
+        fake_bezala = MagicMock()
+        fake_bezala.list_accounts.return_value = [{"id": 101, "name": "Matkaliput"}]
+        fake_bezala.list_cost_centers.return_value = [{"id": 77, "name": "Default", "default": True}]
+        fake_bezala.list_vat_rates.return_value = [{"id": 11, "name": "Finland Transport 13.5%"}]
+        fake_receipt = MagicMock()
+        fake_receipt.attachment_id = "receipt-99"
+        fake_bezala.upload_receipt.return_value = fake_receipt
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["bezala_upload_status"], "success")
+        self.assertEqual(body["bezala_transaction_id"], "receipt-99")
+
+        fake_bezala.upload_receipt.assert_called_once()
+        kwargs = fake_bezala.upload_receipt.call_args.kwargs
+        self.assertEqual(kwargs["account_id"], 101)
+        self.assertEqual(kwargs["cost_center_id"], 77)
+        self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
+        self.assertEqual(kwargs["date"], "2026-04-22")
+        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 11}])
+
+    def test_missing_date_returns_400(self):
+        mid = self._seed(receipt_date=None)
+        resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("datum", resp.json()["detail"].lower())
+
+    def test_missing_amount_returns_400(self):
+        mid = self._seed(amount=None)
+        resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("belopp", resp.json()["detail"].lower())
+
+    def test_no_matching_vat_rate_returns_422_with_hint(self):
+        """Om ingen vat_rate matchar → 422 med tydligt meddelande om
+        att användaren ska verifiera via /api/bezala/metadata."""
+        mid = self._seed()
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+
+        fake_bezala = MagicMock()
+        fake_bezala.list_accounts.return_value = []
+        fake_bezala.list_cost_centers.return_value = []
+        fake_bezala.list_vat_rates.return_value = []  # inga momssatser
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+
+        self.assertEqual(resp.status_code, 422)
+        detail = resp.json()["detail"]
+        self.assertIn("VAT", detail)
+        self.assertIn("/api/bezala/metadata", detail)
+
+        # Raden ska markeras som failed med samma meddelande
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(id=mid).first()
+            self.assertEqual(row.bezala_upload_status, "failed")
+
+    def test_bezala_422_preserves_body_in_error(self):
+        """Bezala kastar 422 → raden sparas med body i error_message."""
+        from app.services.bezala_client import BezalaError
+
+        mid = self._seed()
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+
+        fake_bezala = MagicMock()
+        fake_bezala.list_accounts.return_value = [{"id": 1, "name": "Matkaliput"}]
+        fake_bezala.list_cost_centers.return_value = [{"id": 2, "name": "Default"}]
+        fake_bezala.list_vat_rates.return_value = [{"id": 3, "name": "Finland Transport 13.5%"}]
+        fake_bezala.upload_receipt.side_effect = BezalaError(
+            "Bezala upload_receipt: 422",
+            status_code=422,
+            body='{"errors":{"account_id":["kan inte vara tom"]}}',
+        )
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+
+        self.assertEqual(resp.status_code, 502)
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(id=mid).first()
+            self.assertEqual(row.bezala_upload_status, "failed")
+            self.assertIn("account_id", row.bezala_error_message)
+
+
+if __name__ == "__main__":
+    unittest.main()
