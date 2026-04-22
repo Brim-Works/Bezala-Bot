@@ -25,7 +25,8 @@ from app.models import ProcessedMessage, SavedFile, ScanRun
 from app.services.ai_namer import FileNamer
 from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.drive_client import DriveClient
-from app.services.gmail_client import DONE_LABEL, GmailClient, GmailMessage
+from app.services.gmail_client import Attachment, DONE_LABEL, GmailClient, GmailMessage
+from app.services.html_pdf_converter import HtmlToPdfError, html_to_pdf
 from app.services.pdf_validator import looks_like_pdf
 from app.services.receipt_analyzer import (
     AnalyzerError,
@@ -88,6 +89,7 @@ def run_scan(max_results: int = 50) -> ScanResult:
         confidence_threshold = int(app_settings.confidence_threshold or 0)
         ai_min_confidence = int(app_settings.ai_min_confidence_to_save or 0)
         link_fetch_senders = list(app_settings.link_fetch_senders or [])
+        html_to_pdf_enabled = bool(getattr(app_settings, "html_to_pdf_enabled", True))
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
@@ -153,6 +155,7 @@ def run_scan(max_results: int = 50) -> ScanResult:
                 confidence_threshold=confidence_threshold,
                 ai_min_confidence=ai_min_confidence,
                 link_fetch_senders=link_fetch_senders,
+                html_to_pdf_enabled=html_to_pdf_enabled,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fel under bearbetning av %s: %s", mid, exc)
@@ -234,6 +237,7 @@ def _process_one_message(
     confidence_threshold: int = 0,
     ai_min_confidence: int = 0,
     link_fetch_senders: list[str] | None = None,
+    html_to_pdf_enabled: bool = True,
 ) -> None:
     with session_scope() as db:
         if _message_already_processed(db, message_id):
@@ -299,14 +303,59 @@ def _process_one_message(
     ]
 
     if not pdf_attachments:
-        result.skipped += 1
-        logger.info("Inga giltiga PDF-bilagor i %s — markerar som klar", message_id)
-        _log_skip(msg, reason="no_pdf")
+        # Mailet saknar PDF-bilaga. Två alternativ:
+        #   a) html_to_pdf_enabled=False → original "no_pdf"-skip
+        #   b) annars: konvertera mail-bodyn till PDF och behandla som vanlig bilaga
+        if not html_to_pdf_enabled:
+            result.skipped += 1
+            logger.info("Inga giltiga PDF-bilagor i %s — markerar som klar", message_id)
+            _log_skip(msg, reason="no_pdf")
+            try:
+                gmail.mark_done(message_id)
+            except Exception:
+                logger.exception("Kunde inte sätta etikett på %s", message_id)
+            return
+
+        if not (msg.body_html or msg.body_text):
+            result.skipped += 1
+            logger.info("HTML→PDF: %s saknar både html och text — hoppar", message_id)
+            _log_skip(msg, reason="no_content")
+            try:
+                gmail.mark_done(message_id)
+            except Exception:
+                logger.exception("Kunde inte sätta etikett på %s", message_id)
+            return
+
         try:
-            gmail.mark_done(message_id)
-        except Exception:
-            logger.exception("Kunde inte sätta etikett på %s", message_id)
-        return
+            pdf_bytes = html_to_pdf(
+                msg.body_html or None,
+                plain_text_fallback=msg.body_text or None,
+            )
+        except HtmlToPdfError as exc:
+            result.skipped += 1
+            logger.warning("HTML→PDF misslyckades för %s: %s", message_id, exc)
+            _log_skip(msg, reason="html_pdf_failed")
+            try:
+                gmail.mark_done(message_id)
+            except Exception:
+                logger.exception("Kunde inte sätta etikett på %s", message_id)
+            return
+
+        synth_filename = (msg.subject or f"mail-{message_id}").strip() or f"mail-{message_id}"
+        synth_filename = synth_filename.replace("/", "-").replace("\\", "-")[:200]
+        if not synth_filename.lower().endswith(".pdf"):
+            synth_filename = f"{synth_filename}.pdf"
+        pdf_attachments = [
+            Attachment(
+                filename=synth_filename,
+                mime_type="application/pdf",
+                data=pdf_bytes,
+            )
+        ]
+        logger.info(
+            "HTML→PDF: konverterade mail-body för %s (%d bytes)",
+            message_id, len(pdf_bytes),
+        )
 
     saved_any = False
     any_non_receipt = False

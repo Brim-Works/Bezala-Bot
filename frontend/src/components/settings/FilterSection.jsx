@@ -5,6 +5,7 @@ const TOGGLES = [
   { key: 'exclude_promotions', labelKey: 'excludePromotions', hintKey: 'excludePromotionsHint' },
   { key: 'exclude_social', labelKey: 'excludeSocial', hintKey: 'excludeSocialHint' },
   { key: 'exclude_calendar', labelKey: 'excludeCalendar', hintKey: 'excludeCalendarHint' },
+  { key: 'html_to_pdf_enabled', labelKey: 'htmlToPdf', hintKey: 'htmlToPdfHint' },
 ];
 
 export default function FilterSection({ form, update }) {

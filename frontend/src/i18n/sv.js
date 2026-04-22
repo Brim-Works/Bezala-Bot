@@ -220,6 +220,9 @@ export default {
       excludeSocialHint: 'Notifikationer från LinkedIn och liknande.',
       excludeCalendar: 'Exkludera kalenderinbjudningar',
       excludeCalendarHint: '.ics-filer och mötesinbjudningar hoppas över.',
+      htmlToPdf: 'Konvertera mailkvitton till PDF',
+      htmlToPdfHint:
+        'Mail utan bilaga där själva mailet är kvittot (t.ex. Moovy, Skånetrafiken) konverteras automatiskt till PDF.',
     },
     scanRules: {
       title: 'Scanningsregler',

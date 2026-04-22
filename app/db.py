@@ -47,6 +47,8 @@ _APP_SETTINGS_ADDITIONS = {
     # FAS 5.1+ — AI-konfidens + länk-fetch
     "ai_min_confidence_to_save": "INTEGER NOT NULL DEFAULT 40",
     "link_fetch_senders": "JSON NOT NULL DEFAULT '[]'",
+    # Gate 1 — HTML→PDF för mailkvitton utan bilaga. Default ON.
+    "html_to_pdf_enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
 }
 
 _INDEXES = [

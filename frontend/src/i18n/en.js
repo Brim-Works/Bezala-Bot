@@ -220,6 +220,9 @@ export default {
       excludeSocialHint: 'Notifications from LinkedIn and similar.',
       excludeCalendar: 'Exclude calendar invites',
       excludeCalendarHint: '.ics files and meeting invites are skipped.',
+      htmlToPdf: 'Convert mail receipts to PDF',
+      htmlToPdfHint:
+        'Mail without attachments where the mail itself is the receipt (e.g. Moovy, Skånetrafiken) is auto-converted to PDF.',
     },
     scanRules: {
       title: 'Scan rules',

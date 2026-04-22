@@ -109,6 +109,10 @@ class AppSettings(Base):
     # kvitto-länk i mailets body istället. Förifylld med Arlanda Express.
     link_fetch_senders = Column(JSON, nullable=False, default=list)
 
+    # Konvertera mail-body till PDF när bilaga saknas (t.ex. Moovy,
+    # Skånetrafiken). Default ON.
+    html_to_pdf_enabled = Column(Boolean, nullable=False, default=True)
+
     updated_at = Column(
         DateTime,
         server_default=func.now(),

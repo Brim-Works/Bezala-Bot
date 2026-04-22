@@ -26,6 +26,7 @@ const FIELDS_IN_PAYLOAD = [
   'trash_auto_purge_days',
   'ai_min_confidence_to_save',
   'link_fetch_senders',
+  'html_to_pdf_enabled',
 ];
 
 function pickPayload(form) {

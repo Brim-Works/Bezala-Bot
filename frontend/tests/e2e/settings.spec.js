@@ -89,6 +89,35 @@ test('Settings — båda teman + EN', async ({ page }) => {
   await expect(page.getByText('Automation', { exact: true })).toBeVisible();
 });
 
+test('Settings — html_to_pdf-toggle är på som default och persisterar via PUT', async ({
+  page,
+}) => {
+  await page.goto('/settings');
+  const toggle = page.getByTestId('toggle-html_to_pdf_enabled');
+  await expect(toggle).toBeVisible();
+  await expect(toggle).toBeChecked();
+
+  // Stäng av togglen
+  await toggle.uncheck();
+
+  const putRequest = page.waitForRequest(
+    (req) => req.url().includes('/api/settings') && req.method() === 'PUT',
+  );
+  await page.getByTestId('save-settings').click();
+  const req = await putRequest;
+  const body = req.postDataJSON();
+  expect(body.html_to_pdf_enabled).toBe(false);
+});
+
+test('Settings — html_to_pdf-toggle visar svensk hjälptext om Moovy/Skånetrafiken', async ({
+  page,
+}) => {
+  await page.goto('/settings');
+  await expect(
+    page.getByText(/Moovy.*Skånetrafiken/i, { exact: false }),
+  ).toBeVisible();
+});
+
 test('Settings — SaveBar nollställs efter lyckad save och aktiveras igen vid ny ändring', async ({
   page,
 }) => {

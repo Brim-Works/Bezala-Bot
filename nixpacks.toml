@@ -1,5 +1,16 @@
 [phases.setup]
-nixPkgs = ["python311", "nodejs_20", "gcc"]
+# weasyprint kräver pango + libffi + glib + cairo som systemdeps
+nixPkgs = [
+  "python311",
+  "nodejs_20",
+  "gcc",
+  "pango",
+  "libffi",
+  "glib",
+  "cairo",
+  "harfbuzz",
+  "fontconfig",
+]
 
 [phases.install]
 cmds = [

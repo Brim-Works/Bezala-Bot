@@ -235,6 +235,7 @@ class SettingsPayload(BaseModel):
     trash_auto_purge_days: int = Field(default=0, ge=0, le=365)
     ai_min_confidence_to_save: int = Field(default=40, ge=0, le=100)
     link_fetch_senders: list[str] = Field(default_factory=list)
+    html_to_pdf_enabled: bool = True
 
 
 @app.get("/api/settings")
