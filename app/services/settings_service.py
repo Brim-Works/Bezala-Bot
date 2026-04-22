@@ -119,6 +119,7 @@ def build_gmail_query(row: AppSettings, done_label: str) -> str:
         f'-label:"{done_label}"',
         "-in:spam",
         "-in:trash",
+        "after:2026/03/21",
     ]
 
     if row.require_attachments:

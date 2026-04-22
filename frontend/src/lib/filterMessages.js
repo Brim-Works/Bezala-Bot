@@ -1,6 +1,9 @@
 /* Filtrering + sökning för dashboardens tabell. Ren funktion — testbar
  * utan React. Förutsätter att meddelanden redan är dekorerade med
- * file_status + bezala_status (från api/adapters.withStatuses). */
+ * file_status + bezala_status (från api/adapters.withStatuses).
+ *
+ * 'all' visar ej skipped — dashboardens tabell ska spegla faktiskt
+ * bearbetade kvitton, och filter-tab-räknarna räknar samma mängd. */
 
 export function applyFilter(messages, filter) {
   switch (filter) {
@@ -14,7 +17,7 @@ export function applyFilter(messages, filter) {
       );
     case 'all':
     default:
-      return messages;
+      return messages.filter((m) => m.file_status !== 'skipped');
   }
 }
 

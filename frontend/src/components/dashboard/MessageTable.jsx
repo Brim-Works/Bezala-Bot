@@ -147,6 +147,12 @@ export default function MessageTable({
                     <BulkCheckbox
                       checked={isChecked}
                       onToggle={() => selection.toggle(m.id)}
+                      onRangeSelect={() =>
+                        selection.selectRange(
+                          messages.map((x) => x.id),
+                          m.id,
+                        )
+                      }
                       ariaLabel={`${t.trash.bulk.selectRow}: ${m.vendor || m.subject || m.id}`}
                     />
                   </td>
