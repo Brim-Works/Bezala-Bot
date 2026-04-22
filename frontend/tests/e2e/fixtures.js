@@ -168,9 +168,42 @@ export function buildRuns() {
       errors,
       status: 'ok',
       notes: null,
+      filtered_messages: [],
     });
   }
   return runs;
+}
+
+export function buildFilteredEntries() {
+  return [
+    {
+      message_id: 'gm-moovy-1',
+      sender: 'Moovy <kvitto@moovy.fi>',
+      subject: 'Din parkering 19.04.2026',
+      received_at: isoAgo(3 * ONE_HOUR),
+      reason: 'ai_filtered',
+      confidence: 35,
+      detail: null,
+    },
+    {
+      message_id: 'gm-html-2',
+      sender: 'Skånetrafiken <kvitto@skanetrafiken.se>',
+      subject: 'Biljett 12345',
+      received_at: isoAgo(3 * ONE_HOUR),
+      reason: 'html_pdf_failed',
+      confidence: null,
+      detail: 'weasyprint css error',
+    },
+    {
+      message_id: 'gm-spam-3',
+      sender: 'marketing@badguy.com',
+      subject: 'SUPER KAMPANJ',
+      received_at: isoAgo(3 * ONE_HOUR),
+      reason: 'not_receipt',
+      confidence: 92,
+      detail: null,
+    },
+  ];
 }
 
 export function buildSettings(overrides = {}) {

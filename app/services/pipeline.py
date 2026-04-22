@@ -52,10 +52,51 @@ class ScanResult:
     skipped: int = 0
     errors: int = 0
     notes: list[str] = None
+    # Gate 1.5 — full detalj om varje mail som INTE sparades (inkl. sparade
+    # kvitton som filtrerades av AI eller var duplicates). Serialiseras
+    # till scan_runs.filtered_messages.
+    filtered: list[dict] = None
 
     def __post_init__(self):
         if self.notes is None:
             self.notes = []
+        if self.filtered is None:
+            self.filtered = []
+
+
+# Låst reason-enum (speglas i frontend-i18n)
+FILTERED_REASON_AI_FILTERED = "ai_filtered"
+FILTERED_REASON_NOT_RECEIPT = "not_receipt"
+FILTERED_REASON_NO_PDF = "no_pdf"
+FILTERED_REASON_NO_CONTENT = "no_content"
+FILTERED_REASON_HTML_PDF_FAILED = "html_pdf_failed"
+FILTERED_REASON_EXCLUDED_SUBJECT = "excluded_subject"
+FILTERED_REASON_NO_LINK = "no_link"
+FILTERED_REASON_ALREADY_PROCESSED = "already_processed"
+
+
+def _record_filtered(
+    result: "ScanResult",
+    msg: "GmailMessage | None",
+    reason: str,
+    *,
+    message_id: str | None = None,
+    confidence: int | None = None,
+    detail: str | None = None,
+) -> None:
+    """Lägg till en entry i result.filtered för Log-vyn."""
+    received_at = None
+    if msg is not None and getattr(msg, "received_at", None):
+        received_at = msg.received_at.isoformat()
+    result.filtered.append({
+        "message_id": (msg.message_id if msg is not None else message_id) or "",
+        "sender": (msg.sender if msg is not None else None),
+        "subject": (msg.subject if msg is not None else None),
+        "received_at": received_at,
+        "reason": reason,
+        "confidence": confidence,
+        "detail": detail,
+    })
 
 
 def _message_already_processed(db, message_id: str) -> bool:
@@ -301,6 +342,10 @@ def _process_one_message(
     with session_scope() as db:
         if _message_already_processed(db, message_id):
             result.skipped += 1
+            _record_filtered(
+                result, None, FILTERED_REASON_ALREADY_PROCESSED,
+                message_id=message_id,
+            )
             logger.debug("Hoppar över redan bearbetat %s", message_id)
             return
 
@@ -336,6 +381,7 @@ def _process_one_message(
             # INTE mark_done — användaren ska kunna trigga hämtning.
         else:
             result.skipped += 1
+            _record_filtered(result, msg, FILTERED_REASON_NO_LINK)
             logger.info(
                 "Link-fetch: ingen kvitto-länk hittades i %s — hoppar",
                 message_id,
@@ -349,6 +395,10 @@ def _process_one_message(
 
     if excluded_subjects and subject_matches_exclusion(msg.subject, excluded_subjects):
         result.skipped += 1
+        _record_filtered(
+            result, msg, FILTERED_REASON_EXCLUDED_SUBJECT,
+            detail=msg.subject,
+        )
         logger.info("Hoppar över %s — ämnet matchar exkludering: %r", message_id, msg.subject)
         _log_skip(msg, reason="excluded_subject")
         try:
@@ -367,6 +417,7 @@ def _process_one_message(
         #   b) annars: konvertera mail-bodyn till PDF och behandla som vanlig bilaga
         if not html_to_pdf_enabled:
             result.skipped += 1
+            _record_filtered(result, msg, FILTERED_REASON_NO_PDF)
             logger.info("Inga giltiga PDF-bilagor i %s — markerar som klar", message_id)
             _log_skip(msg, reason="no_pdf")
             try:
@@ -383,6 +434,7 @@ def _process_one_message(
 
         if not (msg.body_html or msg.body_text):
             result.skipped += 1
+            _record_filtered(result, msg, FILTERED_REASON_NO_CONTENT)
             logger.info("HTML→PDF: %s saknar både html och text — hoppar", message_id)
             _log_skip(msg, reason="no_content")
             try:
@@ -398,6 +450,10 @@ def _process_one_message(
             )
         except HtmlToPdfError as exc:
             result.skipped += 1
+            _record_filtered(
+                result, msg, FILTERED_REASON_HTML_PDF_FAILED,
+                detail=str(exc),
+            )
             logger.warning(
                 "HTML→PDF misslyckades för %s (sender=%r subject=%r): %s",
                 message_id, msg.sender, msg.subject, exc,
@@ -456,6 +512,10 @@ def _process_one_message(
 
             if not analysis.is_receipt:
                 any_non_receipt = True
+                _record_filtered(
+                    result, msg, FILTERED_REASON_NOT_RECEIPT,
+                    confidence=analysis.confidence,
+                )
                 logger.info(
                     "Claude: %s är inte ett kvitto (confidence=%d) — hoppar utan logg",
                     message_id,
@@ -467,6 +527,10 @@ def _process_one_message(
             # is_receipt=False: mark_done i Gmail + logga i scan_run.notes.
             if ai_min_confidence > 0 and analysis.confidence < ai_min_confidence:
                 any_non_receipt = True
+                _record_filtered(
+                    result, msg, FILTERED_REASON_AI_FILTERED,
+                    confidence=analysis.confidence,
+                )
                 result.notes.append(
                     f"{message_id}: låg confidence {analysis.confidence}% < {ai_min_confidence}% — sparas ej"
                 )
@@ -613,6 +677,7 @@ def _finalize_run(run_id: int, result: ScanResult, *, status: str, note: str | N
             run.messages_skipped = result.skipped
             run.errors = result.errors
             run.status = status
+            run.filtered_messages = list(result.filtered or [])
             if note:
                 result.notes.append(note)
             if result.notes:

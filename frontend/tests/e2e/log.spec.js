@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import {
+  buildFilteredEntries,
   buildMessages,
   buildRuns,
   buildSkippedMessage,
@@ -153,4 +154,103 @@ test('Log Gate 2 — raden försvinner ur listan efter lyckad reprocess', async 
   await page.getByTestId('retry-80').click();
   // Efter success tas raden bort från mocken och refetch sker → rad försvinner
   await expect(page.getByTestId('run-message-80')).toHaveCount(0);
+});
+
+// ---------- Gate 1.5: Loggtransparens ----------
+
+function runsWithFiltered() {
+  const runs = buildRuns();
+  runs[0].messages_processed = 0;
+  runs[0].messages_found = 3;
+  runs[0].filtered_messages = buildFilteredEntries();
+  return runs;
+}
+
+test('Log Gate 1.5 — filtered entries renderas i tabellen', async ({
+  page,
+}) => {
+  await setupApiMocks(page, { runs: runsWithFiltered() });
+  await page.goto('/log');
+
+  await expect(page.getByTestId('filtered-row-gm-moovy-1')).toBeVisible();
+  await expect(page.getByTestId('filtered-row-gm-html-2')).toBeVisible();
+  await expect(page.getByTestId('filtered-row-gm-spam-3')).toBeVisible();
+});
+
+test('Log Gate 1.5 — reason-pill visar confidence för AI-filtrerad', async ({
+  page,
+}) => {
+  await setupApiMocks(page, { runs: runsWithFiltered() });
+  await page.goto('/log');
+  await expect(
+    page.getByTestId('filtered-reason-gm-moovy-1'),
+  ).toHaveText('AI-filtrerad (35%)');
+  await expect(
+    page.getByTestId('filtered-reason-gm-html-2'),
+  ).toHaveText('PDF-konvertering misslyckades');
+  await expect(
+    page.getByTestId('filtered-reason-gm-spam-3'),
+  ).toHaveText('Ej kvitto');
+});
+
+test('Log Gate 1.5 — filtered rader öppnar INTE drawer vid klick', async ({
+  page,
+}) => {
+  await setupApiMocks(page, { runs: runsWithFiltered() });
+  await page.goto('/log');
+  await page.getByTestId('filtered-row-gm-moovy-1').click();
+  // Drawer har testid 'drawer' — ska inte synas
+  await expect(page.getByTestId('drawer')).toHaveCount(0);
+});
+
+test('Log Gate 1.5 — text-sök filtrerar både sparade och filtrerade rader', async ({
+  page,
+}) => {
+  await setupApiMocks(page, { runs: runsWithFiltered() });
+  await page.goto('/log');
+
+  await page.getByTestId('log-search-input').fill('moovy');
+  await expect(page.getByTestId('filtered-row-gm-moovy-1')).toBeVisible();
+  await expect(page.getByTestId('filtered-row-gm-html-2')).toHaveCount(0);
+  await expect(page.getByTestId('filtered-row-gm-spam-3')).toHaveCount(0);
+});
+
+test('Log Gate 1.5 — status-pill filtrerar körningslistan', async ({
+  page,
+}) => {
+  // Skapa körningar med blandade statusar:
+  //   runs[0]=3 processed (ok), runs[2]=2 processed (ok), runs[3]=1 proc+1 err (partial)
+  //   övriga = 0 processed 0 err (idle)
+  const runs = buildRuns();
+  await setupApiMocks(page, { runs });
+  await page.goto('/log');
+
+  // Partial = processed>0 OCH errors>0 → bara runs[3] (id 103)
+  await page.getByTestId('log-search-status-partial').click();
+  await expect(page.getByTestId('run-item-103')).toBeVisible();
+  await expect(page.getByTestId('run-item-100')).toHaveCount(0);
+  await expect(page.getByTestId('run-item-102')).toHaveCount(0);
+
+  // OK = processed>0 AND errors=0 → runs[0] (id 100), runs[2] (id 102)
+  await page.getByTestId('log-search-status-ok').click();
+  await expect(page.getByTestId('run-item-100')).toBeVisible();
+  await expect(page.getByTestId('run-item-102')).toBeVisible();
+  await expect(page.getByTestId('run-item-103')).toHaveCount(0);
+
+  // Alla tillbaka
+  await page.getByTestId('log-search-status-all').click();
+  await expect(page.getByTestId('run-item-100')).toBeVisible();
+  await expect(page.getByTestId('run-item-103')).toBeVisible();
+});
+
+test('Log Gate 1.5 — datum-dropdown filtrerar körningar', async ({ page }) => {
+  await setupApiMocks(page);
+  await page.goto('/log');
+
+  await page.getByTestId('log-search-date').selectOption('last24h');
+  // 14 körningar är utspridda över 14 timmar — alla inom 24h, så antalet
+  // ska fortfarande vara > 0. Väljer last7d för att vara säker.
+  await page.getByTestId('log-search-date').selectOption('last7d');
+  const count = await page.getByTestId(/^run-item-/).count();
+  expect(count).toBeGreaterThan(0);
 });

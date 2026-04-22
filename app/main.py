@@ -837,6 +837,8 @@ def list_runs(
             "errors": r.errors,
             "status": r.status,
             "notes": r.notes,
+            # NULL i äldre körningar → [] i API-svaret
+            "filtered_messages": list(r.filtered_messages or []),
         }
         for r in rows
     ]

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import VendorLogo from '../VendorLogo.jsx';
 import StatusCell from '../StatusCell.jsx';
+import Pill from '../Pill.jsx';
 import { IconRefresh } from '../../icons/index.jsx';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount } from '../../lib/format.js';
@@ -11,14 +12,31 @@ import { useToast } from '../../lib/toast.jsx';
  * run.started_at och run.finished_at). Oprecist när körningar överlappar
  * — se BACKEND-TODO (message_ids saknas på /api/runs).
  *
- * Rader med file_status='skipped' får en "Försök igen"-knapp som raderar
- * DB-raden, tar bort Gmail-etiketten och triggar en ny scan. */
-export default function RunMessages({ messages, onOpenMessage, onReprocessed }) {
+ * Gate 2: "Försök igen"-knapp på skipped DB-rader.
+ * Gate 1.5: Tabellen visar även filteredEntries (mail utan DB-rad som
+ * filtrerades bort av pipelinen). Dessa är inte klickbara och har
+ * ingen "Försök igen"-knapp — bara en reason-pill. */
+function reasonLabel(t, entry) {
+  const base = t.log.filtered[entry.reason] || entry.reason;
+  if (entry.reason === 'ai_filtered' && entry.confidence != null) {
+    return base.replace('{confidence}', entry.confidence);
+  }
+  return base;
+}
+
+export default function RunMessages({
+  messages,
+  filteredEntries,
+  onOpenMessage,
+  onReprocessed,
+}) {
   const { t, lang } = useI18n();
   const toast = useToast();
   const [retrying, setRetrying] = useState(() => new Set());
 
-  if (!messages || messages.length === 0) return null;
+  const hasMessages = messages && messages.length > 0;
+  const hasFiltered = filteredEntries && filteredEntries.length > 0;
+  if (!hasMessages && !hasFiltered) return null;
 
   async function onRetry(id) {
     setRetrying((prev) => {
@@ -44,65 +62,113 @@ export default function RunMessages({ messages, onOpenMessage, onReprocessed }) 
     }
   }
 
+  const totalCount = (messages?.length || 0) + (filteredEntries?.length || 0);
+
   return (
     <div className="card run-messages" data-testid="run-messages">
       <div className="run-messages__head">
         <span className="run-messages__title">{t.log.messagesTitle}</span>
-        <span className="mono muted">{messages.length}</span>
+        <span className="mono muted">{totalCount}</span>
       </div>
       <table className="tbl">
         <tbody>
-          {messages.map((m) => {
-            const canRetry = m.file_status === 'skipped';
-            const isRetrying = retrying.has(m.id);
-            return (
+          {hasMessages &&
+            messages.map((m) => {
+              const canRetry = m.file_status === 'skipped';
+              const isRetrying = retrying.has(m.id);
+              return (
+                <tr
+                  key={`saved-${m.id}`}
+                  onClick={() => onOpenMessage?.(m.id)}
+                  data-testid={`run-message-${m.id}`}
+                >
+                  <td className="mono tbl__col-id" style={{ width: 80 }}>
+                    #{String(m.id).padStart(4, '0')}
+                  </td>
+                  <td style={{ width: 200 }}>
+                    <span className="vchip">
+                      <VendorLogo name={m.vendor} />
+                      <span>{m.vendor || <span className="muted">—</span>}</span>
+                    </span>
+                  </td>
+                  <td className="tbl__subject">
+                    {m.subject || <span className="muted">—</span>}
+                  </td>
+                  <td className="mono tbl__amount" style={{ width: 120 }}>
+                    {m.amount != null ? fmtAmount(m.amount, m.currency, lang) : '—'}
+                  </td>
+                  <td style={{ width: 160 }}>
+                    <StatusCell
+                      fileStatus={m.file_status}
+                      bezalaStatus={m.bezala_status}
+                    />
+                  </td>
+                  <td style={{ width: 120 }}>
+                    {canRetry ? (
+                      <button
+                        type="button"
+                        className="btn btn-ghost btn-sm"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onRetry(m.id);
+                        }}
+                        disabled={isRetrying}
+                        data-testid={`retry-${m.id}`}
+                        aria-label={t.log.retry}
+                      >
+                        <IconRefresh />
+                        <span>{isRetrying ? t.log.retrying : t.log.retry}</span>
+                      </button>
+                    ) : null}
+                  </td>
+                </tr>
+              );
+            })}
+
+          {hasMessages && hasFiltered ? (
+            <tr
+              className="run-messages__separator"
+              data-testid="run-messages-separator"
+            >
+              <td colSpan={6} className="muted">
+                — {t.log.filtered.title} —
+              </td>
+            </tr>
+          ) : null}
+
+          {hasFiltered &&
+            filteredEntries.map((e, idx) => (
               <tr
-                key={m.id}
-                onClick={() => onOpenMessage?.(m.id)}
-                data-testid={`run-message-${m.id}`}
+                key={`filtered-${e.message_id || idx}`}
+                className="run-messages__filtered muted"
+                data-testid={`filtered-row-${e.message_id || idx}`}
               >
                 <td className="mono tbl__col-id" style={{ width: 80 }}>
-                  #{String(m.id).padStart(4, '0')}
+                  —
                 </td>
                 <td style={{ width: 200 }}>
-                  <span className="vchip">
-                    <VendorLogo name={m.vendor} />
-                    <span>{m.vendor || <span className="muted">—</span>}</span>
+                  <span className="mono">
+                    {e.sender || <span className="muted">—</span>}
                   </span>
                 </td>
                 <td className="tbl__subject">
-                  {m.subject || <span className="muted">—</span>}
+                  {e.subject || <span className="muted">—</span>}
                 </td>
                 <td className="mono tbl__amount" style={{ width: 120 }}>
-                  {m.amount != null ? fmtAmount(m.amount, m.currency, lang) : '—'}
+                  —
                 </td>
                 <td style={{ width: 160 }}>
-                  <StatusCell
-                    fileStatus={m.file_status}
-                    bezalaStatus={m.bezala_status}
-                  />
+                  <span
+                    className="pill pill--warn"
+                    data-testid={`filtered-reason-${e.message_id || idx}`}
+                  >
+                    <span className="pill__dot" aria-hidden="true" />
+                    {reasonLabel(t, e)}
+                  </span>
                 </td>
-                <td style={{ width: 120 }}>
-                  {canRetry ? (
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onRetry(m.id);
-                      }}
-                      disabled={isRetrying}
-                      data-testid={`retry-${m.id}`}
-                      aria-label={t.log.retry}
-                    >
-                      <IconRefresh />
-                      <span>{isRetrying ? t.log.retrying : t.log.retry}</span>
-                    </button>
-                  ) : null}
-                </td>
+                <td style={{ width: 120 }} />
               </tr>
-            );
-          })}
+            ))}
         </tbody>
       </table>
     </div>

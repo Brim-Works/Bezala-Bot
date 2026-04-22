@@ -10,8 +10,16 @@ import { useDrawer } from '../drawer/DrawerProvider.jsx';
 import KpiStrip from '../components/log/KpiStrip.jsx';
 import RunList from '../components/log/RunList.jsx';
 import RunDetail from '../components/log/RunDetail.jsx';
+import LogSearch from '../components/log/LogSearch.jsx';
 
 const POLL_INTERVAL_MS = 60_000;
+
+const DATE_FILTERS = {
+  all: null,
+  last24h: 1,
+  last7d: 7,
+  last30d: 30,
+};
 
 function messagesForRun(run, allMessages) {
   if (!run || !run.started_at) return [];
@@ -34,6 +42,9 @@ export default function Log() {
   const { openDrawer } = useDrawer();
   const [selectedRunId, setSelectedRunId] = useState(null);
   const [clearingErrors, setClearingErrors] = useState(false);
+  const [searchText, setSearchText] = useState('');
+  const [dateFilter, setDateFilter] = useState('all');
+  const [statusFilter, setStatusFilter] = useState('all');
 
   const loader = useCallback(async () => {
     const [runs, rawMessages] = await Promise.all([
@@ -50,6 +61,22 @@ export default function Log() {
   const runs = data?.runs || [];
   const messages = data?.messages || [];
 
+  // Filtrera körningslistan på datum + status
+  const filteredRuns = useMemo(() => {
+    const days = DATE_FILTERS[dateFilter];
+    return runs.filter((run) => {
+      if (days != null && !isWithinDays(run.started_at, days)) return false;
+      if (statusFilter === 'all') return true;
+      const processed = run.messages_processed || 0;
+      const errorCount = run.errors || 0;
+      if (statusFilter === 'error') return errorCount > 0 && processed === 0;
+      if (statusFilter === 'partial') return errorCount > 0 && processed > 0;
+      if (statusFilter === 'idle') return errorCount === 0 && processed === 0;
+      if (statusFilter === 'ok') return errorCount === 0 && processed > 0;
+      return true;
+    });
+  }, [runs, dateFilter, statusFilter]);
+
   useEffect(() => {
     const id = setInterval(() => {
       refetch().catch(() => {});
@@ -59,10 +86,17 @@ export default function Log() {
 
   const selectedRun = useMemo(() => {
     if (selectedRunId != null) {
-      return runs.find((r) => r.id === selectedRunId) || runs[0] || null;
+      // Försök först bland filtrerade körningar; annars fall tillbaka på alla
+      return (
+        filteredRuns.find((r) => r.id === selectedRunId) ||
+        runs.find((r) => r.id === selectedRunId) ||
+        filteredRuns[0] ||
+        runs[0] ||
+        null
+      );
     }
-    return runs[0] || null;
-  }, [runs, selectedRunId]);
+    return filteredRuns[0] || runs[0] || null;
+  }, [runs, filteredRuns, selectedRunId]);
 
   const runsLast24h = useMemo(
     () => runs.filter((r) => isWithinDays(r.started_at, 1)),
@@ -95,6 +129,28 @@ export default function Log() {
     () => messagesForRun(selectedRun, messages),
     [selectedRun, messages],
   );
+
+  // Text-sök filtrerar sparade + filtrerade rader inom vald körning
+  const searchLower = searchText.trim().toLowerCase();
+  const matchesSearch = useCallback(
+    (sender, subject) => {
+      if (!searchLower) return true;
+      const s = (sender || '').toLowerCase();
+      const sub = (subject || '').toLowerCase();
+      return s.includes(searchLower) || sub.includes(searchLower);
+    },
+    [searchLower],
+  );
+
+  const visibleMessages = useMemo(
+    () => runMessages.filter((m) => matchesSearch(m.sender, m.subject)),
+    [runMessages, matchesSearch],
+  );
+
+  const visibleFiltered = useMemo(() => {
+    const entries = selectedRun?.filtered_messages || [];
+    return entries.filter((e) => matchesSearch(e.sender, e.subject));
+  }, [selectedRun, matchesSearch]);
 
   const clearErrors = useCallback(async () => {
     const confirmed =
@@ -145,9 +201,18 @@ export default function Log() {
         errorCount={kpi.errorCount}
       />
 
+      <LogSearch
+        searchText={searchText}
+        onSearchText={setSearchText}
+        dateFilter={dateFilter}
+        onDateFilter={setDateFilter}
+        statusFilter={statusFilter}
+        onStatusFilter={setStatusFilter}
+      />
+
       <div className="log-split">
         <RunList
-          runs={runs}
+          runs={filteredRuns}
           selectedId={selectedRun?.id ?? null}
           onSelect={setSelectedRunId}
           onClearErrors={clearErrors}
@@ -155,7 +220,8 @@ export default function Log() {
         />
         <RunDetail
           run={selectedRun}
-          messages={runMessages}
+          messages={visibleMessages}
+          filteredEntries={visibleFiltered}
           onOpenMessage={onOpenMessage}
           onReprocessed={onReprocessed}
         />

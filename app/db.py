@@ -51,6 +51,12 @@ _APP_SETTINGS_ADDITIONS = {
     "html_to_pdf_enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
 }
 
+_SCAN_RUNS_ADDITIONS = {
+    # Gate 1.5 — Loggtransparens. Array av filtrerade mail med reason +
+    # confidence. Nullable — gamla körningar har NULL (tolkas som []).
+    "filtered_messages": "JSON",
+}
+
 _INDEXES = [
     (
         "ix_processed_messages_deleted_at",
@@ -93,6 +99,20 @@ def _apply_schema_migrations() -> None:
                         text(f"ALTER TABLE app_settings ADD COLUMN {name} {col_type}")
                     )
                     logger.info("Lade till kolumn app_settings.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
+    if "scan_runs" in tables:
+        existing = {col["name"] for col in insp.get_columns("scan_runs")}
+        with engine.begin() as conn:
+            for name, col_type in _SCAN_RUNS_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE scan_runs ADD COLUMN {name} {col_type}")
+                    )
+                    logger.info("Lade till kolumn scan_runs.%s", name)
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 
