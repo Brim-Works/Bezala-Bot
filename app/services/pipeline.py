@@ -24,6 +24,7 @@ from app.db import session_scope
 from app.models import ProcessedMessage, SavedFile, ScanRun
 from app.services.ai_namer import FileNamer
 from app.services.bezala_client import BezalaClient, BezalaError
+from app.services.bezala_field_mapper import build_receipt_params
 from app.services.drive_client import DriveClient
 from app.services.gmail_client import Attachment, DONE_LABEL, GmailClient, GmailMessage
 from app.services.html_pdf_converter import HtmlToPdfError, html_to_pdf
@@ -118,12 +119,21 @@ def run_scan(max_results: int = 50) -> ScanResult:
         )
 
     bezala: BezalaClient | None = None
+    bezala_metadata: dict = {"accounts": [], "cost_centers": [], "vat_rates": []}
     if auto_upload:
         try:
             bezala = BezalaClient()
             logger.info(
                 "Bezala auto-upload aktivt (confidence_threshold=%d).",
                 confidence_threshold,
+            )
+            # Hämta referensdata en gång per scan — inte per kvitto.
+            bezala_metadata = fetch_bezala_metadata(bezala)
+            logger.info(
+                "Bezala metadata: accounts=%d cost_centers=%d vat_rates=%d",
+                len(bezala_metadata["accounts"]),
+                len(bezala_metadata["cost_centers"]),
+                len(bezala_metadata["vat_rates"]),
             )
         except BezalaError as exc:
             logger.warning("Bezala-klienten kunde inte initialiseras: %s", exc)
@@ -156,6 +166,7 @@ def run_scan(max_results: int = 50) -> ScanResult:
                 ai_min_confidence=ai_min_confidence,
                 link_fetch_senders=link_fetch_senders,
                 html_to_pdf_enabled=html_to_pdf_enabled,
+                bezala_metadata=bezala_metadata,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("Fel under bearbetning av %s: %s", mid, exc)
@@ -170,6 +181,24 @@ def run_scan(max_results: int = 50) -> ScanResult:
     return result
 
 
+def fetch_bezala_metadata(bezala: BezalaClient) -> dict:
+    """Hämta Bezala-metadata (accounts, cost_centers, vat_rates). Sväljer
+    fel per endpoint så vi returnerar det vi faktiskt fick — anroparen
+    kan fatta beslut om mappningen är komplett nog."""
+    def _safe(fn, label: str) -> list[dict]:
+        try:
+            return fn()
+        except BezalaError as exc:
+            logger.warning("Bezala metadata %s misslyckades: %s", label, exc)
+            return []
+
+    return {
+        "accounts": _safe(bezala.list_accounts, "accounts"),
+        "cost_centers": _safe(bezala.list_cost_centers, "cost_centers"),
+        "vat_rates": _safe(bezala.list_vat_rates, "vat_rates"),
+    }
+
+
 def _attempt_bezala_upload(
     bezala: BezalaClient | None,
     analysis: ReceiptAnalysis | None,
@@ -179,6 +208,7 @@ def _attempt_bezala_upload(
     *,
     auto_upload: bool,
     confidence_threshold: int,
+    metadata: dict | None = None,
 ) -> tuple[str, str | None, str | None]:
     """Försök ladda upp till Bezala. Returnerar (status, transaction_id, error).
 
@@ -205,21 +235,53 @@ def _attempt_bezala_upload(
         )
         return "pending", None, None
 
-    try:
-        attachment = bezala.upload_attachment(filename, pdf_bytes)
-        transaction = bezala.create_transaction(
-            attachment_ids=[attachment.attachment_id],
-            vendor=analysis.vendor,
-            amount=analysis.amount,
-            currency=analysis.currency,
-            date=analysis.date,
-            category=analysis.category,
-            description=analysis.summary or msg.subject,
+    if analysis.amount is None or not analysis.date:
+        logger.warning(
+            "Bezala: saknar amount eller date för %s — kan inte bygga vat_lines",
+            filename,
         )
-        return "success", transaction.transaction_id, None
+        return "pending", None, "amount/date saknas för Bezala-upload"
+
+    meta = metadata or {"accounts": [], "cost_centers": [], "vat_rates": []}
+    params = build_receipt_params(
+        file_name=filename,
+        sender=msg.sender,
+        vendor=analysis.vendor,
+        category=analysis.category,
+        amount=analysis.amount,
+        currency=analysis.currency,
+        receipt_date=analysis.date,
+        accounts=meta["accounts"],
+        cost_centers=meta["cost_centers"],
+        vat_rates=meta["vat_rates"],
+    )
+    if not params.get("vat_lines"):
+        logger.warning(
+            "Bezala: ingen vat_rate matchade för %s (category=%s, sender=%s) — skippar auto-upload",
+            filename, analysis.category, msg.sender,
+        )
+        return "pending", None, "ingen vat_rate matchad — verifiera via /api/bezala/metadata"
+
+    try:
+        receipt = bezala.upload_receipt(
+            filename=filename,
+            pdf_bytes=pdf_bytes,
+            description=params["description"],
+            date=params["date"],
+            amount=params["amount"],
+            currency=params["currency"],
+            vat_lines=params["vat_lines"],
+            account_id=params.get("account_id"),
+            cost_center_id=params.get("cost_center_id"),
+            vendor=params.get("vendor"),
+        )
+        return "success", receipt.attachment_id, None
     except BezalaError as exc:
         logger.exception("Bezala-upload misslyckades för %s", filename)
-        return "failed", None, str(exc)
+        err = f"{exc}"
+        if exc.body:
+            err = f"{exc} | body={exc.body}"
+        return "failed", None, err[:2000]
 
 
 def _process_one_message(
@@ -238,6 +300,7 @@ def _process_one_message(
     ai_min_confidence: int = 0,
     link_fetch_senders: list[str] | None = None,
     html_to_pdf_enabled: bool = True,
+    bezala_metadata: dict | None = None,
 ) -> None:
     with session_scope() as db:
         if _message_already_processed(db, message_id):
@@ -434,6 +497,7 @@ def _process_one_message(
             bezala, analysis, msg, att.data, new_name,
             auto_upload=auto_upload,
             confidence_threshold=confidence_threshold,
+            metadata=bezala_metadata,
         )
 
         try:

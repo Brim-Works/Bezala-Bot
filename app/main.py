@@ -17,10 +17,11 @@ from app.db import get_db, init_db, session_scope
 from app.models import MaintenanceTask, ProcessedMessage, ScanRun
 from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
 from app.services.bezala_client import BezalaClient, BezalaError
+from app.services.bezala_field_mapper import build_receipt_params
 from app.services.drive_client import DriveClient
 from app.services.gmail_client import GmailClient
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
-from app.services.pipeline import run_scan
+from app.services.pipeline import fetch_bezala_metadata, run_scan
 from app.services.receipt_analyzer import AnalyzerError, ReceiptAnalyzer
 from app.services.settings_service import load_settings, settings_to_dict
 from app.services.trash_service import (
@@ -630,6 +631,40 @@ def _serialize_message(r: ProcessedMessage) -> dict:
     }
 
 
+@app.get("/api/bezala/metadata")
+def get_bezala_metadata(_: None = Depends(require_auth)):
+    """Returnerar råa listor från Bezala: accounts, cost_centers, vat_rates.
+
+    Används för att inspektera exakt respons-struktur (fältnamn, IDs) från
+    live Bezala och verifiera att field-mapper matchar rätt konton."""
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        logger.exception("Bezala-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+
+    try:
+        payload = {
+            "accounts": _safe_bezala_list(bezala.list_accounts, "accounts"),
+            "cost_centers": _safe_bezala_list(bezala.list_cost_centers, "cost_centers"),
+            "vat_rates": _safe_bezala_list(bezala.list_vat_rates, "vat_rates"),
+        }
+        return payload
+    finally:
+        bezala.close()
+
+
+def _safe_bezala_list(fn, label: str) -> dict:
+    """Wrapa en list_*-funktion: returnerar {rows: [...], error: None} eller
+    {rows: [], error: '...'} så UI kan se vilken endpoint som fallerade."""
+    try:
+        rows = fn()
+        return {"count": len(rows), "rows": rows, "error": None}
+    except BezalaError as exc:
+        logger.warning("Bezala metadata %s misslyckades: %s", label, exc)
+        return {"count": 0, "rows": [], "error": f"{exc.status_code}: {exc.body or str(exc)}"}
+
+
 @app.post("/api/messages/{msg_id}/upload-to-bezala")
 def upload_message_to_bezala(
     msg_id: int,
@@ -643,6 +678,16 @@ def upload_message_to_bezala(
         raise HTTPException(
             status_code=400,
             detail="Meddelandet saknar Drive-fil — kan inte ladda upp till Bezala",
+        )
+    if not row.receipt_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Meddelandet saknar datum — Bezala kräver 'date'",
+        )
+    if row.amount is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Meddelandet saknar belopp — Bezala kräver 'amount' för vat_lines",
         )
 
     try:
@@ -662,30 +707,60 @@ def upload_message_to_bezala(
 
     try:
         pdf_bytes = drive.download_pdf(row.drive_file_id)
-        attachment = bezala.upload_attachment(row.file_name, pdf_bytes)
-        description = row.summary or row.subject
-        transaction = bezala.create_transaction(
-            attachment_ids=[attachment.attachment_id],
+        metadata = fetch_bezala_metadata(bezala)
+        params = build_receipt_params(
+            file_name=row.file_name,
+            sender=row.sender,
             vendor=row.vendor,
+            category=row.category,
             amount=row.amount,
             currency=row.currency,
-            date=row.receipt_date,
-            category=row.category,
-            description=description,
+            receipt_date=row.receipt_date,
+            accounts=metadata["accounts"],
+            cost_centers=metadata["cost_centers"],
+            vat_rates=metadata["vat_rates"],
         )
-        row.bezala_transaction_id = transaction.transaction_id
+        if not params.get("vat_lines"):
+            # Bezala kräver minst en vat_line. Vi kunde inte mappa en.
+            msg = (
+                "Kan inte ladda upp: ingen VAT-sats matchades. "
+                f"Kategori={row.category!r}, avsändare={row.sender!r}. "
+                "Verifiera vat_rates via GET /api/bezala/metadata."
+            )
+            row.bezala_upload_status = "failed"
+            row.bezala_error_message = msg
+            db.commit()
+            raise HTTPException(status_code=422, detail=msg)
+
+        receipt = bezala.upload_receipt(
+            filename=row.file_name,
+            pdf_bytes=pdf_bytes,
+            description=params["description"],
+            date=params["date"],
+            amount=params["amount"],
+            currency=params["currency"],
+            vat_lines=params["vat_lines"],
+            account_id=params.get("account_id"),
+            cost_center_id=params.get("cost_center_id"),
+            vendor=params.get("vendor"),
+        )
+        row.bezala_transaction_id = receipt.attachment_id
         row.bezala_upload_status = "success"
         row.bezala_error_message = None
         db.commit()
         logger.info(
-            "Manuell Bezala-upload klar: msg_id=%s transaction_id=%s",
-            msg_id, transaction.transaction_id,
+            "Manuell Bezala-upload klar: msg_id=%s receipt_id=%s",
+            msg_id, receipt.attachment_id,
         )
         return _serialize_message(row)
     except BezalaError as exc:
         logger.exception("Manuell Bezala-upload misslyckades för msg_id=%s", msg_id)
         row.bezala_upload_status = "failed"
-        row.bezala_error_message = str(exc)
+        # Bevara response body i felmeddelandet så UI kan visa feldetaljer
+        detail = f"{exc}"
+        if exc.body:
+            detail = f"{exc} | body={exc.body}"
+        row.bezala_error_message = detail[:2000]
         db.commit()
         raise HTTPException(
             status_code=502, detail=f"Bezala-upload misslyckades: {exc}"
