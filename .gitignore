@@ -39,3 +39,8 @@ frontend/.vite/
 frontend/test-results/
 frontend/playwright-report/
 frontend/blob-report/
+
+# Playwright-artifakter kan hamna i repo-roten om man råkar köra
+# "npx playwright test" utanför frontend-katalogen
+test-results/
+playwright-report/
