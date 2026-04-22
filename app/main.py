@@ -779,18 +779,8 @@ def upload_message_to_bezala(
             cost_centers=metadata["cost_centers"],
             vat_rates=metadata["vat_rates"],
         )
-        if not params.get("vat_lines"):
-            # Bezala kräver minst en vat_line. Vi kunde inte mappa en.
-            msg = (
-                "Kan inte ladda upp: ingen VAT-sats matchades. "
-                f"Kategori={row.category!r}, avsändare={row.sender!r}. "
-                "Verifiera vat_rates via GET /api/bezala/metadata."
-            )
-            row.bezala_upload_status = "failed"
-            row.bezala_error_message = msg
-            db.commit()
-            raise HTTPException(status_code=422, detail=msg)
-
+        # OBS: vat_lines kan vara [] — Bezala plockar default moms från
+        # kontot själv när default_vat_id är null. Vi blockerar INTE här.
         receipt = bezala.upload_receipt(
             filename=row.file_name,
             pdf_bytes=pdf_bytes,

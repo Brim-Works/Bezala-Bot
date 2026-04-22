@@ -255,13 +255,8 @@ def _attempt_bezala_upload(
         cost_centers=meta["cost_centers"],
         vat_rates=meta["vat_rates"],
     )
-    if not params.get("vat_lines"):
-        logger.warning(
-            "Bezala: ingen vat_rate matchade för %s (category=%s, sender=%s) — skippar auto-upload",
-            filename, analysis.category, msg.sender,
-        )
-        return "pending", None, "ingen vat_rate matchad — verifiera via /api/bezala/metadata"
-
+    # vat_lines=[] är OK — Bezala använder kontots default_vat_id
+    # automatiskt. Vi fortsätter med upload.
     try:
         receipt = bezala.upload_receipt(
             filename=filename,

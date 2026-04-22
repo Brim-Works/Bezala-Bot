@@ -41,16 +41,22 @@ class CategoryToAccountTest(unittest.TestCase):
         self.assertEqual(category_to_account_name(" flyg "), "Matkaliput")
 
     def test_programvara_and_ai_map_to_atk(self):
-        from app.services.bezala_field_mapper import category_to_account_name
+        from app.services.bezala_field_mapper import (
+            category_to_account_id,
+            category_to_account_name,
+        )
 
+        # Programvara/SaaS → Atk-ohjelmistot (id 82612)
+        self.assertEqual(category_to_account_id("Programvara"), 82612)
+        self.assertEqual(category_to_account_id("SaaS"), 82612)
+        # AI-tjänster → dedikerad AI-työkalut-post (id 166648)
+        self.assertEqual(category_to_account_id("AI"), 166648)
+        # Namn-API (bakåtkompat)
         self.assertEqual(
             category_to_account_name("Programvara"),
-            "ATK-ohjelmistot, päivitykset ja yp",
+            "Atk-ohjelmistot, päivitykset ja yp",
         )
-        self.assertEqual(
-            category_to_account_name("AI"),
-            "ATK-ohjelmistot, päivitykset ja yp",
-        )
+        self.assertEqual(category_to_account_name("AI"), "AI työkalut")
 
     def test_hotell_and_boende_map_to_hotelli(self):
         from app.services.bezala_field_mapper import category_to_account_name
@@ -58,22 +64,32 @@ class CategoryToAccountTest(unittest.TestCase):
         self.assertEqual(category_to_account_name("Hotell"), "Hotelli-ym. majoitus")
         self.assertEqual(category_to_account_name("Boende"), "Hotelli-ym. majoitus")
 
-    def test_resa_transport_map_to_muut(self):
-        from app.services.bezala_field_mapper import category_to_account_name
+    def test_resa_transport_map_to_matkaliput(self):
+        """Spec: resa + transport räknas som 'Matkaliput' (matkabiljetter)
+        — inte 'Muut matkakulut'. 67100 är den breda resa-kontot."""
+        from app.services.bezala_field_mapper import (
+            category_to_account_id,
+            category_to_account_name,
+        )
 
-        self.assertEqual(category_to_account_name("Resa"), "Muut Matkakulut")
-        self.assertEqual(category_to_account_name("Transport"), "Muut Matkakulut")
+        self.assertEqual(category_to_account_id("Resa"), 67100)
+        self.assertEqual(category_to_account_id("Transport"), 67100)
+        self.assertEqual(category_to_account_name("Resa"), "Matkaliput")
 
     def test_unknown_or_empty_defaults_to_muut(self):
         from app.services.bezala_field_mapper import (
+            DEFAULT_ACCOUNT_ID,
             DEFAULT_ACCOUNT_NAME,
+            category_to_account_id,
             category_to_account_name,
         )
 
         self.assertEqual(category_to_account_name(None), DEFAULT_ACCOUNT_NAME)
         self.assertEqual(category_to_account_name(""), DEFAULT_ACCOUNT_NAME)
-        self.assertEqual(category_to_account_name("Annat"), DEFAULT_ACCOUNT_NAME)
-        self.assertEqual(category_to_account_name("kontorsmaterial"), DEFAULT_ACCOUNT_NAME)
+        # "Annat" är explicit mappad till default
+        self.assertEqual(category_to_account_id("Annat"), DEFAULT_ACCOUNT_ID)
+        # Helt okänd kategori → default
+        self.assertEqual(category_to_account_id("bananpaj"), DEFAULT_ACCOUNT_ID)
 
 
 class SenderToCountryTest(unittest.TestCase):
@@ -124,13 +140,18 @@ class SenderToCountryTest(unittest.TestCase):
 
 
 class SelectAccountTest(unittest.TestCase):
+    """select_account gör ID-lookup primärt och namn-fallback sekundärt.
+    Konto-IDs här matchar produktionens live-värden (67100, 67102, etc.)."""
+
     def _accounts(self):
         return [
-            {"id": 101, "name": "Matkaliput"},
-            {"id": 102, "name": "Muut Matkakulut"},
-            {"id": 103, "name": "ATK-ohjelmistot, päivitykset ja yp"},
-            {"id": 104, "name": "Hotelli-ym. majoitus"},
-            {"id": 105, "name": "Toimistotarvikkeet"},
+            {"id": 67100, "name": "Matkaliput", "default_vat_id": 1355},
+            {"id": 67101, "name": "Taksikulut", "default_vat_id": 1355},
+            {"id": 67102, "name": "Hotelli-ym. majoitus", "default_vat_id": 1355},
+            {"id": 67110, "name": "Muut matkakulut", "default_vat_id": None},
+            {"id": 67113, "name": "Paikoituskulut", "default_vat_id": 864},
+            {"id": 82612, "name": "Atk-ohjelmistot, päivitykset ja yp", "default_vat_id": None},
+            {"id": 166648, "name": "AI työkalut", "default_vat_id": None},
         ]
 
     def test_flyg_picks_matkaliput(self):
@@ -138,31 +159,48 @@ class SelectAccountTest(unittest.TestCase):
 
         row = select_account(self._accounts(), "Flyg")
         self.assertIsNotNone(row)
-        self.assertEqual(row["id"], 101)
+        self.assertEqual(row["id"], 67100)
 
-    def test_ai_picks_atk(self):
+    def test_ai_picks_ai_työkalut(self):
         from app.services.bezala_field_mapper import select_account
 
         row = select_account(self._accounts(), "AI")
         self.assertIsNotNone(row)
-        self.assertEqual(row["id"], 103)
+        self.assertEqual(row["id"], 166648)
+        self.assertEqual(row["name"], "AI työkalut")
 
-    def test_unknown_picks_muut(self):
+    def test_programvara_picks_atk(self):
         from app.services.bezala_field_mapper import select_account
 
-        row = select_account(self._accounts(), "Annat")
+        row = select_account(self._accounts(), "Programvara")
         self.assertIsNotNone(row)
-        self.assertEqual(row["id"], 102)
+        self.assertEqual(row["id"], 82612)
 
-    def test_bezala_truncated_name_still_matches(self):
-        """Om Bezala returnerar 'ATK-ohjelmistot' (utan kommasuffix) ska
-        AI/Programvara ändå hitta kontot via prefix-match."""
+    def test_parkering_picks_paikoituskulut(self):
+        """Moovy/parkering har eget konto separat från taxi."""
         from app.services.bezala_field_mapper import select_account
 
-        accounts = [{"id": 5, "name": "ATK-ohjelmistot"}]
-        row = select_account(accounts, "Programvara")
+        row = select_account(self._accounts(), "Parkering")
         self.assertIsNotNone(row)
-        self.assertEqual(row["id"], 5)
+        self.assertEqual(row["id"], 67113)
+
+    def test_unknown_picks_muut_matkakulut(self):
+        from app.services.bezala_field_mapper import select_account
+
+        row = select_account(self._accounts(), "bananpaj")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["id"], 67110)
+
+    def test_name_fallback_when_id_not_in_live_list(self):
+        """Om Bezala byter ID på ett konto (sällsynt) → namn-match som
+        säkerhetsnät. Här har 'AI työkalut' nytt ID 999999 — namn-match
+        hittar det ändå."""
+        from app.services.bezala_field_mapper import select_account
+
+        accounts = [{"id": 999999, "name": "AI työkalut"}]
+        row = select_account(accounts, "AI")
+        self.assertIsNotNone(row)
+        self.assertEqual(row["id"], 999999)
 
 
 class SelectCostCenterTest(unittest.TestCase):
@@ -197,10 +235,70 @@ class SelectCostCenterTest(unittest.TestCase):
         row = select_default_cost_center(rows)
         self.assertEqual(row["id"], 10)
 
+    def test_preferred_id_picks_by_id(self):
+        """DEFAULT_COST_CENTER_ID matchar via ID innan namn/first."""
+        from app.services.bezala_field_mapper import select_default_cost_center
+
+        rows = [
+            {"id": 1, "name": "A"},
+            {"id": 927151, "name": "VIS128 Visma HRM Sverige AB"},
+            {"id": 3, "name": "C"},
+        ]
+        row = select_default_cost_center(rows)  # default_id = 927151 via env
+        self.assertEqual(row["id"], 927151)
+
     def test_empty_returns_none(self):
         from app.services.bezala_field_mapper import select_default_cost_center
 
         self.assertIsNone(select_default_cost_center([]))
+
+
+class BuildVatLinesTest(unittest.TestCase):
+    """Ny VAT-strategi: account.default_vat_id är primärt."""
+
+    def test_account_with_default_vat_id(self):
+        from app.services.bezala_field_mapper import build_vat_lines
+
+        account = {"id": 67100, "name": "Matkaliput", "default_vat_id": 1355}
+        lines = build_vat_lines(503.0, account=account)
+        self.assertEqual(lines, [{"amount": 503.0, "vat_code_id": 1355}])
+
+    def test_account_with_null_default_vat_id_returns_empty(self):
+        """default_vat_id = None → vat_lines utelämnas (Bezala plockar själv)."""
+        from app.services.bezala_field_mapper import build_vat_lines
+
+        account = {"id": 82612, "name": "Atk-ohjelmistot", "default_vat_id": None}
+        self.assertEqual(build_vat_lines(100.0, account=account), [])
+
+    def test_vat_rate_row_used_as_fallback(self):
+        from app.services.bezala_field_mapper import build_vat_lines
+
+        vat_rate = {"id": 1355, "name": "Finland Transport 13.5%"}
+        lines = build_vat_lines(503.0, vat_rate=vat_rate)
+        self.assertEqual(lines, [{"amount": 503.0, "vat_code_id": 1355}])
+
+    def test_account_default_vat_id_wins_over_vat_rate_fallback(self):
+        from app.services.bezala_field_mapper import build_vat_lines
+
+        account = {"id": 67100, "default_vat_id": 1355}
+        vat_rate = {"id": 999, "name": "fallback"}
+        lines = build_vat_lines(503.0, account=account, vat_rate=vat_rate)
+        self.assertEqual(lines[0]["vat_code_id"], 1355)
+
+    def test_positional_account_dict_detected_via_default_vat_id(self):
+        """build_vat_lines(amount, account_row) — positionell form."""
+        from app.services.bezala_field_mapper import build_vat_lines
+
+        account = {"id": 67100, "default_vat_id": 1355}
+        self.assertEqual(
+            build_vat_lines(10.0, account)[0]["vat_code_id"], 1355,
+        )
+
+    def test_missing_amount_returns_empty(self):
+        from app.services.bezala_field_mapper import build_vat_lines
+
+        account = {"id": 1, "default_vat_id": 1355}
+        self.assertEqual(build_vat_lines(None, account=account), [])
 
 
 class SelectVatRateTest(unittest.TestCase):
