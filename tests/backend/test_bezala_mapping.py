@@ -357,11 +357,37 @@ class BuildDescriptionTest(unittest.TestCase):
             "20260422 Finnair HEL-CPH",
         )
 
-    def test_falls_back_to_fallback(self):
+    def test_subject_fallback_when_filename_missing(self):
         from app.services.bezala_field_mapper import build_description
 
-        self.assertEqual(build_description(None, fallback="Kvitto"), "Kvitto")
-        self.assertEqual(build_description("", fallback="Kvitto"), "Kvitto")
+        self.assertEqual(
+            build_description(None, subject="Kvitto Finnair HEL-CPH"),
+            "Kvitto Finnair HEL-CPH",
+        )
+
+    def test_vendor_plus_date_fallback(self):
+        from app.services.bezala_field_mapper import build_description
+
+        self.assertEqual(
+            build_description(None, vendor="Finnair", receipt_date="2026-04-22"),
+            "Finnair 2026-04-22",
+        )
+
+    def test_never_returns_empty_string(self):
+        """Belt-and-suspenders: Bezala 422:ar på tom description."""
+        from app.services.bezala_field_mapper import build_description
+
+        self.assertEqual(build_description(None), "Kvitto")
+        self.assertEqual(build_description(""), "Kvitto")
+        self.assertEqual(build_description("   "), "Kvitto")
+        self.assertEqual(build_description(".pdf"), "Kvitto")
+        self.assertEqual(build_description(None, fallback=""), "Kvitto")
+
+    def test_explicit_fallback_used(self):
+        from app.services.bezala_field_mapper import build_description
+
+        self.assertEqual(build_description(None, fallback="Kvitto X"), "Kvitto X")
+        self.assertEqual(build_description("", fallback="Kvitto X"), "Kvitto X")
 
 
 class BuildTransactionExtrasTest(unittest.TestCase):

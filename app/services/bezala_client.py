@@ -404,9 +404,11 @@ class BezalaClient:
 
     # --------- receipt upload (Gate 0 fix) ---------
     #
-    # Bezalas /attachments-endpoint är en RECEIPT-POST, inte bara filupload.
-    # 422-responsen bekräftade: {description, date, vat_lines} måste skickas
-    # tillsammans med filen i samma multipart-request.
+    # Bezalas /attachments-endpoint är en RECEIPT-POST (Rails-baserad).
+    # 422-responsen "description/date/vat_lines kan inte vara tom" trots
+    # att vi skickar fälten bekräftar Rails strong-params-beteende:
+    # params.require(:attachment).permit(:description, ...). Top-level-
+    # fält ignoreras → vi måste nesta under attachment[...].
 
     def upload_receipt(
         self,
@@ -425,12 +427,11 @@ class BezalaClient:
     ) -> BezalaAttachment:
         """Ladda upp ett kvitto till Bezala i en enda multipart-request.
 
-        Kräver: filename, pdf_bytes, description, date.
-        vat_lines: lista av {amount, vat_code_id} — JSON-serialiseras till
-        form-fältet 'vat_lines' (Bezala-serializern läser det som array).
+        Form-fält namnges enligt Rails strong-params-konvention:
+          attachment[file], attachment[description], attachment[date], ...
+          attachment[vat_lines] = JSON-sträng "[{amount, vat_code_id}]"
 
-        Returnerar BezalaAttachment med id:t som Bezala genererade för
-        receipt-raden."""
+        Returnerar BezalaAttachment med id:t som Bezala genererade."""
         if not filename:
             raise BezalaError("upload_receipt: filename saknas")
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
@@ -440,33 +441,44 @@ class BezalaClient:
         if not date:
             raise BezalaError("upload_receipt: date saknas (ÅÅÅÅ-MM-DD)")
 
+        # Synlig INFO-logg av värdena som faktiskt skickas — debug 422:or
+        # utan att behöva gissa.
+        logger.info(
+            "Bezala upload_receipt payload: description=%r date=%r amount=%r "
+            "currency=%r account_id=%r cost_center_id=%r vat_lines=%s",
+            description, date, amount, currency, account_id, cost_center_id,
+            vat_lines,
+        )
+
         form: dict[str, Any] = {
-            "description": description,
-            "date": date,
+            "attachment[description]": description,
+            "attachment[date]": date,
         }
         if amount is not None:
-            form["amount"] = str(amount)
+            form["attachment[amount]"] = str(amount)
         if currency:
-            form["currency"] = currency
+            form["attachment[currency]"] = currency
         if vendor:
-            form["vendor"] = vendor
+            form["attachment[vendor]"] = vendor
         if account_id is not None:
-            form["account_id"] = str(account_id)
+            form["attachment[account_id]"] = str(account_id)
         if cost_center_id is not None:
-            form["cost_center_id"] = str(cost_center_id)
+            form["attachment[cost_center_id]"] = str(cost_center_id)
         if vat_lines:
-            # Bezala-serializern läser fältet som JSON-sträng → array.
-            form["vat_lines"] = json.dumps(vat_lines, ensure_ascii=False)
+            # JSON-sträng under nested-nyckeln — Bezala parser den.
+            form["attachment[vat_lines]"] = json.dumps(vat_lines, ensure_ascii=False)
         if extra_fields:
             for k, v in extra_fields.items():
                 if v is None:
                     continue
-                form[k] = v if isinstance(v, str) else json.dumps(v)
+                # Respekterar redan pre-fixade nycklar; annars nesta under attachment
+                key = k if k.startswith("attachment[") else f"attachment[{k}]"
+                form[key] = v if isinstance(v, str) else json.dumps(v)
 
         resp = self._request(
             "POST",
             "/attachments",
-            files={"file": (filename, pdf_bytes, "application/pdf")},
+            files={"attachment[file]": (filename, pdf_bytes, "application/pdf")},
             data=form,
         )
         if resp.status_code >= 400:
