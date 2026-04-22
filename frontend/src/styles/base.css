@@ -747,6 +747,68 @@ html[data-theme='B'] .tbl thead th {
   cursor: wait;
 }
 
+/* Gate 5: mail-preview i Drawer */
+.mail-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.mail-preview__frame {
+  width: 100%;
+  min-height: 240px;
+  max-height: 420px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-2);
+}
+
+.mail-preview__text {
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  max-height: 420px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-size: 12.5px;
+}
+
+.mail-preview__links {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  background: var(--surface-2);
+}
+
+.mail-preview__links-label {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-bottom: 8px;
+}
+
+.mail-preview__links ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.mail-preview__link-btn {
+  width: 100%;
+  justify-content: flex-start;
+  text-align: left;
+}
+
+.mail-preview__link-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .tbl tbody td {
   padding: 0 14px;
   border-bottom: 1px solid var(--border);

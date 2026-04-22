@@ -315,6 +315,9 @@ export async function setupApiMocks(page, overrides = {}) {
     lastFetchPdfId: null,
     lastReprocessId: null,
     reprocessResponse: overrides.reprocessResponse || null,
+    bodyResponse: overrides.bodyResponse || null,
+    fetchPdfFromUrlResponse: overrides.fetchPdfFromUrlResponse || null,
+    lastFetchPdfFromUrl: null,
   };
 
   // --- enklare globala routes ---
@@ -413,6 +416,56 @@ export async function setupApiMocks(page, overrides = {}) {
       return route.fulfill(
         jsonResponse({ status: 'reprocessing', id, prior_status: prior }),
       );
+    }
+
+    // GET /api/messages/:id/body
+    const bodyMatch = pathname.match(/\/api\/messages\/(\d+)\/body$/);
+    if (method === 'GET' && bodyMatch) {
+      if (state.bodyResponse && state.bodyResponse.status) {
+        return route.fulfill(state.bodyResponse);
+      }
+      return route.fulfill(
+        jsonResponse({
+          html:
+            '<p>Tack för din resa!</p>' +
+            '<p>Hämta kvitto: <a href="https://arlandaexpress.se/r/abc">Klicka här</a></p>',
+          text: 'Tack för din resa! Hämta kvitto: https://arlandaexpress.se/r/abc',
+          links: [
+            { href: 'https://arlandaexpress.se/r/abc', text: 'Klicka här' },
+          ],
+        }),
+      );
+    }
+
+    // POST /api/messages/:id/fetch-pdf-from-url
+    const fetchPdfFromUrlMatch = pathname.match(
+      /\/api\/messages\/(\d+)\/fetch-pdf-from-url$/,
+    );
+    if (method === 'POST' && fetchPdfFromUrlMatch) {
+      const id = Number(fetchPdfFromUrlMatch[1]);
+      const body = request.postDataJSON() || {};
+      state.lastFetchPdfFromUrl = { id, url: body.url };
+      if (state.fetchPdfFromUrlResponse && state.fetchPdfFromUrlResponse.status) {
+        return route.fulfill(state.fetchPdfFromUrlResponse);
+      }
+      const idx = state.messages.findIndex((m) => m.id === id);
+      if (idx < 0) {
+        return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+      }
+      state.messages[idx] = {
+        ...state.messages[idx],
+        status: 'saved',
+        file_name: '20260421 Fetched From URL.pdf',
+        drive_file_id: `drive-url-${id}`,
+        drive_link: `https://drive.google.com/file/d/drive-url-${id}/view`,
+        pending_link: null,
+        vendor: state.messages[idx].vendor || 'URL-Leverantör',
+        amount: 99.0,
+        currency: 'SEK',
+        ai_confidence: 91,
+        bezala_upload_status: 'pending',
+      };
+      return route.fulfill(jsonResponse(state.messages[idx]));
     }
 
     // POST /api/messages/:id/fetch-pdf

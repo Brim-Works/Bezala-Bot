@@ -1,6 +1,9 @@
+import { useCallback, useState } from 'react';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { fmtDate } from '../lib/format.js';
-import { IconMail } from '../icons/index.jsx';
+import { IconMail, IconDownload } from '../icons/index.jsx';
+import { api, ApiError } from '../api/client.js';
+import { useToast } from '../lib/toast.jsx';
 
 function Row({ label, children }) {
   return (
@@ -11,13 +14,127 @@ function Row({ label, children }) {
   );
 }
 
-export default function GmailTab({ message }) {
-  const { t, lang } = useI18n();
-  if (!message) return null;
+/* Preview-panel för mail-bodyn.
+ * Renderas i sandboxad iframe så scripts/styles/JS inte kan köras —
+ * sanitizing sker även server-side som defence-in-depth. Detekterade
+ * <a href>-länkar listas separat (extract_links på servern) så
+ * användaren kan klicka en specifik länk som vi sedan hämtar PDF från. */
+function MailPreview({ body, onFetchUrl, fetchingUrl }) {
+  const { t } = useI18n();
+  const html = body?.html || '';
+  const text = body?.text || '';
+  const links = body?.links || [];
+  const hasContent = html || text;
 
-  const gmailUrl = message.message_id
+  return (
+    <div className="mail-preview" data-testid="mail-preview">
+      {html ? (
+        <iframe
+          title={t.drawer.gmail.previewTitle}
+          className="mail-preview__frame"
+          sandbox=""
+          srcDoc={html}
+          data-testid="mail-preview-frame"
+        />
+      ) : text ? (
+        <pre className="mail-preview__text" data-testid="mail-preview-text">
+          {text}
+        </pre>
+      ) : (
+        <p className="muted">{t.drawer.gmail.previewEmpty}</p>
+      )}
+
+      {hasContent && links.length > 0 ? (
+        <div className="mail-preview__links" data-testid="mail-preview-links">
+          <div className="mail-preview__links-label">
+            {t.drawer.gmail.linksLabel}
+          </div>
+          <ul>
+            {links.map((link) => {
+              const busy = fetchingUrl === link.href;
+              return (
+                <li key={link.href}>
+                  <button
+                    type="button"
+                    className="btn primary mail-preview__link-btn"
+                    onClick={() => onFetchUrl(link)}
+                    disabled={Boolean(fetchingUrl)}
+                    data-testid={`mail-preview-link-${link.href}`}
+                    title={link.href}
+                  >
+                    <IconDownload className="icon sm" />
+                    <span className="mail-preview__link-text">
+                      {busy ? t.drawer.gmail.fetchingLink : link.text}
+                    </span>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+export default function GmailTab({ message, onUpdated }) {
+  const { t, lang } = useI18n();
+  const toast = useToast();
+  const [body, setBody] = useState(null);
+  const [loadingBody, setLoadingBody] = useState(false);
+  const [fetchingUrl, setFetchingUrl] = useState(null);
+
+  const needsDownload = message?.file_status === 'needs_download';
+  const gmailUrl = message?.message_id
     ? `https://mail.google.com/mail/u/0/#inbox/${message.message_id}`
     : null;
+
+  const onLoadPreview = useCallback(async () => {
+    if (!message) return;
+    setLoadingBody(true);
+    try {
+      const data = await api.messageBody(message.id);
+      setBody(data);
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      toast.show({
+        kind: 'err',
+        message: `${t.drawer.gmail.previewFailed}: ${detail}`,
+      });
+    } finally {
+      setLoadingBody(false);
+    }
+  }, [message, t.drawer.gmail.previewFailed, toast]);
+
+  const onFetchUrl = useCallback(
+    async (link) => {
+      if (!message) return;
+      const confirmed =
+        typeof window !== 'undefined'
+          ? window.confirm(
+              `${t.drawer.gmail.fetchConfirm}\n\n${link.text}\n${link.href}`,
+            )
+          : true;
+      if (!confirmed) return;
+      setFetchingUrl(link.href);
+      try {
+        const updated = await api.fetchPdfFromUrl(message.id, link.href);
+        toast.show({ kind: 'ok', message: t.drawer.gmail.fetchSuccess });
+        onUpdated?.(updated);
+      } catch (err) {
+        const detail = err instanceof ApiError ? err.message : String(err);
+        toast.show({
+          kind: 'err',
+          message: `${t.drawer.gmail.fetchFailed}: ${detail}`,
+        });
+      } finally {
+        setFetchingUrl(null);
+      }
+    },
+    [message, onUpdated, t, toast],
+  );
+
+  if (!message) return null;
 
   return (
     <div className="drawer-section" data-testid="drawer-tab-gmail-content">
@@ -42,7 +159,35 @@ export default function GmailTab({ message }) {
           )}
         </Row>
       </dl>
-      <p className="drawer-note muted">{t.drawer.gmail.note}</p>
+
+      {/* Gate 5: preview-knapp för needs_download-rader */}
+      {needsDownload ? (
+        body ? (
+          <MailPreview
+            body={body}
+            onFetchUrl={onFetchUrl}
+            fetchingUrl={fetchingUrl}
+          />
+        ) : (
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onLoadPreview}
+            disabled={loadingBody}
+            data-testid="show-mail-preview"
+          >
+            <IconMail className="icon sm" />
+            <span>
+              {loadingBody
+                ? t.drawer.gmail.previewLoading
+                : t.drawer.gmail.showPreview}
+            </span>
+          </button>
+        )
+      ) : (
+        <p className="drawer-note muted">{t.drawer.gmail.note}</p>
+      )}
+
       {gmailUrl ? (
         <a
           href={gmailUrl}

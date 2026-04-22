@@ -20,6 +20,7 @@ from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.bezala_field_mapper import build_receipt_params
 from app.services.drive_client import DriveClient
 from app.services.gmail_client import GmailClient
+from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import fetch_bezala_metadata, run_scan
 from app.services.receipt_analyzer import AnalyzerError, ReceiptAnalyzer
@@ -455,6 +456,157 @@ def restore_message(
 def _fetch_pdf_helper(url: str) -> bytes:
     """Wrapper som finns som funktion för att kunna mockas i tester."""
     return fetch_pdf_from_link(url)
+
+
+@app.get("/api/messages/{msg_id}/body")
+def get_message_body(
+    msg_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Hämtar mail-bodyn från Gmail + saniterar för preview.
+
+    Returnerar {html, text, links}. html är saniterad (scripts/styles/
+    event-handlers borttagna, externa bilder ersatta med placeholder).
+    links är en lista av extraherade URL:er så UI kan erbjuda 'Hämta
+    PDF från denna länk' per länk."""
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    if not row.message_id:
+        raise HTTPException(status_code=400, detail="Meddelandet saknar Gmail message_id")
+
+    try:
+        gmail = GmailClient()
+    except Exception as exc:
+        logger.exception("Gmail-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Gmail-init: {exc}") from exc
+
+    try:
+        msg = gmail.fetch_message(row.message_id)
+    except Exception as exc:
+        logger.exception("Kunde inte hämta mail-body för %s", row.message_id)
+        raise HTTPException(
+            status_code=502, detail=f"Gmail-fetch: {exc}",
+        ) from exc
+
+    html = sanitize_html(msg.body_html or "")
+    links = extract_links(msg.body_html or "")
+    return {
+        "html": html,
+        "text": msg.body_text or "",
+        "links": links,
+    }
+
+
+class FetchPdfFromUrlPayload(BaseModel):
+    url: str
+
+
+@app.post("/api/messages/{msg_id}/fetch-pdf-from-url")
+def fetch_pdf_from_url_for_message(
+    msg_id: int,
+    payload: FetchPdfFromUrlPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Hämtar PDF från en URL som användaren klickat i Drawer-previewen.
+
+    Samma SSRF-skydd som /fetch-pdf. Ersätter pending_link med URL:en
+    (om raden hade en) och lyfter raden till status='saved'."""
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+
+    url = (payload.url or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="Saknar URL")
+
+    try:
+        pdf_bytes = _fetch_pdf_helper(url)
+    except LinkFetchError as exc:
+        logger.warning(
+            "fetch-pdf-from-url msg_id=%s url=%r misslyckades: %s",
+            msg_id, url, exc.message,
+        )
+        status_code = 400 if "blockerad" in (exc.message or "").lower() else 502
+        # Icke-PDF (HTML, bild) → 422 (klientens val av URL är fel)
+        if "pdf" in (exc.message or "").lower() and "saknas" in (exc.message or "").lower():
+            status_code = 422
+        if "istället för pdf" in (exc.message or "").lower():
+            status_code = 422
+        raise HTTPException(status_code=status_code, detail=exc.message) from exc
+
+    try:
+        drive = DriveClient()
+    except Exception as exc:
+        logger.exception("Drive-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+
+    analyzer = ReceiptAnalyzer()
+    filename = (row.file_name
+                or f"{row.vendor or 'Okand'} {row.subject or ''}".strip()
+                or f"Kvitto-{msg_id}")
+    if not filename.lower().endswith(".pdf"):
+        filename = f"{filename}.pdf"
+    filename = filename.replace("/", "-").replace("\\", "-")
+
+    analysis = None
+    if analyzer.enabled:
+        try:
+            analysis = analyzer.analyze(
+                attachment_bytes=pdf_bytes,
+                mime_type="application/pdf",
+                original_filename=filename,
+                sender=row.sender or "",
+                subject=row.subject or "",
+                snippet="",
+                received_at=row.received_at,
+            )
+            filename = analysis.filename or filename
+        except AnalyzerError:
+            logger.exception("AI-analys misslyckades för fetch-pdf-from-url %s", msg_id)
+
+    try:
+        upload = drive.upload_pdf(filename, pdf_bytes)
+    except Exception as exc:
+        logger.exception("Drive-upload misslyckades för fetch-pdf-from-url %s", msg_id)
+        raise HTTPException(
+            status_code=502, detail=f"Drive-upload: {exc}",
+        ) from exc
+
+    row.status = "saved"
+    row.file_name = filename
+    row.drive_file_id = upload.file_id
+    row.drive_link = upload.web_view_link
+    row.pending_link = None
+    if analysis:
+        row.vendor = analysis.vendor
+        row.amount = analysis.amount
+        row.currency = analysis.currency
+        row.receipt_date = analysis.date
+        row.category = analysis.category
+        row.summary = analysis.summary
+        row.ai_confidence = analysis.confidence
+    row.bezala_upload_status = row.bezala_upload_status or "pending"
+    db.commit()
+
+    # Gmail-etikett best-effort
+    if row.message_id:
+        try:
+            gmail = GmailClient()
+            gmail.mark_done(row.message_id)
+        except Exception:
+            logger.exception(
+                "Kunde inte sätta Bezala-Klar efter fetch-pdf-from-url för %s", msg_id,
+            )
+
+    db.refresh(row)
+    logger.info(
+        "fetch-pdf-from-url: msg_id=%s sparade %s från %s",
+        msg_id, filename, url,
+    )
+    return _serialize_message(row)
 
 
 @app.post("/api/messages/{msg_id}/reprocess")

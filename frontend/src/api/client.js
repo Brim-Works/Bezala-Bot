@@ -105,6 +105,12 @@ export const api = {
     request(`/api/messages/${id}/fetch-pdf`, { method: 'POST' }),
   reprocessMessage: (id) =>
     request(`/api/messages/${id}/reprocess`, { method: 'POST' }),
+  messageBody: (id) => request(`/api/messages/${id}/body`),
+  fetchPdfFromUrl: (id, url) =>
+    request(`/api/messages/${id}/fetch-pdf-from-url`, {
+      method: 'POST',
+      body: { url },
+    }),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {
