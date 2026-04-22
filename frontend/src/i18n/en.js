@@ -128,9 +128,19 @@ export default {
     vendor: 'Vendor',
     subject: 'Subject',
     file: 'Filename',
+    date: 'Date',
     amount: 'Amount',
     confidence: 'Confidence',
     status: 'Status',
+  },
+  dateFilter: {
+    label: 'Date filter',
+    options: {
+      all: 'All',
+      last30d: 'Last month',
+      last90d: 'Last quarter',
+      last365d: 'Last year',
+    },
   },
   filters: {
     all: 'All',

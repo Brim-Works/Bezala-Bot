@@ -4,7 +4,7 @@ import { api, ApiError } from '../api/client.js';
 import { withStatuses } from '../api/adapters.js';
 import { useApiData } from '../hooks/useApiData.js';
 import { useToast } from '../lib/toast.jsx';
-import { parseBackendDate } from '../lib/format.js';
+import { sortMessages } from '../lib/sortMessages.js';
 import { useDrawer } from '../drawer/DrawerProvider.jsx';
 
 import ReviewHeader from '../components/review/ReviewHeader.jsx';
@@ -15,12 +15,6 @@ import EmptyReview from '../components/review/EmptyReview.jsx';
 import DeleteReasonDialog from '../components/trash/DeleteReasonDialog.jsx';
 import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
 import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
-
-function sortOldestFirst(a, b) {
-  const ta = parseBackendDate(a.processed_at)?.getTime() ?? 0;
-  const tb = parseBackendDate(b.processed_at)?.getTime() ?? 0;
-  return ta - tb;
-}
 
 export default function Review() {
   const { t } = useI18n();
@@ -50,10 +44,11 @@ export default function Review() {
   }, [messagesVersion, refetch]);
 
   const queue = useMemo(() => {
-    return allMessages
+    const pending = allMessages
       .filter((m) => m.bezala_status === 'pending')
-      .filter((m) => !optimisticallyRemoved.has(m.id))
-      .sort(sortOldestFirst);
+      .filter((m) => !optimisticallyRemoved.has(m.id));
+    // Default: senaste kvitto överst (receipt_date DESC, fallback processed_at).
+    return sortMessages(pending, 'receipt_date', 'desc');
   }, [allMessages, optimisticallyRemoved]);
 
   const currentIndex = useMemo(() => {

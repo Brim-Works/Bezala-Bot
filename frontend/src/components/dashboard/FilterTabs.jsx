@@ -2,7 +2,7 @@ import { useI18n } from '../../i18n/useI18n.jsx';
 
 const FILTERS = ['all', 'pending', 'auto', 'errors'];
 
-export default function FilterTabs({ filter, setFilter, counts, query, setQuery }) {
+export default function FilterTabs({ filter, setFilter, counts, query, setQuery, children }) {
   const { t } = useI18n();
   return (
     <div className="fbar">
@@ -27,6 +27,7 @@ export default function FilterTabs({ filter, setFilter, counts, query, setQuery 
           placeholder={t.search.placeholder}
         />
       </label>
+      {children}
     </div>
   );
 }

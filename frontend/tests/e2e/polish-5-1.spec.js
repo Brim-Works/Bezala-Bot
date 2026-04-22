@@ -122,25 +122,31 @@ test('Selection — shift-klick väljer range i Dashboard (Gmail/Finder range-AD
   await page.goto('/');
   await expect(page.locator('tr[data-row-id="1"]')).toBeVisible();
 
-  // 1) Klicka checkbox på rad 1 → ankare sätts på id=1.
+  // Gate 3: default-sort = receipt_date DESC → display-ordning är
+  //   [id 4 (2026-04-21), id 1 (2026-04-20), id 5 (2026-04-20),
+  //    id 2 (2026-04-15), id 3 (2026-04-10)]
+
+  // 1) Klicka checkbox på rad 2 (id 1 i DOM) → ankare sätts på id=1.
   const cb1 = page.locator('tr[data-row-id="1"] [data-testid="bulk-checkbox"]');
   await cb1.click();
   await expect(cb1).toBeChecked();
 
-  // 2) Shift+klick på rad 4 → range 1..4 ska bli markerat.
+  // 2) Shift+klick på rad 4 (display-pos 1) → range ska bli ids [4, 1].
   const cb4 = page.locator('tr[data-row-id="4"] [data-testid="bulk-checkbox"]');
   await cb4.click({ modifiers: ['Shift'] });
 
-  for (const id of [1, 2, 3, 4]) {
+  for (const id of [1, 4]) {
     const cb = page.locator(`tr[data-row-id="${id}"] [data-testid="bulk-checkbox"]`);
     await expect(cb).toBeChecked();
   }
-  // Rad 5 ska förbli omarkerad.
-  const cb5 = page.locator('tr[data-row-id="5"] [data-testid="bulk-checkbox"]');
-  await expect(cb5).not.toBeChecked();
+  // Rader utanför range (5, 2, 3) ska vara omarkerade.
+  for (const id of [5, 2, 3]) {
+    const cb = page.locator(`tr[data-row-id="${id}"] [data-testid="bulk-checkbox"]`);
+    await expect(cb).not.toBeChecked();
+  }
 
-  // Bulk-baren visar 4.
+  // Bulk-baren visar 2 (range = ids 4 och 1, Gate 3 sort).
   const bulkBar = page.getByTestId('bulk-bar');
   await expect(bulkBar).toBeVisible();
-  await expect(bulkBar).toContainText('4');
+  await expect(bulkBar).toContainText('2');
 });

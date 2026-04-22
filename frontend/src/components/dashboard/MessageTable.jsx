@@ -19,6 +19,54 @@ const SKELETON_ROWS = 6;
  * Rad-klick väljer raden + öppnar drawer. Bulk-checkbox i första kolumnen
  * (valfri via prop selection) stoppar click-propagation så raden inte
  * aktiveras när user bara markerar. */
+const SORTABLE_COLS = [
+  { key: 'processed_at', labelKey: 'time' },
+  { key: 'vendor', labelKey: 'vendor' },
+  { key: 'receipt_date', labelKey: 'date' },
+  { key: 'amount', labelKey: 'amount' },
+];
+
+function SortArrow({ active, dir }) {
+  if (!active) {
+    return (
+      <span className="tbl__sort-arrow muted" aria-hidden="true">
+        ↕
+      </span>
+    );
+  }
+  return (
+    <span className="tbl__sort-arrow tbl__sort-arrow--active" aria-hidden="true">
+      {dir === 'asc' ? '↑' : '↓'}
+    </span>
+  );
+}
+
+function SortHeader({ colKey, labelKey, testId, sortCol, sortDir, onSortChange, t }) {
+  const active = sortCol === colKey;
+  const clickHandler = () => {
+    if (!onSortChange) return;
+    const nextDir = active ? (sortDir === 'asc' ? 'desc' : 'asc') : 'desc';
+    onSortChange(colKey, nextDir);
+  };
+  const ariaSort = !active
+    ? 'none'
+    : sortDir === 'asc'
+    ? 'ascending'
+    : 'descending';
+  return (
+    <button
+      type="button"
+      className={`tbl__sort-btn ${active ? 'is-active' : ''}`}
+      onClick={clickHandler}
+      aria-sort={ariaSort}
+      data-testid={testId}
+    >
+      <span>{t.cols[labelKey]}</span>
+      <SortArrow active={active} dir={sortDir} />
+    </button>
+  );
+}
+
 export default function MessageTable({
   messages,
   selectedId,
@@ -28,6 +76,9 @@ export default function MessageTable({
   selection,
   onDeleteRow,
   onDownloadRow,
+  sortCol,
+  sortDir,
+  onSortChange,
 }) {
   const { t, lang } = useI18n();
   const tbodyRef = useRef(null);
@@ -68,7 +119,8 @@ export default function MessageTable({
     [focusRow, messages, onActivate, onSelect],
   );
 
-  const colCount = 7 + (hasSelection ? 1 : 0) + (hasDelete ? 1 : 0);
+  const colCount = 8 + (hasSelection ? 1 : 0) + (hasDelete ? 1 : 0);
+  const hasSort = typeof onSortChange === 'function';
 
   const headCells = (
     <tr>
@@ -86,11 +138,68 @@ export default function MessageTable({
           />
         </th>
       ) : null}
-      <th className="tbl__col-time">{t.cols.time}</th>
-      <th className="tbl__col-vendor">{t.cols.vendor}</th>
+      <th className="tbl__col-time">
+        {hasSort ? (
+          <SortHeader
+            colKey="processed_at"
+            labelKey="time"
+            testId="sort-processed_at"
+            sortCol={sortCol}
+            sortDir={sortDir}
+            onSortChange={onSortChange}
+            t={t}
+          />
+        ) : (
+          t.cols.time
+        )}
+      </th>
+      <th className="tbl__col-vendor">
+        {hasSort ? (
+          <SortHeader
+            colKey="vendor"
+            labelKey="vendor"
+            testId="sort-vendor"
+            sortCol={sortCol}
+            sortDir={sortDir}
+            onSortChange={onSortChange}
+            t={t}
+          />
+        ) : (
+          t.cols.vendor
+        )}
+      </th>
       <th className="tbl__col-subject">{t.cols.subject}</th>
       <th className="tbl__col-file">{t.cols.file}</th>
-      <th className="tbl__col-amount">{t.cols.amount}</th>
+      <th className="tbl__col-date">
+        {hasSort ? (
+          <SortHeader
+            colKey="receipt_date"
+            labelKey="date"
+            testId="sort-receipt_date"
+            sortCol={sortCol}
+            sortDir={sortDir}
+            onSortChange={onSortChange}
+            t={t}
+          />
+        ) : (
+          t.cols.date
+        )}
+      </th>
+      <th className="tbl__col-amount">
+        {hasSort ? (
+          <SortHeader
+            colKey="amount"
+            labelKey="amount"
+            testId="sort-amount"
+            sortCol={sortCol}
+            sortDir={sortDir}
+            onSortChange={onSortChange}
+            t={t}
+          />
+        ) : (
+          t.cols.amount
+        )}
+      </th>
       <th className="tbl__col-conf">{t.cols.confidence}</th>
       <th className="tbl__col-status">{t.cols.status}</th>
       {hasDelete ? <th className="tbl__col-actions" /> : null}
@@ -169,6 +278,9 @@ export default function MessageTable({
                 </td>
                 <td className="mono tbl__file">
                   {m.file_name || <span className="muted">—</span>}
+                </td>
+                <td className="mono tbl__date">
+                  {m.receipt_date || <span className="muted">—</span>}
                 </td>
                 <td className="mono tbl__amount">
                   {m.amount != null ? (

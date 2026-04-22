@@ -22,6 +22,12 @@ export function parseBackendDate(input) {
   if (typeof input !== 'string') return null;
   const trimmed = input.trim();
   if (!trimmed) return null;
+  // receipt_date serialiseras ofta som "YYYY-MM-DD" utan tid → expandera
+  // till midnatt UTC så "Z"-suffix-tricket nedan inte ger Invalid Date.
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) {
+    const d = new Date(`${trimmed}T00:00:00Z`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  }
   const hasTz = /([zZ]|[+-]\d{2}:?\d{2})$/.test(trimmed);
   const d = new Date(hasTz ? trimmed : `${trimmed}Z`);
   return Number.isNaN(d.getTime()) ? null : d;
