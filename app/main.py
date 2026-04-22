@@ -766,6 +766,21 @@ def upload_message_to_bezala(
 
     try:
         pdf_bytes = drive.download_pdf(row.drive_file_id)
+        logger.info(
+            "Bezala-upload: msg_id=%s drive_file_id=%s pdf_bytes=%d",
+            msg_id, row.drive_file_id, len(pdf_bytes) if pdf_bytes else 0,
+        )
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            # download_pdf har redan strikta kontroller, men failsafe om
+            # någon ersätter implementationen framöver.
+            msg = (
+                f"PDF-nedladdning misslyckades för drive_file_id={row.drive_file_id!r}: "
+                f"fick {len(pdf_bytes) if pdf_bytes else 0} bytes"
+            )
+            row.bezala_upload_status = "failed"
+            row.bezala_error_message = msg
+            db.commit()
+            raise HTTPException(status_code=502, detail=msg)
         metadata = fetch_bezala_metadata(bezala)
         params = build_receipt_params(
             file_name=row.file_name,

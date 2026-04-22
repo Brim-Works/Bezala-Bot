@@ -122,10 +122,12 @@ class UploadReceiptTest(unittest.TestCase):
             [{"amount": 503.0, "vat_code_id": 11}],
         )
 
-        # Filen skickas som "attachment[file]" i multipart (Rails-nested)
+        # Filen skickas som top-level "file" (se FILE_FIELD_NAME).
+        # Bezala-controllern läser params[:file].tempfile — nested
+        # attachment[file] gav "undefined method tempfile for nil" i prod.
         files = captured["files"]
-        self.assertIn("attachment[file]", files)
-        fname, bytes_, mime = files["attachment[file]"]
+        self.assertIn("file", files)
+        fname, bytes_, mime = files["file"]
         self.assertEqual(fname, "20260422 Finnair.pdf")
         self.assertEqual(bytes_, PDF_BYTES)
         self.assertEqual(mime, "application/pdf")
@@ -174,8 +176,9 @@ class UploadReceiptTest(unittest.TestCase):
             )
         self.assertIn("pdf", str(ctx.exception).lower())
 
-    def test_all_form_keys_are_rails_nested(self):
-        """Ingen top-level-nyckel ska läcka — allt måste under attachment[...]."""
+    def test_metadata_nested_file_top_level(self):
+        """Metadata måste vara nested (attachment[...]) men filen är
+        top-level 'file' — Bezalas controller läser params[:file].tempfile."""
         captured = {}
 
         client = _make_client()
@@ -206,15 +209,18 @@ class UploadReceiptTest(unittest.TestCase):
             extra_fields={"supplier_id": "abc"},
         )
 
+        # All metadata under attachment[...]
         for key in captured["data"].keys():
             self.assertTrue(
                 key.startswith("attachment["),
                 f"Form-nyckel {key!r} är INTE Rails-nested under attachment[...]",
             )
-        for key in captured["files"].keys():
-            self.assertTrue(key.startswith("attachment["))
-        # extra_fields utan prefix ska auto-wrappas
+        # extra_fields utan prefix auto-wrappas
         self.assertIn("attachment[supplier_id]", captured["data"])
+
+        # Filen ska vara top-level 'file' (INTE attachment[file])
+        self.assertIn("file", captured["files"])
+        self.assertNotIn("attachment[file]", captured["files"])
 
     def test_422_bubbles_full_body(self):
         """Bezalas 422 → BezalaError.body innehåller hela response.text."""
@@ -721,6 +727,47 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         self.assertIsNone(kwargs.get("account_id"))
         self.assertIsNone(kwargs.get("cost_center_id"))
         self.assertEqual(kwargs["vat_lines"], [])
+
+    def test_empty_drive_download_returns_502(self):
+        """Om DriveClient.download_pdf levererar tom bytes (eller ogiltig
+        PDF) ska vi INTE skicka tomma fil-bytes till Bezala. Istället →
+        502 med tydligt meddelande och raden markeras failed."""
+        mid = self._seed()
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = b""  # tom!
+
+        fake_bezala = MagicMock()
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+
+        self.assertEqual(resp.status_code, 502)
+        self.assertIn("PDF", resp.json()["detail"])
+        # Bezala SKA INTE ha anropats
+        fake_bezala.upload_receipt.assert_not_called()
+        # Raden markeras failed
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(id=mid).first()
+            self.assertEqual(row.bezala_upload_status, "failed")
+
+    def test_non_pdf_drive_bytes_returns_502(self):
+        """Om Drive-innehållet inte börjar med %PDF (t.ex. HTML-felsida)
+        ska vi stoppa innan Bezala-anropet."""
+        mid = self._seed()
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = b"<html>Drive error</html>"
+
+        fake_bezala = MagicMock()
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+
+        self.assertEqual(resp.status_code, 502)
+        fake_bezala.upload_receipt.assert_not_called()
 
     def test_bezala_422_preserves_body_in_error(self):
         """Bezala kastar 422 → raden sparas med body i error_message."""

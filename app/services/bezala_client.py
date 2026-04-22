@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -42,6 +43,12 @@ TOKEN_SAFETY_MARGIN_SECONDS = 60
 # Trunkeringsgräns för loggade/felrapporterade response-bodies. Höjd från
 # 500 → 4000 så vi ser hela Bezala-felmeddelandet (viktigt vid 422).
 BODY_LOG_LIMIT = 4000
+
+# Multipart-nyckeln där Bezala förväntar sig filen. Default top-level "file"
+# eftersom Bezalas controller tycks göra params[:file].tempfile (nested
+# 'attachment[file]' gav "undefined method `tempfile' for nil:NilClass" i
+# produktion). Overridable via env om vi felar igen och måste experimentera.
+FILE_FIELD_NAME = os.environ.get("BEZALA_FILE_FIELD_NAME", "file")
 
 
 class BezalaError(RuntimeError):
@@ -441,6 +448,16 @@ class BezalaClient:
         if not date:
             raise BezalaError("upload_receipt: date saknas (ÅÅÅÅ-MM-DD)")
 
+        # Logga PDF-info INNAN requesten så vi ser vad som försöker skickas.
+        # Skyddsnät för debug när Bezala returnerar "nil:NilClass"-fel.
+        logger.info(
+            "upload_receipt: filename=%r pdf_bytes=%d description=%r date=%r "
+            "amount=%s currency=%s account_id=%s cost_center_id=%s vat_lines=%s",
+            filename, len(pdf_bytes), description, date,
+            amount, currency, account_id, cost_center_id,
+            vat_lines,
+        )
+
         # Synlig INFO-logg av värdena som faktiskt skickas — debug 422:or
         # utan att behöva gissa.
         logger.info(
@@ -475,10 +492,14 @@ class BezalaClient:
                 key = k if k.startswith("attachment[") else f"attachment[{k}]"
                 form[key] = v if isinstance(v, str) else json.dumps(v)
 
+        logger.info(
+            "upload_receipt: POST /attachments file_field=%r form_keys=%s",
+            FILE_FIELD_NAME, sorted(form.keys()),
+        )
         resp = self._request(
             "POST",
             "/attachments",
-            files={"attachment[file]": (filename, pdf_bytes, "application/pdf")},
+            files={FILE_FIELD_NAME: (filename, pdf_bytes, "application/pdf")},
             data=form,
         )
         if resp.status_code >= 400:

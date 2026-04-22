@@ -88,7 +88,25 @@ class DriveClient:
         )
 
     def download_pdf(self, file_id: str) -> bytes:
-        return self._service.files().get_media(fileId=file_id).execute()
+        """Hämta PDF-bytes från Drive.
+
+        Hårdnar resultatet: tom respons (b'') eller None räknas som fel,
+        inte som tom fil. Googles client returnerar normalt bytes — men om
+        get_media misslyckas tyst vill vi upptäcka det här istället för att
+        skicka noll bytes till Bezala och få oklara nedströmsfel."""
+        if not file_id:
+            raise ValueError("download_pdf: file_id saknas")
+        data = self._service.files().get_media(fileId=file_id).execute()
+        if not data:
+            raise RuntimeError(
+                f"download_pdf: tom respons från Drive för file_id={file_id!r}"
+            )
+        if not isinstance(data, (bytes, bytearray)):
+            raise RuntimeError(
+                f"download_pdf: oväntad typ {type(data).__name__} från Drive "
+                f"(file_id={file_id!r})"
+            )
+        return bytes(data)
 
     def delete_file(self, file_id: str) -> None:
         """Radera en fil permanent från Drive. Används bara vid hard-delete
