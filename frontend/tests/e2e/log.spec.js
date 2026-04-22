@@ -1,5 +1,10 @@
 import { expect, test } from '@playwright/test';
-import { buildRuns, setupApiMocks } from './fixtures.js';
+import {
+  buildMessages,
+  buildRuns,
+  buildSkippedMessage,
+  setupApiMocks,
+} from './fixtures.js';
 
 test.beforeEach(async ({ page }) => {
   await setupApiMocks(page);
@@ -86,4 +91,66 @@ test('Log — tom-state när inga körningar finns', async ({ page }) => {
   await page.goto('/log');
   await expect(page.getByTestId('run-detail-empty')).toBeVisible();
   await expect(page.getByText(/Välj en körning/i)).toBeVisible();
+});
+
+// ---------- Gate 2: Försök igen-knapp för hoppade rader ----------
+
+function skippedInRun(runStart) {
+  // Lägg en skipped-rad i samma tidsintervall som körning #1
+  const processedAt = new Date(new Date(runStart).getTime() + 1000).toISOString();
+  return buildSkippedMessage({ id: 80, processed_at: processedAt });
+}
+
+test('Log Gate 2 — "Försök igen"-knapp syns för hoppade rader', async ({
+  page,
+}) => {
+  const runs = buildRuns();
+  const skipped = skippedInRun(runs[0].started_at);
+  await setupApiMocks(page, {
+    messages: [...buildMessages(), skipped],
+    runs,
+  });
+  await page.goto('/log');
+  await expect(page.getByTestId('retry-80')).toBeVisible();
+  // Saved-rad (id 1) ska INTE ha knappen
+  await expect(page.getByTestId('retry-1')).toHaveCount(0);
+});
+
+test('Log Gate 2 — klick på Försök igen triggar POST /reprocess + toast', async ({
+  page,
+}) => {
+  const runs = buildRuns();
+  const skipped = skippedInRun(runs[0].started_at);
+  await setupApiMocks(page, {
+    messages: [...buildMessages(), skipped],
+    runs,
+  });
+
+  const reprocessRequest = page.waitForRequest(
+    (req) =>
+      /\/api\/messages\/80\/reprocess$/.test(req.url()) &&
+      req.method() === 'POST',
+  );
+  await page.goto('/log');
+  await page.getByTestId('retry-80').click();
+  const req = await reprocessRequest;
+  expect(req.method()).toBe('POST');
+
+  await expect(page.getByText(/Rad återlagd för scanning/i)).toBeVisible();
+});
+
+test('Log Gate 2 — raden försvinner ur listan efter lyckad reprocess', async ({
+  page,
+}) => {
+  const runs = buildRuns();
+  const skipped = skippedInRun(runs[0].started_at);
+  await setupApiMocks(page, {
+    messages: [...buildMessages(), skipped],
+    runs,
+  });
+  await page.goto('/log');
+  await expect(page.getByTestId('run-message-80')).toBeVisible();
+  await page.getByTestId('retry-80').click();
+  // Efter success tas raden bort från mocken och refetch sker → rad försvinner
+  await expect(page.getByTestId('run-message-80')).toHaveCount(0);
 });

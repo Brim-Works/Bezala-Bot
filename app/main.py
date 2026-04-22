@@ -457,6 +457,65 @@ def _fetch_pdf_helper(url: str) -> bytes:
     return fetch_pdf_from_link(url)
 
 
+@app.post("/api/messages/{msg_id}/reprocess")
+def reprocess_message(
+    msg_id: int,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Lägg tillbaka en hoppad rad för scanning.
+
+    Bara rader vars status börjar med 'skipped:' eller är 'needs_manual_download'
+    får återprocessas. Vi:
+      1. Tar bort DB-raden (så pipelinens _message_already_processed-check
+         inte blockerar nästa scan)
+      2. Tar bort Bezala-Klar-etiketten i Gmail (best-effort — pipelinens
+         Gmail-query exkluderar etiketten)
+      3. Triggar en bakgrundsscan (max_results=10) så användaren ser
+         resultatet inom sekunder istället för att vänta på schemalagd scan
+    """
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+
+    status = (row.status or "").lower()
+    if not (status.startswith("skipped:") or status == "needs_manual_download"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Raden har status {row.status!r} — bara 'skipped:*'/'needs_manual_download' kan återprocessas.",
+        )
+
+    gmail_message_id = row.message_id
+    prior_status = row.status
+    db.delete(row)
+    db.commit()
+
+    if gmail_message_id:
+        gmail = _get_gmail_client_safe()
+        if gmail:
+            try:
+                gmail.remove_done(gmail_message_id)
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "Kunde inte ta bort Bezala-Klar-etiketten för %s",
+                    gmail_message_id,
+                )
+
+    # Trigga en liten scan direkt så raden dyker upp igen snabbt.
+    background.add_task(run_scan, max_results=10)
+
+    logger.info(
+        "Reprocess msg_id=%s (prior_status=%r) — rad borttagen, bakgrundsscan startad",
+        msg_id, prior_status,
+    )
+    return {
+        "status": "reprocessing",
+        "id": msg_id,
+        "prior_status": prior_status,
+    }
+
+
 @app.post("/api/messages/{msg_id}/fetch-pdf")
 def fetch_pdf_for_message(
     msg_id: int,

@@ -200,6 +200,35 @@ export function buildSettings(overrides = {}) {
   };
 }
 
+export function buildSkippedMessage(overrides = {}) {
+  return {
+    id: 80,
+    message_id: 'gmail-skipped-80',
+    sender: 'Moovy <kvitto@moovy.fi>',
+    subject: 'Din parkering',
+    received_at: isoAgo(2 * ONE_HOUR),
+    processed_at: isoAgo(2 * ONE_HOUR),
+    file_name: null,
+    drive_file_id: null,
+    drive_link: null,
+    status: 'skipped:no_pdf',
+    error_message: null,
+    vendor: null,
+    amount: null,
+    currency: null,
+    receipt_date: null,
+    category: null,
+    summary: null,
+    ai_confidence: null,
+    bezala_transaction_id: null,
+    bezala_upload_status: null,
+    bezala_error_message: null,
+    pending_link: null,
+    ...emptyTrashFields(),
+    ...overrides,
+  };
+}
+
 export function buildPendingDownloadMessage(overrides = {}) {
   return {
     id: 99,
@@ -251,6 +280,8 @@ export async function setupApiMocks(page, overrides = {}) {
     fetchPdfResponse: overrides.fetchPdfResponse || null,
     lastDeleteRequest: null,
     lastFetchPdfId: null,
+    lastReprocessId: null,
+    reprocessResponse: overrides.reprocessResponse || null,
   };
 
   // --- enklare globala routes ---
@@ -331,6 +362,24 @@ export async function setupApiMocks(page, overrides = {}) {
         );
       }
       return route.fulfill(jsonResponse({ deleted: ids.length, ids, permanent }));
+    }
+
+    // POST /api/messages/:id/reprocess
+    const reprocessMatch = pathname.match(/\/api\/messages\/(\d+)\/reprocess$/);
+    if (method === 'POST' && reprocessMatch) {
+      const id = Number(reprocessMatch[1]);
+      state.lastReprocessId = id;
+      if (state.reprocessResponse && state.reprocessResponse.status) {
+        return route.fulfill(state.reprocessResponse);
+      }
+      const idx = state.messages.findIndex((m) => m.id === id);
+      const prior = idx >= 0 ? state.messages[idx].status : null;
+      if (idx >= 0) {
+        state.messages.splice(idx, 1);
+      }
+      return route.fulfill(
+        jsonResponse({ status: 'reprocessing', id, prior_status: prior }),
+      );
     }
 
     // POST /api/messages/:id/fetch-pdf
