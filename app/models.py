@@ -75,6 +75,10 @@ class ScanRun(Base):
     status = Column(String(32), default="running", nullable=False)
     notes = Column(Text, nullable=True)
 
+    # Gate 1.5 — Loggtransparens. Array av filtrerade mail med reason +
+    # confidence. NULL = gammal körning utan detaljer (tolkas som [] i API).
+    filtered_messages = Column(JSON, nullable=True)
+
 
 class AppSettings(Base):
     """Applikationsinställningar (singleton — id=1)."""
