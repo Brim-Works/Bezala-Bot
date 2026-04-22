@@ -1,29 +1,33 @@
-import { useCallback, useRef } from 'react';
+import { useCallback, useRef, useState } from 'react';
 import { api } from '../api/client.js';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { useToast } from '../lib/toast.jsx';
 import { parseBackendDate } from '../lib/format.js';
 
 const POLL_INTERVAL_MS = 2500;
-const POLL_TIMEOUT_MS = 30_000;
+// Gate 4: höjd från 30s → 45s. Railway-scanning kan ta upp till ~40s vid
+// stor Gmail-kö innan en färsk ScanRun.finished_at syns i API:t.
+const POLL_TIMEOUT_MS = 45_000;
 
 /* Triggar POST /api/scan och pollar /api/runs?limit=1 tills senaste
- * körningen är nyare än scan-starten — då visar vi toast med antal
- * hittade mail. Timeout efter 30 s → fallback-toast "Scanning pågår". */
+ * körningen är nyare än scan-starten. Exposerar isScanning som React-
+ * state så TopBar/Dashboard kan visa spinner + "Scannar..."-text
+ * under körningens gång. Toast vid klart / tom / timeout. */
 export function useScanFeedback(onCompletion) {
   const { t } = useI18n();
   const toast = useToast();
-  const inFlight = useRef(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const timerRef = useRef(null);
 
   const runScan = useCallback(async () => {
-    if (inFlight.current) return;
-    inFlight.current = true;
+    if (isScanning) return;
+    setIsScanning(true);
 
     const scanStartedAt = Date.now();
     try {
       await api.scan();
     } catch (err) {
-      inFlight.current = false;
+      setIsScanning(false);
       toast.show({
         kind: 'err',
         message: `${t.scanFeedback.failed}: ${err.message || err}`,
@@ -43,17 +47,16 @@ export function useScanFeedback(onCompletion) {
           const finishedDate = parseBackendDate(latest.finished_at);
           if (finishedDate && finishedDate.getTime() >= scanStartedAt) {
             resolved = true;
-            inFlight.current = false;
+            setIsScanning(false);
             const found = latest.messages_found || 0;
             const processed = latest.messages_processed || 0;
             if (found === 0) {
               toast.show({ kind: 'ok', message: t.scanFeedback.noNewMail });
             } else {
+              // Gate 4: ny text format "Scanning klar — X nya kvitton hittade"
               toast.show({
                 kind: 'ok',
-                message: t.scanFeedback.found
-                  .replace('{found}', String(found))
-                  .replace('{processed}', String(processed)),
+                message: t.scanFeedback.found.replace('{found}', String(found)),
               });
             }
             onCompletion?.();
@@ -66,16 +69,16 @@ export function useScanFeedback(onCompletion) {
 
       if (Date.now() >= deadline) {
         resolved = true;
-        inFlight.current = false;
+        setIsScanning(false);
         toast.show({ kind: 'warn', message: t.scanFeedback.timeout });
         return;
       }
-      setTimeout(pollOnce, POLL_INTERVAL_MS);
+      timerRef.current = setTimeout(pollOnce, POLL_INTERVAL_MS);
     }
 
     toast.show({ kind: 'ok', message: t.scanFeedback.started });
-    setTimeout(pollOnce, POLL_INTERVAL_MS);
-  }, [onCompletion, t, toast]);
+    timerRef.current = setTimeout(pollOnce, POLL_INTERVAL_MS);
+  }, [isScanning, onCompletion, t, toast]);
 
-  return { runScan, isScanning: () => inFlight.current };
+  return { runScan, isScanning };
 }

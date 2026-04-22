@@ -108,9 +108,9 @@ export default {
   },
   scanFeedback: {
     started: 'Scanning startad',
-    noNewMail: 'Inga nya mail matchade filtren',
-    found: 'Scanning klar — {found} nya mail hittade ({processed} bearbetade)',
-    timeout: 'Scanning pågår — öppna Loggen för status',
+    noNewMail: 'Inga nya kvitton matchade filtren',
+    found: 'Scanning klar — {found} nya kvitton hittade',
+    timeout: 'Scanning tar längre tid än väntat — se Loggen',
     failed: 'Scanning misslyckades',
   },
   errors: {

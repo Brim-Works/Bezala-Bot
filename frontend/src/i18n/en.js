@@ -108,9 +108,9 @@ export default {
   },
   scanFeedback: {
     started: 'Scan started',
-    noNewMail: 'No new mail matched the filters',
-    found: 'Scan complete — {found} new mail found ({processed} processed)',
-    timeout: 'Scan still running — open the Log for status',
+    noNewMail: 'No new receipts matched the filters',
+    found: 'Scan complete — {found} new receipts',
+    timeout: 'Scan taking longer than expected — check the Log',
     failed: 'Scan failed',
   },
   errors: {

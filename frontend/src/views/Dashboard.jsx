@@ -99,7 +99,7 @@ export default function Dashboard() {
     refetch().catch(() => {});
   }, [messagesVersion, refetch]);
 
-  const { runScan } = useScanFeedback(() => refetch().catch(() => {}));
+  const { runScan, isScanning } = useScanFeedback(() => refetch().catch(() => {}));
 
   const stats = useMemo(
     () => deriveDashboardStats(messages, data?.stats),
@@ -215,11 +215,21 @@ export default function Dashboard() {
           </span>
           <button
             type="button"
-            className="btn primary"
+            className={`btn primary scan-btn ${isScanning ? 'is-scanning' : ''}`}
             onClick={runScan}
+            disabled={isScanning}
             data-testid="scan-button"
+            aria-busy={isScanning}
           >
-            {t.topbar.scan}
+            {isScanning ? (
+              <>
+                <span className="scan-btn__dot" aria-hidden="true" />
+                <span className="scan-btn__spinner" aria-hidden="true" />
+                <span>{t.topbar.scanning}</span>
+              </>
+            ) : (
+              <span>{t.topbar.scan}</span>
+            )}
           </button>
         </div>
       </div>
