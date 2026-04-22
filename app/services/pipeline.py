@@ -340,12 +340,28 @@ def _process_one_message(
     bezala_metadata: dict | None = None,
 ) -> None:
     with session_scope() as db:
-        if _message_already_processed(db, message_id):
+        existing = (
+            db.query(ProcessedMessage)
+            .filter(ProcessedMessage.message_id == message_id)
+            .first()
+        )
+        if existing is not None:
             result.skipped += 1
-            _record_filtered(
-                result, None, FILTERED_REASON_ALREADY_PROCESSED,
-                message_id=message_id,
+            # Plocka sender/subject/received_at från DB-raden så Log-vyn
+            # visar vilket mail som filtrerades (inte bara "—" kolumner).
+            received_at_iso = (
+                existing.received_at.isoformat()
+                if existing.received_at else None
             )
+            result.filtered.append({
+                "message_id": message_id,
+                "sender": existing.sender,
+                "subject": existing.subject,
+                "received_at": received_at_iso,
+                "reason": FILTERED_REASON_ALREADY_PROCESSED,
+                "confidence": None,
+                "detail": None,
+            })
             logger.debug("Hoppar över redan bearbetat %s", message_id)
             return
 

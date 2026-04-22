@@ -359,11 +359,12 @@ export default {
     toast: {
       cleared: 'Error-rader rensade',
       clearFailed: 'Rensning misslyckades',
-      reprocessQueued: 'Rad återlagd för scanning',
+      reprocessQueued: 'Mail återlagt — scanning startar nu',
       reprocessFailed: 'Kunde inte lägga tillbaka raden',
     },
     retry: 'Försök igen',
     retrying: 'Skickar…',
+    retryHint: 'Mailet scannas igen automatiskt inom 60 minuter',
     filtered: {
       title: 'Filtrerade (ej sparade)',
       ai_filtered: 'AI-filtrerad ({confidence}%)',

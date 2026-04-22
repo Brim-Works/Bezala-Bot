@@ -61,21 +61,54 @@ export default function Log() {
   const runs = data?.runs || [];
   const messages = data?.messages || [];
 
-  // Filtrera körningslistan på datum + status
+  const searchLower = searchText.trim().toLowerCase();
+
+  // Hjälpare: returnerar true om någon av körningens messages eller
+  // filtered_messages matchar söktexten (sender/subject).
+  const runMatchesSearch = useCallback(
+    (run) => {
+      if (!searchLower) return true;
+      const entries = run?.filtered_messages || [];
+      for (const e of entries) {
+        if (
+          (e.sender || '').toLowerCase().includes(searchLower) ||
+          (e.subject || '').toLowerCase().includes(searchLower)
+        ) {
+          return true;
+        }
+      }
+      // Matcha även mot DB-rader inom körningens tidsintervall
+      const runMessages = messagesForRun(run, messages);
+      return runMessages.some(
+        (m) =>
+          (m.sender || '').toLowerCase().includes(searchLower) ||
+          (m.subject || '').toLowerCase().includes(searchLower),
+      );
+    },
+    [searchLower, messages],
+  );
+
+  // Filtrera körningslistan på datum + status + text-sök
   const filteredRuns = useMemo(() => {
     const days = DATE_FILTERS[dateFilter];
     return runs.filter((run) => {
       if (days != null && !isWithinDays(run.started_at, days)) return false;
-      if (statusFilter === 'all') return true;
-      const processed = run.messages_processed || 0;
-      const errorCount = run.errors || 0;
-      if (statusFilter === 'error') return errorCount > 0 && processed === 0;
-      if (statusFilter === 'partial') return errorCount > 0 && processed > 0;
-      if (statusFilter === 'idle') return errorCount === 0 && processed === 0;
-      if (statusFilter === 'ok') return errorCount === 0 && processed > 0;
+      if (statusFilter !== 'all') {
+        const processed = run.messages_processed || 0;
+        const errorCount = run.errors || 0;
+        if (statusFilter === 'error' && !(errorCount > 0 && processed === 0))
+          return false;
+        if (statusFilter === 'partial' && !(errorCount > 0 && processed > 0))
+          return false;
+        if (statusFilter === 'idle' && !(errorCount === 0 && processed === 0))
+          return false;
+        if (statusFilter === 'ok' && !(errorCount === 0 && processed > 0))
+          return false;
+      }
+      if (!runMatchesSearch(run)) return false;
       return true;
     });
-  }, [runs, dateFilter, statusFilter]);
+  }, [runs, dateFilter, statusFilter, runMatchesSearch]);
 
   useEffect(() => {
     const id = setInterval(() => {
@@ -131,7 +164,8 @@ export default function Log() {
   );
 
   // Text-sök filtrerar sparade + filtrerade rader inom vald körning
-  const searchLower = searchText.trim().toLowerCase();
+  // (samma söktext används också för runMatchesSearch ovan, så runs
+  //  som inte innehåller matchande meddelanden faller bort direkt).
   const matchesSearch = useCallback(
     (sender, subject) => {
       if (!searchLower) return true;

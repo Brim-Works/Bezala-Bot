@@ -179,7 +179,7 @@ class RecordFilteredTest(unittest.TestCase):
         self.assertIsNone(entry["confidence"])
 
     def test_already_processed_uses_message_id_only(self):
-        """Duplicate-skip sker innan vi hämtar mailet → msg är None."""
+        """_record_filtered utan msg-objekt (bakåtkompat)."""
         from app.services.pipeline import (
             ScanResult,
             _record_filtered,
@@ -196,6 +196,87 @@ class RecordFilteredTest(unittest.TestCase):
         self.assertEqual(entry["message_id"], "gm-dup-42")
         self.assertIsNone(entry["sender"])
         self.assertIsNone(entry["subject"])
+
+
+class AlreadyProcessedPopulatesFromDbTest(unittest.TestCase):
+    """När pipelinen träffar en already_processed-rad ska sender + subject
+    plockas från DB-raden så Log-vyn kan visa vilket mail som filtrerades."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app.services import pipeline as pipeline_module
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        pipeline_module.session_scope = session_scope
+
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = models.ProcessedMessage
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def test_duplicate_reads_sender_subject_from_db(self):
+        from datetime import datetime, timezone
+        from app.services.pipeline import _process_one_message, ScanResult
+        from unittest.mock import MagicMock
+
+        # Seed: en redan-bearbetad rad finns i DB
+        with self.SessionLocal() as db:
+            db.add(self.ProcessedMessage(
+                message_id="dup-1",
+                sender="Moovy <kvitto@moovy.fi>",
+                subject="Din parkering",
+                received_at=datetime(2026, 4, 22, 12, 0, tzinfo=timezone.utc),
+                status="saved",
+                file_name="kvitto.pdf",
+                drive_file_id="drv-1",
+            ))
+            db.commit()
+
+        fake_gmail = MagicMock()
+        fake_analyzer = MagicMock()
+        fake_analyzer.enabled = False
+
+        result = ScanResult()
+        _process_one_message(
+            "dup-1", fake_gmail, MagicMock(), MagicMock(), fake_analyzer,
+            None, result,
+        )
+
+        # Gmail.fetch_message ska INTE ha anropats (tidig DB-skip)
+        fake_gmail.fetch_message.assert_not_called()
+
+        self.assertEqual(len(result.filtered), 1)
+        entry = result.filtered[0]
+        self.assertEqual(entry["reason"], "already_processed")
+        self.assertEqual(entry["sender"], "Moovy <kvitto@moovy.fi>")
+        self.assertEqual(entry["subject"], "Din parkering")
+        # SQLite lagrar DateTime utan tz-suffix, Postgres kan inkludera det.
+        # Vi verifierar bara att korrekt datum/tid sparats.
+        self.assertTrue(entry["received_at"].startswith("2026-04-22T12:00:00"))
 
 
 # ============================================================

@@ -46,6 +46,15 @@ export default function RunMessages({
     });
     try {
       await api.reprocessMessage(id);
+      // Trigga scanning direkt istället för att vänta på schemalagd körning.
+      // Reprocess-endpointen kickar redan igång en bakgrundsscan (max_results=10),
+      // men vi anropar /api/scan separat också så useScanFeedback-hooken i
+      // parent (Log/Dashboard-topbar) triggar polling + toast när scan är klar.
+      try {
+        await api.scan();
+      } catch {
+        // Ignorera — reprocess har redan triggat sin egen bakgrundsscan
+      }
       toast.show({ kind: 'ok', message: t.log.toast.reprocessQueued });
       onReprocessed?.(id);
     } catch (err) {
@@ -107,7 +116,7 @@ export default function RunMessages({
                     {canRetry ? (
                       <button
                         type="button"
-                        className="btn btn-ghost btn-sm"
+                        className="btn primary"
                         onClick={(e) => {
                           e.stopPropagation();
                           onRetry(m.id);
@@ -115,6 +124,7 @@ export default function RunMessages({
                         disabled={isRetrying}
                         data-testid={`retry-${m.id}`}
                         aria-label={t.log.retry}
+                        title={t.log.retryHint}
                       >
                         <IconRefresh />
                         <span>{isRetrying ? t.log.retrying : t.log.retry}</span>

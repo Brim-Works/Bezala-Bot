@@ -137,7 +137,8 @@ test('Log Gate 2 — klick på Försök igen triggar POST /reprocess + toast', a
   const req = await reprocessRequest;
   expect(req.method()).toBe('POST');
 
-  await expect(page.getByText(/Rad återlagd för scanning/i)).toBeVisible();
+  // Gate 1.5 fix: toast-text nämner "scanning" för att tydliggöra processen
+  await expect(page.getByText(/scanning/i)).toBeVisible();
 });
 
 test('Log Gate 2 — raden försvinner ur listan efter lyckad reprocess', async ({
@@ -253,4 +254,128 @@ test('Log Gate 1.5 — datum-dropdown filtrerar körningar', async ({ page }) =>
   await page.getByTestId('log-search-date').selectOption('last7d');
   const count = await page.getByTestId(/^run-item-/).count();
   expect(count).toBeGreaterThan(0);
+});
+
+// ---------- Gate 1.5 designfix ----------
+
+test('Gate 1.5 fix — already_processed-rad visar sender + subject (inte "—")', async ({
+  page,
+}) => {
+  const runs = buildRuns();
+  runs[0].filtered_messages = [
+    {
+      message_id: 'gm-dup-1',
+      sender: 'Moovy <kvitto@moovy.fi>',
+      subject: 'Din parkering 19.04.2026',
+      received_at: runs[0].started_at,
+      reason: 'already_processed',
+      confidence: null,
+      detail: null,
+    },
+  ];
+  await setupApiMocks(page, { runs });
+  await page.goto('/log');
+
+  const row = page.getByTestId('filtered-row-gm-dup-1');
+  await expect(row).toBeVisible();
+  await expect(row).toContainText('Moovy');
+  await expect(row).toContainText('Din parkering');
+});
+
+test('Gate 1.5 fix — LogSearch använder .fbar/.fbar__tab/.fbar__search', async ({
+  page,
+}) => {
+  await setupApiMocks(page);
+  await page.goto('/log');
+
+  // LogSearch-container har .fbar (samma som Dashboard FilterTabs)
+  const container = page.getByTestId('log-search');
+  await expect(container).toHaveClass(/fbar/);
+
+  // Status-tabs har .fbar__tab-klassen (istället för egen pill-stil)
+  const okTab = page.getByTestId('log-search-status-ok');
+  await expect(okTab).toHaveClass(/fbar__tab/);
+
+  // Sökinput ligger under .fbar__search-wrapper (samma som Dashboard)
+  const input = page.getByTestId('log-search-input');
+  await expect(input.locator('xpath=..')).toHaveClass(/fbar__search/);
+
+  // Datum-select har settings-field__select-klassen (samma som Settings)
+  const dateSelect = page.getByTestId('log-search-date');
+  await expect(dateSelect).toHaveClass(/settings-field__select/);
+});
+
+test('Gate 1.5 fix — Försök igen triggar POST /api/scan direkt efter reprocess', async ({
+  page,
+}) => {
+  const runs = buildRuns();
+  const skipped = buildSkippedMessage({
+    id: 90,
+    processed_at: new Date(new Date(runs[0].started_at).getTime() + 1000).toISOString(),
+  });
+  await setupApiMocks(page, {
+    messages: [...buildMessages(), skipped],
+    runs,
+  });
+
+  const scanRequest = page.waitForRequest(
+    (req) => /\/api\/scan$/.test(req.url()) && req.method() === 'POST',
+    { timeout: 3000 },
+  );
+
+  await page.goto('/log');
+  await page.getByTestId('retry-90').click();
+  await scanRequest;
+
+  // Toast matchar den nya texten: "Mail återlagt — scanning startar nu"
+  await expect(page.getByText(/scanning startar nu/i)).toBeVisible();
+});
+
+test('Gate 1.5 fix — Försök igen-knappen använder btn primary (designsystemet)', async ({
+  page,
+}) => {
+  const runs = buildRuns();
+  const skipped = buildSkippedMessage({
+    id: 91,
+    processed_at: new Date(new Date(runs[0].started_at).getTime() + 1000).toISOString(),
+  });
+  await setupApiMocks(page, {
+    messages: [...buildMessages(), skipped],
+    runs,
+  });
+  await page.goto('/log');
+
+  const btn = page.getByTestId('retry-91');
+  await expect(btn).toHaveClass(/btn/);
+  await expect(btn).toHaveClass(/primary/);
+});
+
+test('Gate 1.5 fix — text-sök filtrerar körningslistan via filtered_messages', async ({
+  page,
+}) => {
+  const runs = buildRuns();
+  // Lägg unik sender i filtered_messages för en specifik körning
+  runs[5].filtered_messages = [
+    {
+      message_id: 'gm-unique-5',
+      sender: 'UniqueBananSender <banan@example.com>',
+      subject: 'Unik Banan-kvitto',
+      received_at: runs[5].started_at,
+      reason: 'ai_filtered',
+      confidence: 30,
+      detail: null,
+    },
+  ];
+  await setupApiMocks(page, { runs });
+  await page.goto('/log');
+
+  // Innan sök: alla 14 körningar synliga
+  await expect(page.getByTestId('run-item-105')).toBeVisible();
+  await expect(page.getByTestId('run-item-100')).toBeVisible();
+
+  // Skriv "Banan" i sökfältet — bara run 105 ska vara kvar i listan
+  await page.getByTestId('log-search-input').fill('Banan');
+
+  await expect(page.getByTestId('run-item-105')).toBeVisible();
+  await expect(page.getByTestId('run-item-100')).toHaveCount(0);
 });

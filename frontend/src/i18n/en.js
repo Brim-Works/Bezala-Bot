@@ -358,11 +358,12 @@ export default {
     toast: {
       cleared: 'Error rows cleared',
       clearFailed: 'Clearing failed',
-      reprocessQueued: 'Row queued for reprocessing',
+      reprocessQueued: 'Mail queued — scan starting now',
       reprocessFailed: 'Could not queue row for reprocessing',
     },
     retry: 'Retry',
     retrying: 'Sending…',
+    retryHint: 'The mail is scanned again automatically within 60 minutes',
     filtered: {
       title: 'Filtered (not saved)',
       ai_filtered: 'AI-filtered ({confidence}%)',
