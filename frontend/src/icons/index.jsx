@@ -133,6 +133,17 @@ export function IconRestore(props) {
   );
 }
 
+export function IconRefresh(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M16 4v4h-4" />
+      <path d="M4 16v-4h4" />
+      <path d="M15.5 8A6 6 0 0 0 5 9.5" />
+      <path d="M4.5 12A6 6 0 0 0 15 10.5" />
+    </IconBase>
+  );
+}
+
 export const NAV_ICONS = {
   dashboard: IconDashboard,
   review: IconReview,

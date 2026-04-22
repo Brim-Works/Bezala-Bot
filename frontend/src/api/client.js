@@ -103,6 +103,8 @@ export const api = {
     ),
   fetchPdf: (id) =>
     request(`/api/messages/${id}/fetch-pdf`, { method: 'POST' }),
+  reprocessMessage: (id) =>
+    request(`/api/messages/${id}/reprocess`, { method: 'POST' }),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {

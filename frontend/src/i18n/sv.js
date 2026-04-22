@@ -349,7 +349,11 @@ export default {
     toast: {
       cleared: 'Error-rader rensade',
       clearFailed: 'Rensning misslyckades',
+      reprocessQueued: 'Rad återlagd för scanning',
+      reprocessFailed: 'Kunde inte lägga tillbaka raden',
     },
+    retry: 'Försök igen',
+    retrying: 'Skickar…',
   },
   trash: {
     title: 'Papperskorg',

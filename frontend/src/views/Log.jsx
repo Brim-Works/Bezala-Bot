@@ -129,6 +129,12 @@ export default function Log() {
     [messages, openDrawer],
   );
 
+  const onReprocessed = useCallback(() => {
+    // Ladda om /api/messages så raden försvinner ur listan och ny
+    // scan-rad dyker upp när bakgrundsscan är klar.
+    refetch().catch(() => {});
+  }, [refetch]);
+
   return (
     <>
       <KpiStrip
@@ -151,6 +157,7 @@ export default function Log() {
           run={selectedRun}
           messages={runMessages}
           onOpenMessage={onOpenMessage}
+          onReprocessed={onReprocessed}
         />
       </div>
     </>

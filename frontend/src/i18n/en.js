@@ -348,7 +348,11 @@ export default {
     toast: {
       cleared: 'Error rows cleared',
       clearFailed: 'Clearing failed',
+      reprocessQueued: 'Row queued for reprocessing',
+      reprocessFailed: 'Could not queue row for reprocessing',
     },
+    retry: 'Retry',
+    retrying: 'Sending…',
   },
   trash: {
     title: 'Trash',
