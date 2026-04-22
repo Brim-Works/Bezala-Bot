@@ -8,8 +8,18 @@ Upload-flöde:
   1. upload_attachment(pdf_bytes, filename) → attachment_id
   2. create_transaction({attachment_ids, vendor, amount, ...}) → transaction_id
 
+Metadata-endpoints (Gate 0-groundwork):
+  - list_accounts() → Bezala kontolista (för account_id-mappning)
+  - list_cost_centers() → kostnadsställen (för cost_center_id)
+  - list_vat_rates() → momssatser (för vat_rate_id)
+
 Retries: 2 försök vid 5xx med exponentiell backoff (1s, 2s).
 Timeout: 30 sek per request.
+
+LOGGNING: På varje request loggar vi metod, path och payload-nycklar (inte
+värden — de kan innehålla PII). På varje non-2xx loggar vi statuskod +
+hela response.text (trunkerat till BODY_LOG_LIMIT). Vid 422 höjer vi
+loglevel till ERROR så felet inte drunknar i INFO-strömmen.
 """
 
 from __future__ import annotations
@@ -28,6 +38,9 @@ logger = logging.getLogger(__name__)
 TIMEOUT_SECONDS = 30.0
 MAX_RETRIES_5XX = 2
 TOKEN_SAFETY_MARGIN_SECONDS = 60
+# Trunkeringsgräns för loggade/felrapporterade response-bodies. Höjd från
+# 500 → 4000 så vi ser hela Bezala-felmeddelandet (viktigt vid 422).
+BODY_LOG_LIMIT = 4000
 
 
 class BezalaError(RuntimeError):
@@ -54,6 +67,42 @@ class BezalaAttachment:
 class BezalaTransaction:
     transaction_id: str
     url: str | None = None
+
+
+def _safe_body_snippet(resp: httpx.Response) -> str:
+    """Returnerar response.text trunkerad till BODY_LOG_LIMIT tecken.
+    Skyddar mot None/binär respons."""
+    try:
+        text = resp.text or ""
+    except Exception:  # noqa: BLE001
+        return "<binärt svar — text() kastade>"
+    if len(text) > BODY_LOG_LIMIT:
+        return text[:BODY_LOG_LIMIT] + f"…<{len(text) - BODY_LOG_LIMIT} tecken kapade>"
+    return text
+
+
+def _log_response(resp: httpx.Response, method: str, path: str, payload_keys: list[str] | None = None) -> None:
+    """Strukturerad loggning av Bezala-svar. 4xx/5xx → ERROR, 2xx → DEBUG.
+    Payload-nycklar loggas (inte värdena — de kan bära PII)."""
+    status = resp.status_code
+    keys_str = ",".join(payload_keys) if payload_keys else "—"
+    headers_interesting = {
+        k: v for k, v in resp.headers.items()
+        if k.lower() in ("content-type", "x-request-id", "x-correlation-id", "retry-after")
+    }
+    if 200 <= status < 300:
+        logger.debug(
+            "Bezala %s %s → %d | payload_keys=%s | headers=%s",
+            method, path, status, keys_str, headers_interesting,
+        )
+        return
+    body = _safe_body_snippet(resp)
+    level = logging.ERROR if status in (400, 401, 403, 422, 500, 502, 503) else logging.WARNING
+    logger.log(
+        level,
+        "Bezala %s %s → %d | payload_keys=%s | headers=%s | body=%s",
+        method, path, status, keys_str, headers_interesting, body,
+    )
 
 
 class BezalaClient:
@@ -130,9 +179,22 @@ class BezalaClient:
         url = f"{self._base_url}{path}"
         last_exc: Exception | None = None
 
+        # Payload-nycklar för loggning (inte värden — kan bära PII/belopp).
+        payload_keys: list[str] = []
+        if isinstance(json, dict):
+            payload_keys = list(json.keys())
+        elif isinstance(data, dict):
+            payload_keys = list(data.keys())
+        elif files:
+            payload_keys = [f"file:{k}" for k in (files.keys() if isinstance(files, dict) else [])]
+
         for attempt in range(MAX_RETRIES_5XX + 1):
             try:
                 headers = self._auth_headers()
+                logger.debug(
+                    "Bezala → %s %s (försök %d, payload_keys=%s)",
+                    method, path, attempt + 1, payload_keys,
+                )
                 resp = self._client.request(
                     method, url, json=json, files=files, data=data, headers=headers
                 )
@@ -147,6 +209,8 @@ class BezalaClient:
                 time.sleep(2 ** attempt)
                 continue
 
+            _log_response(resp, method, path, payload_keys)
+
             if resp.status_code == 401:
                 # Token kan vara utgången — tvinga ny auth EN gång.
                 if attempt == 0:
@@ -157,7 +221,7 @@ class BezalaClient:
                 raise BezalaError(
                     f"Bezala {method} {path}: 401 efter re-auth",
                     status_code=401,
-                    body=resp.text[:500],
+                    body=_safe_body_snippet(resp),
                 )
 
             if 500 <= resp.status_code < 600 and attempt < MAX_RETRIES_5XX:
@@ -187,7 +251,7 @@ class BezalaClient:
             raise BezalaError(
                 f"Bezala upload_attachment: {resp.status_code}",
                 status_code=resp.status_code,
-                body=resp.text[:500],
+                body=_safe_body_snippet(resp),
             )
         try:
             data = resp.json()
@@ -218,7 +282,14 @@ class BezalaClient:
         date: str | None,
         category: str | None,
         description: str | None,
+        extra_fields: dict[str, Any] | None = None,
     ) -> BezalaTransaction:
+        """Skapar en transaktion i Bezala.
+
+        `extra_fields` är Gate 0-groundwork: låter anroparen lager in
+        account_id, cost_center_id, vat_rate_id, purchase_date m.fl. när
+        vi vet exakt vilka nycklar Bezala förväntar (fastställs när live-
+        response.text från 422 analyserats)."""
         payload: dict[str, Any] = {
             "attachment_ids": attachment_ids,
         }
@@ -234,13 +305,17 @@ class BezalaClient:
             payload["category"] = category
         if description:
             payload["description"] = description
+        if extra_fields:
+            for k, v in extra_fields.items():
+                if v is not None:
+                    payload[k] = v
 
         resp = self._request("POST", "/transactions", json=payload)
         if resp.status_code >= 400:
             raise BezalaError(
                 f"Bezala create_transaction: {resp.status_code}",
                 status_code=resp.status_code,
-                body=resp.text[:500],
+                body=_safe_body_snippet(resp),
             )
         try:
             data = resp.json()
@@ -264,6 +339,67 @@ class BezalaClient:
             transaction_id, len(attachment_ids),
         )
         return BezalaTransaction(transaction_id=str(transaction_id), url=url)
+
+    # --------- Gate 0 groundwork: metadata-endpoints ---------
+    #
+    # Dessa läser referensdata från Bezala (konton, kostnadsställen,
+    # momssatser) som behövs för att bygga rätt transaction-payload.
+    # De används INTE av create_transaction än — först nästa iteration
+    # när vi vet exakta fältnamn från Bezala 422-respons.
+
+    def _fetch_list(self, path: str, *, item_keys: tuple[str, ...] = ("items", "data", "results")) -> list[dict]:
+        """Generisk GET → list[dict]. Hanterar både toppnivå-lista och
+        wrapper-objekt {"items": [...]} / {"data": [...]} / {"results": [...]}.
+        Höjer BezalaError på non-2xx."""
+        resp = self._request("GET", path)
+        if resp.status_code >= 400:
+            raise BezalaError(
+                f"Bezala GET {path}: {resp.status_code}",
+                status_code=resp.status_code,
+                body=_safe_body_snippet(resp),
+            )
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise BezalaError(
+                f"Bezala GET {path}: icke-JSON svar ({exc})"
+            ) from exc
+
+        if isinstance(data, list):
+            return [item for item in data if isinstance(item, dict)]
+        if isinstance(data, dict):
+            for key in item_keys:
+                if isinstance(data.get(key), list):
+                    return [item for item in data[key] if isinstance(item, dict)]
+        logger.warning("Bezala GET %s: oväntad struktur (%s)", path, type(data).__name__)
+        return []
+
+    def list_accounts(self) -> list[dict]:
+        """Hämtar Bezala-konton. Varje post har typiskt {id, name, code?}."""
+        return self._fetch_list("/accounts")
+
+    def list_cost_centers(self) -> list[dict]:
+        """Hämtar kostnadsställen. Varje post har typiskt {id, name, default?}."""
+        return self._fetch_list("/cost_centers")
+
+    def list_vat_rates(self) -> list[dict]:
+        """Hämtar momssatser. Bezala-endpointen kan heta /vat_rates eller
+        /vat_codes — vi försöker den gängse varianten först och returnerar
+        tom lista om inget finns (logger varnar)."""
+        try:
+            return self._fetch_list("/vat_rates")
+        except BezalaError as exc:
+            if exc.status_code == 404:
+                logger.info(
+                    "Bezala /vat_rates saknas (%s) — försöker /vat_codes som fallback",
+                    exc.status_code,
+                )
+                try:
+                    return self._fetch_list("/vat_codes")
+                except BezalaError:
+                    logger.warning("Bezala har varken /vat_rates eller /vat_codes — returnerar tom lista.")
+                    return []
+            raise
 
     def close(self) -> None:
         self._client.close()
