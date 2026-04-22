@@ -379,6 +379,12 @@ def _process_one_message(
                 logger.exception("Kunde inte sätta etikett på %s", message_id)
             return
 
+        logger.info(
+            "HTML→PDF triggas för %s (sender=%r subject=%r html_len=%d text_len=%d)",
+            message_id, msg.sender, msg.subject,
+            len(msg.body_html or ""), len(msg.body_text or ""),
+        )
+
         if not (msg.body_html or msg.body_text):
             result.skipped += 1
             logger.info("HTML→PDF: %s saknar både html och text — hoppar", message_id)
@@ -396,7 +402,10 @@ def _process_one_message(
             )
         except HtmlToPdfError as exc:
             result.skipped += 1
-            logger.warning("HTML→PDF misslyckades för %s: %s", message_id, exc)
+            logger.warning(
+                "HTML→PDF misslyckades för %s (sender=%r subject=%r): %s",
+                message_id, msg.sender, msg.subject, exc,
+            )
             _log_skip(msg, reason="html_pdf_failed")
             try:
                 gmail.mark_done(message_id)
@@ -416,8 +425,8 @@ def _process_one_message(
             )
         ]
         logger.info(
-            "HTML→PDF: konverterade mail-body för %s (%d bytes)",
-            message_id, len(pdf_bytes),
+            "HTML→PDF: konverterade %s → %s (%d bytes, sender=%r)",
+            message_id, synth_filename, len(pdf_bytes), msg.sender,
         )
 
     saved_any = False
@@ -443,6 +452,12 @@ def _process_one_message(
                 _log_error(message_id, f"AI-analys: {exc}")
                 return
 
+            logger.info(
+                "AI-analys %s: is_receipt=%s confidence=%d%% category=%r vendor=%r",
+                message_id, analysis.is_receipt, analysis.confidence,
+                analysis.category, analysis.vendor,
+            )
+
             if not analysis.is_receipt:
                 any_non_receipt = True
                 logger.info(
@@ -460,10 +475,12 @@ def _process_one_message(
                     f"{message_id}: låg confidence {analysis.confidence}% < {ai_min_confidence}% — sparas ej"
                 )
                 logger.info(
-                    "Low-confidence: %s confidence=%d%% < %d%% — hoppar utan logg",
+                    "Filtrerat av AI-tröskel: %s confidence=%d%% < %d%% (sender=%r subject=%r)",
                     message_id,
                     analysis.confidence,
                     ai_min_confidence,
+                    msg.sender,
+                    msg.subject,
                 )
                 continue
 
