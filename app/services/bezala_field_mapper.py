@@ -367,14 +367,46 @@ def select_default_cost_center(
 # ---------------------------------------------------------------------------
 
 
-def build_description(file_name: str | None, *, fallback: str | None = None) -> str:
-    """Bezala 'Beskrivning'-fält: filnamn utan .pdf-ändelse."""
+def build_description(
+    file_name: str | None,
+    *,
+    vendor: str | None = None,
+    subject: str | None = None,
+    receipt_date: str | None = None,
+    fallback: str | None = None,
+) -> str:
+    """Bezala 'Beskrivning'-fält — ALDRIG tom sträng.
+
+    Försöker i ordning:
+      1. file_name utan .pdf (primär källa)
+      2. subject (mailets ämnesrad)
+      3. f"{vendor} {receipt_date}"
+      4. fallback
+      5. "Kvitto"  — sista utväg, Bezala kräver icke-tomt."""
     if file_name:
         name = file_name.strip()
         if name.lower().endswith(".pdf"):
             name = name[:-4]
-        return name.strip()
-    return (fallback or "").strip()
+        name = name.strip()
+        if name:
+            return name
+    if subject:
+        s = subject.strip()
+        if s:
+            return s
+    if vendor and receipt_date:
+        combo = f"{vendor.strip()} {receipt_date.strip()}".strip()
+        if combo:
+            return combo
+    if vendor:
+        v = vendor.strip()
+        if v:
+            return v
+    if fallback:
+        f = fallback.strip()
+        if f:
+            return f
+    return "Kvitto"
 
 
 def build_vat_lines(
@@ -435,6 +467,7 @@ def build_receipt_params(
     amount: float | None,
     currency: str | None,
     receipt_date: str | None,
+    subject: str | None = None,
     accounts: list[dict],
     cost_centers: list[dict],
     vat_rates: list[dict] | None = None,  # valfri — default_vat_id från account föredras
@@ -469,7 +502,9 @@ def build_receipt_params(
             vat_lines = build_vat_lines(amount, vat_rate=vat_rate)
 
     params: dict = {
-        "description": build_description(file_name),
+        "description": build_description(
+            file_name, vendor=vendor, subject=subject, receipt_date=receipt_date,
+        ),
         "date": receipt_date,
         "amount": amount,
         "currency": currency,

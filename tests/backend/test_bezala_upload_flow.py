@@ -106,25 +106,26 @@ class UploadReceiptTest(unittest.TestCase):
         self.assertEqual(captured["method"], "POST")
         self.assertTrue(captured["url"].endswith("/attachments"))
 
+        # Rails strong-params-konvention: allt nested under attachment[...]
         data = captured["data"]
-        self.assertEqual(data["description"], "20260422 Finnair HEL-CPH")
-        self.assertEqual(data["date"], "2026-04-22")
-        self.assertEqual(data["amount"], "503.0")
-        self.assertEqual(data["currency"], "EUR")
-        self.assertEqual(data["account_id"], "101")
-        self.assertEqual(data["cost_center_id"], "77")
-        self.assertEqual(data["vendor"], "Finnair")
-        # vat_lines skickas som JSON-sträng (Bezala-serializern parser den)
-        self.assertIsInstance(data["vat_lines"], str)
+        self.assertEqual(data["attachment[description]"], "20260422 Finnair HEL-CPH")
+        self.assertEqual(data["attachment[date]"], "2026-04-22")
+        self.assertEqual(data["attachment[amount]"], "503.0")
+        self.assertEqual(data["attachment[currency]"], "EUR")
+        self.assertEqual(data["attachment[account_id]"], "101")
+        self.assertEqual(data["attachment[cost_center_id]"], "77")
+        self.assertEqual(data["attachment[vendor]"], "Finnair")
+        # vat_lines skickas som JSON-sträng under attachment[vat_lines]
+        self.assertIsInstance(data["attachment[vat_lines]"], str)
         self.assertEqual(
-            json.loads(data["vat_lines"]),
+            json.loads(data["attachment[vat_lines]"]),
             [{"amount": 503.0, "vat_code_id": 11}],
         )
 
-        # Filen skickas som "file" i multipart
+        # Filen skickas som "attachment[file]" i multipart (Rails-nested)
         files = captured["files"]
-        self.assertIn("file", files)
-        fname, bytes_, mime = files["file"]
+        self.assertIn("attachment[file]", files)
+        fname, bytes_, mime = files["attachment[file]"]
         self.assertEqual(fname, "20260422 Finnair.pdf")
         self.assertEqual(bytes_, PDF_BYTES)
         self.assertEqual(mime, "application/pdf")
@@ -172,6 +173,48 @@ class UploadReceiptTest(unittest.TestCase):
                 currency="EUR",
             )
         self.assertIn("pdf", str(ctx.exception).lower())
+
+    def test_all_form_keys_are_rails_nested(self):
+        """Ingen top-level-nyckel ska läcka — allt måste under attachment[...]."""
+        captured = {}
+
+        client = _make_client()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": "r-1"}'
+        resp.json = MagicMock(return_value={"id": "r-1"})
+
+        def fake_request(method, url, **kwargs):
+            captured["files"] = kwargs.get("files")
+            captured["data"] = kwargs.get("data")
+            return resp
+
+        client._client.request = fake_request
+
+        client.upload_receipt(
+            filename="x.pdf",
+            pdf_bytes=PDF_BYTES,
+            description="Test",
+            date="2026-04-22",
+            amount=100.0,
+            currency="EUR",
+            vat_lines=[{"amount": 100, "vat_code_id": 1}],
+            account_id=1,
+            cost_center_id=2,
+            vendor="V",
+            extra_fields={"supplier_id": "abc"},
+        )
+
+        for key in captured["data"].keys():
+            self.assertTrue(
+                key.startswith("attachment["),
+                f"Form-nyckel {key!r} är INTE Rails-nested under attachment[...]",
+            )
+        for key in captured["files"].keys():
+            self.assertTrue(key.startswith("attachment["))
+        # extra_fields utan prefix ska auto-wrappas
+        self.assertIn("attachment[supplier_id]", captured["data"])
 
     def test_422_bubbles_full_body(self):
         """Bezalas 422 → BezalaError.body innehåller hela response.text."""

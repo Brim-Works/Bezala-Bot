@@ -775,6 +775,7 @@ def upload_message_to_bezala(
             amount=row.amount,
             currency=row.currency,
             receipt_date=row.receipt_date,
+            subject=row.subject,
             accounts=metadata["accounts"],
             cost_centers=metadata["cost_centers"],
             vat_rates=metadata["vat_rates"],

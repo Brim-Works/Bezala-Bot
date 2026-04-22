@@ -251,6 +251,7 @@ def _attempt_bezala_upload(
         amount=analysis.amount,
         currency=analysis.currency,
         receipt_date=analysis.date,
+        subject=msg.subject,
         accounts=meta["accounts"],
         cost_centers=meta["cost_centers"],
         vat_rates=meta["vat_rates"],
