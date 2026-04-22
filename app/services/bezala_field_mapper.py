@@ -5,16 +5,12 @@ Pure functions, inga sidoeffekter. Client-koden hämtar metadata via
 BezalaClient.list_accounts()/list_cost_centers()/list_vat_rates() och
 feedar resultaten till funktionerna här.
 
-Används INTE av pipeline än (Gate 0-groundwork). När live Bezala-respons
-(422) är analyserad vet vi exakta fältnamn → pipelinen wire:as in
-via create_transaction(extra_fields=...).
+Mappning baserad på LIVE Bezala-data från produktionens
+GET /api/bezala/metadata (se DEFAULT_ACCOUNT_ID-kommentaren).
 
-Mappning enligt spec:
-  Flyg → Matkaliput
-  Resa / Transport → Muut Matkakulut
-  Programvara / AI → ATK-ohjelmistot, päivitykset ja yp
-  Hotell / Boende → Hotelli-ym. majoitus
-  default → Muut Matkakulut
+VAT-strategi: Bezala-konton bär default_vat_id. Vi läser det från
+account-raden istället för att slå upp separat vat_rates-lista. Om
+null → vat_lines utelämnas (Bezala väljer själv).
 """
 
 from __future__ import annotations
@@ -27,35 +23,98 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Kategori → Bezala-konto (finska namn från spec)
+# Kategori → Bezala konto-ID (live-verifierade från produktionens metadata)
 # ---------------------------------------------------------------------------
 
-DEFAULT_ACCOUNT_NAME = "Muut Matkakulut"
+# Fallback-konto när kategorin är okänd eller inget matchar.
+DEFAULT_ACCOUNT_ID = 67110  # Muut matkakulut
+
+CATEGORY_TO_ACCOUNT_ID: dict[str, int] = {
+    # Flyg & långresor → Matkaliput (7800)
+    "flyg": 67100,
+    "resa": 67100,
+    "transport": 67100,
+    "tåg": 67100,
+    "tag": 67100,
+    "buss": 67100,
+    "kollektivtrafik": 67100,
+
+    # Taxi → Taksikulut (7810)
+    "taxi": 67101,
+
+    # Parkering → Paikoituskulut (7850) — Moovy, p-hus m.fl.
+    "parkering": 67113,
+    "parking": 67113,
+
+    # Hotell / boende → Hotelli-ym. majoitus (7820)
+    "hotell": 67102,
+    "hotel": 67102,
+    "boende": 67102,
+
+    # AI-tjänster → "AI työkalut" (dedikerad kontorad för Anthropic/OpenAI/etc.)
+    "ai": 166648,
+
+    # Allmän programvara / SaaS → Atk-ohjelmistot, päivitykset ja yp (7660)
+    "programvara": 82612,
+    "saas": 82612,
+    "software": 82612,
+    "it": 82612,
+
+    # Representation / gäster → Edustuskulut (7990)
+    "representation": 67097,
+
+    # Mat på resa → Ruokailut matkalla (7830)
+    "mat": 148404,
+    "matkalla": 148404,
+
+    # Kontorsmaterial → Toimistotarvikkeet (8620)
+    "kontor": 67107,
+    "kontorsmaterial": 67107,
+
+    # Övrigt/Annat → Muut matkakulut (7860)
+    "annat": 67110,
+    "övrigt": 67110,
+    "ovrigt": 67110,
+}
+
+# Env-override för default-kostnadsställe (så olika användare kan ha olika).
+# Produktions-default: VIS128 Visma HRM Sverige AB (Mikkos enhet).
+DEFAULT_COST_CENTER_ID = int(
+    os.environ.get("BEZALA_DEFAULT_COST_CENTER_ID", "927151")
+)
+
+# Behålls bakåtkompatibelt — mapper använder ID-direkt nu, men gamla kallare
+# och tester som importerar namn-konstanten fortsätter fungera.
+DEFAULT_ACCOUNT_NAME = "Muut matkakulut"
 
 CATEGORY_TO_ACCOUNT: dict[str, str] = {
-    # Resor & transport
     "flyg": "Matkaliput",
-    "resa": "Muut Matkakulut",
-    "transport": "Muut Matkakulut",
-    "taxi": "Muut Matkakulut",
-    "kollektivtrafik": "Muut Matkakulut",
-
-    # Programvara / IT
-    "programvara": "ATK-ohjelmistot, päivitykset ja yp",
-    "ai": "ATK-ohjelmistot, päivitykset ja yp",
-    "it": "ATK-ohjelmistot, päivitykset ja yp",
-    "software": "ATK-ohjelmistot, päivitykset ja yp",
-
-    # Boende
+    "resa": "Matkaliput",
+    "transport": "Matkaliput",
+    "taxi": "Taksikulut",
+    "parkering": "Paikoituskulut",
     "hotell": "Hotelli-ym. majoitus",
     "boende": "Hotelli-ym. majoitus",
-    "hotel": "Hotelli-ym. majoitus",
+    "programvara": "Atk-ohjelmistot, päivitykset ja yp",
+    "ai": "AI työkalut",
+    "software": "Atk-ohjelmistot, päivitykset ja yp",
+    "representation": "Edustuskulut",
+    "mat": "Ruokailut matkalla",
+    "kontor": "Toimistotarvikkeet",
+    "annat": "Muut matkakulut",
 }
 
 
+def category_to_account_id(category: str | None) -> int:
+    """Bezala Bot-kategori → Bezala konto-ID (case-insensitive).
+    Okänd / None / tom → DEFAULT_ACCOUNT_ID (Muut matkakulut)."""
+    if not category:
+        return DEFAULT_ACCOUNT_ID
+    return CATEGORY_TO_ACCOUNT_ID.get(category.strip().lower(), DEFAULT_ACCOUNT_ID)
+
+
 def category_to_account_name(category: str | None) -> str:
-    """Bezala Bot-kategori → Bezala-kontonamn (case-insensitive).
-    Okänd / None / tom → default-konto ('Muut Matkakulut')."""
+    """Behålls bakåtkompatibelt — returnerar svenskt/finskt kontonamn."""
     if not category:
         return DEFAULT_ACCOUNT_NAME
     return CATEGORY_TO_ACCOUNT.get(category.strip().lower(), DEFAULT_ACCOUNT_NAME)
@@ -70,26 +129,38 @@ def select_account(
 ) -> dict | None:
     """Hitta Bezala-konto-posten som matchar kategorin.
 
-    Returnerar hela raden (så anroparen kan plocka ID + eventuellt code).
-    Matchar substring-insensitivt för att tåla variation i Bezala-namnet
-    (t.ex. 'ATK-ohjelmistot, päivitykset ja yp' kan kapa av i UI)."""
-    target = category_to_account_name(category)
-    target_lower = target.lower()
+    Lookup-ordning:
+      1. Direkt ID-match via CATEGORY_TO_ACCOUNT_ID (primärt)
+      2. Namn-substring-match mot CATEGORY_TO_ACCOUNT (fallback om Bezala
+         skulle byta ID för ett konto, sällsynt men möjligt)
+
+    Returnerar hela account-raden (innehåller default_vat_id som
+    build_vat_lines behöver)."""
+    target_id = category_to_account_id(category)
+    accounts_list = list(accounts)
+
+    # 1. ID-match (primärt — snabbt och robust)
+    for row in accounts_list:
+        for key in id_keys:
+            if row.get(key) == target_id:
+                return row
+
+    # 2. Namn-match (fallback)
+    target_name = category_to_account_name(category).lower()
     best: dict | None = None
     best_score = -1
-    for row in accounts:
+    for row in accounts_list:
         name = _first_string(row, name_keys)
         if not name:
             continue
-        name_lower = name.lower()
-        score = _match_score(name_lower, target_lower)
+        score = _match_score(name.lower(), target_name)
         if score > best_score:
             best_score = score
             best = row
     if best is None or best_score <= 0:
         logger.warning(
-            "select_account: ingen match för kategori=%r (target=%r) bland %d konton",
-            category, target, len(list(accounts)) if isinstance(accounts, list) else -1,
+            "select_account: ingen match för kategori=%r (target_id=%d, target_name=%r) bland %d konton",
+            category, target_id, target_name, len(accounts_list),
         )
         return None
     return best
@@ -255,13 +326,16 @@ def select_default_cost_center(
     cost_centers: Iterable[dict],
     *,
     preferred_name: str | None = None,
+    preferred_id: int | None = None,
     name_keys: tuple[str, ...] = ("name", "label", "title"),
+    id_keys: tuple[str, ...] = ("id", "cost_center_id"),
 ) -> dict | None:
     """Välj kostnadsställe:
       1. Post där `default=true`
-      2. Post vars namn matchar `preferred_name` (eller BEZALA_DEFAULT_COST_CENTER env)
-      3. Första posten i listan
-      4. None om listan är tom
+      2. Post vars ID matchar `preferred_id` (eller modulens DEFAULT_COST_CENTER_ID)
+      3. Post vars namn matchar `preferred_name` (eller BEZALA_DEFAULT_COST_CENTER env)
+      4. Första posten i listan
+      5. None om listan är tom
     """
     rows = [r for r in cost_centers if isinstance(r, dict)]
     if not rows:
@@ -270,6 +344,12 @@ def select_default_cost_center(
     for row in rows:
         if row.get("default") is True or row.get("is_default") is True:
             return row
+
+    target_id = preferred_id if preferred_id is not None else DEFAULT_COST_CENTER_ID
+    for row in rows:
+        for key in id_keys:
+            if row.get(key) == target_id:
+                return row
 
     pref = preferred_name or os.environ.get(DEFAULT_COST_CENTER_NAME_ENV)
     if pref:
@@ -299,17 +379,48 @@ def build_description(file_name: str | None, *, fallback: str | None = None) -> 
 
 def build_vat_lines(
     amount: float | None,
-    vat_rate: dict | None,
+    source: dict | None = None,
+    *,
+    account: dict | None = None,
+    vat_rate: dict | None = None,
 ) -> list[dict]:
-    """Bezala kräver minst en vat_line per receipt. Vi skapar EN rad där
-    hela beloppet allokeras till vat_rate-ID:t.
+    """Bygg vat_lines från antingen ett account-objekt (default_vat_id) eller
+    ett separat vat_rate-objekt.
 
-    Returnerar [] om någon av argumenten saknas — anroparen får då själv
-    fatta beslut (sänd tomt eller stoppa). Bezala svarar 422 på tom lista
-    så pipelinen bör stoppa före upload_receipt om så är fallet."""
-    if amount is None or vat_rate is None:
+    Bezala-strategi (live-verifierad): account.default_vat_id bär rätt moms
+    per konto. Exempel från produktion:
+      Matkaliput (67100)           → default_vat_id = 1355
+      Paikoituskulut (67113)       → default_vat_id = 864
+      Edustuskulut (67097)         → default_vat_id = 1 (0%)
+      Atk-ohjelmistot (82612)      → default_vat_id = null (Bezala väljer)
+
+    Anropsformer:
+      build_vat_lines(amount, account_row)                # account föredras
+      build_vat_lines(amount, account=..., vat_rate=...)  # explicit
+      build_vat_lines(amount, vat_rate_row)               # bakåtkompat
+
+    Returnerar [] om amount saknas eller vi inte kan avgöra en vat_id.
+    Bezala plockar då default moms själv (vat_lines utelämnas i requesten)."""
+    if amount is None:
         return []
-    vat_id = vat_rate.get("id") or vat_rate.get("vat_rate_id") or vat_rate.get("vat_code_id")
+
+    # Positionellt source-arg: gissa typ via default_vat_id-nyckeln
+    if source is not None and account is None and vat_rate is None:
+        if "default_vat_id" in source:
+            account = source
+        else:
+            vat_rate = source
+
+    vat_id: int | str | None = None
+    if account is not None:
+        # default_vat_id kan vara None explicit → då fortsätter vi till vat_rate
+        vat_id = account.get("default_vat_id")
+    if vat_id is None and vat_rate is not None:
+        vat_id = (
+            vat_rate.get("vat_code_id")
+            or vat_rate.get("vat_rate_id")
+            or vat_rate.get("id")
+        )
     if vat_id is None:
         return []
     return [{"amount": amount, "vat_code_id": vat_id}]
@@ -326,22 +437,36 @@ def build_receipt_params(
     receipt_date: str | None,
     accounts: list[dict],
     cost_centers: list[dict],
-    vat_rates: list[dict],
+    vat_rates: list[dict] | None = None,  # valfri — default_vat_id från account föredras
     preferred_cost_center: str | None = None,
+    preferred_cost_center_id: int | None = None,
 ) -> dict:
     """Bygger en komplett kwargs-dict för BezalaClient.upload_receipt().
 
-    Returnerar en dict med:
-      description, date, amount, currency, vendor,
-      account_id, cost_center_id, vat_lines
-    Värden som inte kunde mappas utelämnas så upload_receipt kan validera
-    och höja BezalaError med tydligt meddelande."""
+    VAT-strategi (live-verifierad): vi använder account.default_vat_id i
+    första hand. Om den är null och vat_rates skickats in → land+kategori-
+    baserad select_vat_rate som fallback. Om även det misslyckas →
+    vat_lines utelämnas helt; Bezala plockar default moms själv.
+
+    Returnerar en dict med: description, date, amount, currency, vendor,
+    account_id, cost_center_id, vat_lines."""
     country = sender_to_country(sender, vendor)
     account = select_account(accounts, category)
     cost_center = select_default_cost_center(
-        cost_centers, preferred_name=preferred_cost_center,
+        cost_centers,
+        preferred_name=preferred_cost_center,
+        preferred_id=preferred_cost_center_id,
     )
-    vat_rate = select_vat_rate(vat_rates, country=country, category=category)
+
+    # 1. Prioritera account.default_vat_id (primärt)
+    vat_lines = build_vat_lines(amount, account=account) if account else []
+
+    # 2. Fallback: om account saknar default_vat_id OCH vat_rates skickats
+    #    in → försök välja via land+kategori
+    if not vat_lines and vat_rates:
+        vat_rate = select_vat_rate(vat_rates, country=country, category=category)
+        if vat_rate:
+            vat_lines = build_vat_lines(amount, vat_rate=vat_rate)
 
     params: dict = {
         "description": build_description(file_name),
@@ -349,7 +474,7 @@ def build_receipt_params(
         "amount": amount,
         "currency": currency,
         "vendor": vendor,
-        "vat_lines": build_vat_lines(amount, vat_rate),
+        "vat_lines": vat_lines,
     }
     if account:
         params["account_id"] = account.get("id") or account.get("account_id")
@@ -357,11 +482,14 @@ def build_receipt_params(
         params["cost_center_id"] = cost_center.get("id") or cost_center.get("cost_center_id")
 
     logger.info(
-        "bezala-mapper(receipt): country=%s category=%s → account=%s cost_center=%s vat_rate=%s",
+        "bezala-mapper(receipt): country=%s category=%s → account=%s "
+        "(id=%s default_vat_id=%s) cost_center=%s vat_lines=%d",
         country, category,
         (account or {}).get("name"),
+        (account or {}).get("id"),
+        (account or {}).get("default_vat_id"),
         (cost_center or {}).get("name"),
-        (vat_rate or {}).get("name"),
+        len(vat_lines),
     )
     return params
 

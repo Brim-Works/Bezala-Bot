@@ -235,10 +235,13 @@ class PipelineAutoUploadTest(unittest.TestCase):
             received_at=datetime(2026, 4, 22, tzinfo=timezone.utc),
             snippet="",
         )
+        # Live-IDs från Bezala-metadata + default_vat_id-strategin
         metadata = {
-            "accounts": [{"id": 101, "name": "Matkaliput"}],
-            "cost_centers": [{"id": 77, "name": "Default", "default": True}],
-            "vat_rates": [{"id": 11, "name": "Finland Transport 13.5%"}],
+            "accounts": [
+                {"id": 67100, "name": "Matkaliput", "default_vat_id": 1355},
+            ],
+            "cost_centers": [{"id": 927151, "name": "VIS128 Visma HRM Sverige AB"}],
+            "vat_rates": [],
         }
 
         fake_bezala = MagicMock()
@@ -262,15 +265,16 @@ class PipelineAutoUploadTest(unittest.TestCase):
         self.assertIsNone(err)
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["account_id"], 101)
-        self.assertEqual(kwargs["cost_center_id"], 77)
-        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 11}])
+        self.assertEqual(kwargs["account_id"], 67100)
+        self.assertEqual(kwargs["cost_center_id"], 927151)
+        # vat_lines kommer från account.default_vat_id, inte separat vat_rates
+        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 1355}])
         self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(kwargs["date"], "2026-04-22")
 
-    def test_missing_vat_rate_returns_pending_not_error(self):
-        """Om ingen vat_rate matchar → 'pending' (user laddar upp manuellt),
-        inte 'failed' (så scanningen inte havererar)."""
+    def test_missing_vat_rate_proceeds_with_empty_vat_lines(self):
+        """Ny strategi: vat_lines=[] är OK — Bezala plockar kontots
+        default_vat_id själv. Pipeline fortsätter med upload."""
         from app.services.pipeline import _attempt_bezala_upload
         from app.services.receipt_analyzer import ReceiptAnalysis
         from app.services.gmail_client import GmailMessage
@@ -283,25 +287,37 @@ class PipelineAutoUploadTest(unittest.TestCase):
             amount=10.0,
             currency="EUR",
             date="2026-04-22",
-            category="Flyg",
+            category="Programvara",
             summary="s",
         )
         msg = GmailMessage(
             message_id="m1", thread_id="t", sender="a@b.com", subject="s",
             received_at=datetime(2026, 4, 22, tzinfo=timezone.utc), snippet="",
         )
-        # Ingen vat_rate alls
-        metadata = {"accounts": [], "cost_centers": [], "vat_rates": []}
+        # Programvara → account 82612 (default_vat_id=null → vat_lines=[])
+        metadata = {
+            "accounts": [{"id": 82612, "name": "Atk-ohjelmistot", "default_vat_id": None}],
+            "cost_centers": [{"id": 927151, "name": "VIS128"}],
+            "vat_rates": [],
+        }
 
         fake_bezala = MagicMock()
+        fake_receipt = MagicMock()
+        fake_receipt.attachment_id = "r-1"
+        fake_bezala.upload_receipt.return_value = fake_receipt
+
         status, txn_id, err = _attempt_bezala_upload(
             fake_bezala, analysis, msg, PDF_BYTES, "x.pdf",
             auto_upload=True, confidence_threshold=90, metadata=metadata,
         )
-        self.assertEqual(status, "pending")
-        self.assertIsNone(txn_id)
-        self.assertIn("vat_rate", err)
-        fake_bezala.upload_receipt.assert_not_called()
+        self.assertEqual(status, "success")
+        self.assertEqual(txn_id, "r-1")
+        self.assertIsNone(err)
+        fake_bezala.upload_receipt.assert_called_once()
+        # vat_lines ska vara tom — Bezala väljer själv
+        kwargs = fake_bezala.upload_receipt.call_args.kwargs
+        self.assertEqual(kwargs["vat_lines"], [])
+        self.assertEqual(kwargs["account_id"], 82612)
 
     def test_missing_amount_or_date_returns_pending(self):
         from app.services.pipeline import _attempt_bezala_upload
@@ -593,9 +609,14 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         fake_drive.download_pdf.return_value = PDF_BYTES
 
         fake_bezala = MagicMock()
-        fake_bezala.list_accounts.return_value = [{"id": 101, "name": "Matkaliput"}]
-        fake_bezala.list_cost_centers.return_value = [{"id": 77, "name": "Default", "default": True}]
-        fake_bezala.list_vat_rates.return_value = [{"id": 11, "name": "Finland Transport 13.5%"}]
+        # Live-verifierade IDs från produktionens Bezala-metadata
+        fake_bezala.list_accounts.return_value = [
+            {"id": 67100, "name": "Matkaliput", "default_vat_id": 1355},
+        ]
+        fake_bezala.list_cost_centers.return_value = [
+            {"id": 927151, "name": "VIS128 Visma HRM Sverige AB"},
+        ]
+        fake_bezala.list_vat_rates.return_value = []
         fake_receipt = MagicMock()
         fake_receipt.attachment_id = "receipt-99"
         fake_bezala.upload_receipt.return_value = fake_receipt
@@ -611,11 +632,11 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
 
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["account_id"], 101)
-        self.assertEqual(kwargs["cost_center_id"], 77)
+        self.assertEqual(kwargs["account_id"], 67100)
+        self.assertEqual(kwargs["cost_center_id"], 927151)
         self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(kwargs["date"], "2026-04-22")
-        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 11}])
+        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 1355}])
 
     def test_missing_date_returns_400(self):
         mid = self._seed(receipt_date=None)
@@ -629,9 +650,10 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 400)
         self.assertIn("belopp", resp.json()["detail"].lower())
 
-    def test_no_matching_vat_rate_returns_422_with_hint(self):
-        """Om ingen vat_rate matchar → 422 med tydligt meddelande om
-        att användaren ska verifiera via /api/bezala/metadata."""
+    def test_empty_metadata_still_attempts_upload(self):
+        """Även utan accounts/cost_centers/vat_rates försöker vi upload —
+        Bezala får 422:a om det behövs och vi loggar fel, men vi
+        blockerar INTE på förhand."""
         mid = self._seed()
 
         fake_drive = MagicMock()
@@ -640,21 +662,22 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         fake_bezala = MagicMock()
         fake_bezala.list_accounts.return_value = []
         fake_bezala.list_cost_centers.return_value = []
-        fake_bezala.list_vat_rates.return_value = []  # inga momssatser
+        fake_bezala.list_vat_rates.return_value = []
+        fake_receipt = MagicMock()
+        fake_receipt.attachment_id = "r-empty"
+        fake_bezala.upload_receipt.return_value = fake_receipt
 
         with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
              patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
             resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
 
-        self.assertEqual(resp.status_code, 422)
-        detail = resp.json()["detail"]
-        self.assertIn("VAT", detail)
-        self.assertIn("/api/bezala/metadata", detail)
-
-        # Raden ska markeras som failed med samma meddelande
-        with self.SessionLocal() as db:
-            row = db.query(self.ProcessedMessage).filter_by(id=mid).first()
-            self.assertEqual(row.bezala_upload_status, "failed")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        fake_bezala.upload_receipt.assert_called_once()
+        kwargs = fake_bezala.upload_receipt.call_args.kwargs
+        # Inget account_id / cost_center_id eftersom metadata saknas helt
+        self.assertIsNone(kwargs.get("account_id"))
+        self.assertIsNone(kwargs.get("cost_center_id"))
+        self.assertEqual(kwargs["vat_lines"], [])
 
     def test_bezala_422_preserves_body_in_error(self):
         """Bezala kastar 422 → raden sparas med body i error_message."""
