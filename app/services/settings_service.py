@@ -76,6 +76,7 @@ def load_settings(db) -> AppSettings:
         trash_auto_purge_days=0,
         ai_min_confidence_to_save=40,
         link_fetch_senders=list(DEFAULT_LINK_FETCH_SENDERS),
+        html_to_pdf_enabled=True,
     )
     db.add(row)
     db.flush()
@@ -98,6 +99,9 @@ def settings_to_dict(row: AppSettings) -> dict:
         "trash_auto_purge_days": int(row.trash_auto_purge_days or 0),
         "ai_min_confidence_to_save": int(row.ai_min_confidence_to_save or 40),
         "link_fetch_senders": list(row.link_fetch_senders or []),
+        "html_to_pdf_enabled": bool(
+            row.html_to_pdf_enabled if row.html_to_pdf_enabled is not None else True
+        ),
         "builtin_senders": list(BUILTIN_INCLUDES),  # read-only i UI
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }

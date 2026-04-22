@@ -189,6 +189,7 @@ export function buildSettings(overrides = {}) {
     trash_auto_purge_days: 0,
     ai_min_confidence_to_save: 40,
     link_fetch_senders: ['noreply@arlandaexpress.se'],
+    html_to_pdf_enabled: true,
     builtin_senders: [
       'eticket@amadeus.com',
       'noreply@finnair.com',
