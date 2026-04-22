@@ -6,12 +6,23 @@ import { useApiData } from '../hooks/useApiData.js';
 import { filterMessages } from '../lib/filterMessages.js';
 import { deriveDashboardStats } from '../lib/deriveDashboardStats.js';
 import { fmtRelative } from '../lib/format.js';
+import {
+  sortMessages,
+  readStoredSort,
+  writeStoredSort,
+} from '../lib/sortMessages.js';
+import {
+  applyDateFilter,
+  readStoredDateFilter,
+  writeStoredDateFilter,
+} from '../lib/dateFilter.js';
 import { useScanFeedback } from '../hooks/useScanFeedback.js';
 import { useDrawer } from '../drawer/DrawerProvider.jsx';
 
 import HeroStrip from '../components/dashboard/HeroStrip.jsx';
 import StatGrid from '../components/dashboard/StatGrid.jsx';
 import FilterTabs from '../components/dashboard/FilterTabs.jsx';
+import DateFilter from '../components/dashboard/DateFilter.jsx';
 import MessageTable from '../components/dashboard/MessageTable.jsx';
 import RunBars from '../components/dashboard/RunBars.jsx';
 import BulkActionBar from '../components/trash/BulkActionBar.jsx';
@@ -39,6 +50,24 @@ export default function Dashboard() {
   const [filter, setFilter] = useState('all');
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedIdLocal] = useState(null);
+
+  // Sort + datumfilter läses från localStorage vid första render, så
+  // användarens val persisterar mellan sessioner.
+  const initialSort = useMemo(() => readStoredSort(), []);
+  const [sortCol, setSortCol] = useState(initialSort.col);
+  const [sortDir, setSortDir] = useState(initialSort.dir);
+  const [dateFilter, setDateFilter] = useState(() => readStoredDateFilter());
+
+  const onSortChange = useCallback((col, dir) => {
+    setSortCol(col);
+    setSortDir(dir);
+    writeStoredSort(col, dir);
+  }, []);
+
+  const onDateFilterChange = useCallback((key) => {
+    setDateFilter(key);
+    writeStoredDateFilter(key);
+  }, []);
 
   const loader = useCallback(async () => {
     const [messages, stats, runs] = await Promise.all([
@@ -77,21 +106,33 @@ export default function Dashboard() {
     [messages, data?.stats],
   );
 
+  // Datumfilter appliceras FÖRE tab-filter/sök så räknarna i FilterTabs
+  // speglar tidsfönstret.
+  const dateScoped = useMemo(
+    () => applyDateFilter(messages, dateFilter),
+    [messages, dateFilter],
+  );
+
   const filtered = useMemo(
-    () => filterMessages(messages, { filter, query }),
-    [messages, filter, query],
+    () => filterMessages(dateScoped, { filter, query }),
+    [dateScoped, filter, query],
+  );
+
+  const sorted = useMemo(
+    () => sortMessages(filtered, sortCol, sortDir),
+    [filtered, sortCol, sortDir],
   );
 
   const counts = useMemo(
     () => ({
-      all: messages.filter((m) => m.file_status !== 'skipped').length,
-      pending: messages.filter((m) => m.bezala_status === 'pending').length,
-      auto: messages.filter((m) => m.bezala_status === 'transferred').length,
-      errors: messages.filter(
+      all: dateScoped.filter((m) => m.file_status !== 'skipped').length,
+      pending: dateScoped.filter((m) => m.bezala_status === 'pending').length,
+      auto: dateScoped.filter((m) => m.bezala_status === 'transferred').length,
+      errors: dateScoped.filter(
         (m) => m.file_status === 'error' || m.bezala_status === 'error',
       ).length,
     }),
-    [messages],
+    [dateScoped],
   );
 
   const setSelectedId = useCallback(
@@ -189,7 +230,9 @@ export default function Dashboard() {
         query={query}
         setQuery={setQuery}
         counts={counts}
-      />
+      >
+        <DateFilter value={dateFilter} onChange={onDateFilterChange} />
+      </FilterTabs>
 
       <BulkActionBar
         count={selection.size}
@@ -199,7 +242,7 @@ export default function Dashboard() {
       />
 
       <MessageTable
-        messages={filtered}
+        messages={sorted}
         selectedId={selectedId}
         onSelect={setSelectedId}
         onActivate={onRowActivate}
@@ -207,6 +250,9 @@ export default function Dashboard() {
         selection={selection}
         onDeleteRow={onDeleteRow}
         onDownloadRow={onDownloadRow}
+        sortCol={sortCol}
+        sortDir={sortDir}
+        onSortChange={onSortChange}
       />
 
       <div className="section-header">

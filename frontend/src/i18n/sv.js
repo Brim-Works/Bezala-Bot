@@ -128,9 +128,19 @@ export default {
     vendor: 'Leverantör',
     subject: 'Ämne',
     file: 'Filnamn',
+    date: 'Datum',
     amount: 'Belopp',
     confidence: 'Säkerhet',
     status: 'Status',
+  },
+  dateFilter: {
+    label: 'Datumfilter',
+    options: {
+      all: 'Allt',
+      last30d: 'Senaste månaden',
+      last90d: 'Senaste kvartalet',
+      last365d: 'Senaste året',
+    },
   },
   filters: {
     all: 'Alla',

@@ -11,16 +11,17 @@ test('Review — renderar vyn när man navigerar till /review', async ({ page })
   await expect(page.getByTestId('review-grid')).toBeVisible();
 });
 
-test('Review — kön visar bara pending-rader sorterade äldst först', async ({ page }) => {
+test('Review — kön visar pending-rader med receipt_date DESC (Gate 3)', async ({ page }) => {
   await page.goto('/review');
   const queue = page.getByTestId('review-queue');
   await expect(queue).toBeVisible();
-  // Av 5 fixturer är 3 pending (id 1, 2, 3). 4 är transferred, 5 är failed.
+  // Av 5 fixturer är 3 pending (id 1, 2, 3).
   const items = queue.locator('[data-testid^="queue-item-"]');
   await expect(items).toHaveCount(3);
-  // Äldst först: id 3 (1.5 dagar), sedan id 2 (8h), sedan id 1 (3h).
+  // Receipt dates: id 1=2026-04-20, id 2=2026-04-15, id 3=2026-04-10.
+  // Default sort = receipt_date DESC → id 1 överst.
   const firstId = await items.first().getAttribute('data-testid');
-  expect(firstId).toBe('queue-item-3');
+  expect(firstId).toBe('queue-item-1');
 });
 
 test('Review — klick på en rad uppdaterar formulär + PDF-preview', async ({ page }) => {
@@ -87,22 +88,20 @@ test('Review — godkänn anropar upload-endpoint + raden försvinner', async ({
   page,
 }) => {
   await setupApiMocks(page);
+  // id 1 är nu först (receipt_date DESC efter Gate 3)
   const uploadRequest = page.waitForRequest(
     (req) =>
-      req.url().includes('/api/messages/3/upload-to-bezala') &&
+      req.url().includes('/api/messages/1/upload-to-bezala') &&
       req.method() === 'POST',
   );
 
   await page.goto('/review');
-  // id 3 är först i kön (äldst)
-  await expect(page.getByTestId('queue-item-3')).toBeVisible();
+  await expect(page.getByTestId('queue-item-1')).toBeVisible();
 
   await page.getByTestId('approve-button').click();
   await uploadRequest;
 
-  // Optimistic update — rad 3 tas bort
-  await expect(page.getByTestId('queue-item-3')).toHaveCount(0);
-  // Toast
+  await expect(page.getByTestId('queue-item-1')).toHaveCount(0);
   await expect(page.getByText(/Skickat till Bezala/i)).toBeVisible();
 });
 
@@ -118,12 +117,12 @@ test('Review — godkänn-fel återställer raden i kön med error-toast', async
   });
 
   await page.goto('/review');
-  await expect(page.getByTestId('queue-item-3')).toBeVisible();
+  // id 1 är först efter Gate 3
+  await expect(page.getByTestId('queue-item-1')).toBeVisible();
 
   await page.getByTestId('approve-button').click();
 
-  // Rad 3 ska komma tillbaka efter servers error
-  await expect(page.getByTestId('queue-item-3')).toBeVisible();
+  await expect(page.getByTestId('queue-item-1')).toBeVisible();
   await expect(page.getByText(/misslyckades/i)).toBeVisible();
 });
 
@@ -132,11 +131,12 @@ test('Review — Nästa-knappen navigerar mellan rader', async ({ page }) => {
   const form = page.getByTestId('review-form');
   const vendorInput = form.locator('input').first();
 
-  await expect(vendorInput).toHaveValue('Scandic'); // id 3 (äldst)
+  // Gate 3: receipt_date DESC → id 1 (Finnair, 2026-04-20) överst
+  await expect(vendorInput).toHaveValue('Finnair');
   await page.getByRole('button', { name: /Nästa/ }).click();
-  await expect(vendorInput).toHaveValue('SL'); // id 2
+  await expect(vendorInput).toHaveValue('SL'); // id 2 (2026-04-15)
   await page.getByRole('button', { name: /Nästa/ }).click();
-  await expect(vendorInput).toHaveValue('Finnair'); // id 1
+  await expect(vendorInput).toHaveValue('Scandic'); // id 3 (2026-04-10, äldst)
 });
 
 test('Review — tom-state när inga pending (SV + EN)', async ({ page }) => {
