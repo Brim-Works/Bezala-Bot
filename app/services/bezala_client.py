@@ -50,6 +50,22 @@ BODY_LOG_LIMIT = 4000
 # produktion). Overridable via env om vi felar igen och måste experimentera.
 FILE_FIELD_NAME = os.environ.get("BEZALA_FILE_FIELD_NAME", "file")
 
+# Hur metadata-fält namnsätts i multipart-requesten:
+#   "flat"   → description, date, amount, ...       (default — Alternativ A)
+#   "nested" → attachment[description], attachment[date], ...
+# Live-test visar att flat format passar Bezalas controller — Rails strong
+# params kan tolka båda, men blandningen "file top-level + metadata nested"
+# gav 422 "fields empty" trots att värdena skickades. Switch om det behövs
+# via env utan redeploy.
+FIELD_NAMING = os.environ.get("BEZALA_FIELD_NAMING", "flat").lower()
+
+
+def _field_key(name: str) -> str:
+    """Returnera rätt fältnamn baserat på FIELD_NAMING."""
+    if FIELD_NAMING == "nested":
+        return f"attachment[{name}]"
+    return name
+
 
 class BezalaError(RuntimeError):
     """Generic Bezala API error. Bär statuskod och serversvar där tillgängligt."""
@@ -468,40 +484,42 @@ class BezalaClient:
         )
 
         form: dict[str, Any] = {
-            "attachment[description]": description,
-            "attachment[date]": date,
+            _field_key("description"): description,
+            _field_key("date"): date,
         }
         if amount is not None:
-            form["attachment[amount]"] = str(amount)
+            form[_field_key("amount")] = str(amount)
         if currency:
-            form["attachment[currency]"] = currency
+            form[_field_key("currency")] = currency
         if vendor:
-            form["attachment[vendor]"] = vendor
+            form[_field_key("vendor")] = vendor
         if account_id is not None:
-            form["attachment[account_id]"] = str(account_id)
+            form[_field_key("account_id")] = str(account_id)
         if cost_center_id is not None:
-            form["attachment[cost_center_id]"] = str(cost_center_id)
+            form[_field_key("cost_center_id")] = str(cost_center_id)
         if vat_lines:
-            # JSON-sträng under nested-nyckeln — Bezalas serializer parsar.
-            # Stringifierar numeriska värden (amount, vat_code_id) så Rails'
-            # strong params INTE tolkar 503.0 som Float (känsligt) utan som
-            # sträng som sedan coercas till decimal via validators.
+            # JSON-sträng — Bezalas serializer parsar. Stringifierar numeriska
+            # värden (amount, vat_code_id) så Rails strong params inte tolkar
+            # 503.0 som Float (känsligt) utan som sträng som sedan coercas.
             stringified = [
                 {k: (str(v) if isinstance(v, (int, float)) else v) for k, v in line.items()}
                 for line in vat_lines
             ]
-            form["attachment[vat_lines]"] = json.dumps(stringified, ensure_ascii=False)
+            form[_field_key("vat_lines")] = json.dumps(stringified, ensure_ascii=False)
         if extra_fields:
             for k, v in extra_fields.items():
                 if v is None:
                     continue
-                # Respekterar redan pre-fixade nycklar; annars nesta under attachment
-                key = k if k.startswith("attachment[") else f"attachment[{k}]"
+                # Redan-prefixade nycklar respekteras, annars använd _field_key.
+                if k.startswith("attachment[") or FIELD_NAMING == "flat":
+                    key = k
+                else:
+                    key = _field_key(k)
                 form[key] = v if isinstance(v, str) else json.dumps(v)
 
         logger.info(
-            "upload_receipt: POST /attachments file_field=%r form_keys=%s",
-            FILE_FIELD_NAME, sorted(form.keys()),
+            "upload_receipt: POST /attachments file_field=%r field_naming=%s form_keys=%s",
+            FILE_FIELD_NAME, FIELD_NAMING, sorted(form.keys()),
         )
         resp = self._request(
             "POST",
