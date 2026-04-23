@@ -566,17 +566,24 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
         cls.app_module.app.dependency_overrides.clear()
 
     def test_test_transaction_hypothesis_endpoint_shape(self):
-        """GET /api/bezala/test-transaction kör 4 hypothesis-test (A/B/C/D)
-        med olika headers/URL/payload och returnerar full diagnostik."""
+        """GET /api/bezala/test-transaction kör A-G test med olika
+        headers/URL/payload/auth-varianter och returnerar diagnostik."""
         import httpx
 
-        calls: list = []
+        post_calls: list = []
+        get_calls: list = []
 
         class FakeResponse:
-            def __init__(self, status_code, text, headers=None):
+            def __init__(self, status_code, text, headers=None, json_data=None):
                 self.status_code = status_code
                 self.text = text
                 self.headers = headers or {}
+                self._json = json_data
+            def json(self):
+                if self._json is None:
+                    import json as _json
+                    return _json.loads(self.text)
+                return self._json
 
         class FakeClient:
             def __init__(self, *a, **kw):
@@ -585,17 +592,45 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
                 return self
             def __exit__(self, *a):
                 pass
+
             def post(self, url, json=None, headers=None):
-                calls.append({"url": url, "json": json, "headers": dict(headers or {})})
+                post_calls.append({
+                    "url": url, "json": json, "headers": dict(headers or {}),
+                })
+                if url.endswith("/auth/token"):
+                    # Simulera Bezala auth-respons
+                    return FakeResponse(
+                        200,
+                        '{"access_token":"new-token-abcdef","token_type":"Bearer",'
+                        '"expires_in":3600,"scope":"read write"}',
+                        {"content-type": "application/json"},
+                        json_data={
+                            "access_token": "new-token-abcdef",
+                            "token_type": "Bearer",
+                            "expires_in": 3600,
+                            "scope": "read write",
+                        },
+                    )
                 return FakeResponse(
                     500,
                     '{"error":"Internal Server Error"}',
                     {"content-type": "application/json", "x-request-id": "req-1"},
                 )
 
+            def get(self, url, headers=None):
+                get_calls.append({"url": url, "headers": dict(headers or {})})
+                return FakeResponse(
+                    200,
+                    '[]',
+                    {"content-type": "application/json"},
+                    json_data=[],
+                )
+
         fake_bezala = MagicMock()
         fake_bezala._get_token.return_value = "fake-token-xxxxxxxxxxxxxxxxxxxxxx"
         fake_bezala._base_url = "https://mock.bezala/api"
+        fake_bezala._email = "user@example.com"
+        fake_bezala._password = "secret123"
 
         with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala), \
              patch.object(httpx, "Client", FakeClient):
@@ -603,39 +638,53 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
-        # Alla 4 tester körda
-        self.assertIn("test_a_default_headers", body)
-        self.assertIn("test_b_with_user_id", body)
-        self.assertIn("test_c_v1_url", body)
-        self.assertIn("test_d_accept_headers", body)
 
-        # Alla har status + body + url + sent_headers
-        for name in ("test_a_default_headers", "test_b_with_user_id",
-                      "test_c_v1_url", "test_d_accept_headers"):
-            entry = body[name]
-            self.assertIn("status", entry)
-            self.assertIn("url", entry)
-            self.assertIn("sent_headers", entry)
-            # Authorization ska vara maskerad
-            self.assertIn("maskerad", entry["sent_headers"]["Authorization"])
+        # Alla A-F samt G1-G3 ska vara körda
+        for name in (
+            "test_a_default_headers",
+            "test_b_with_user_id",
+            "test_c_v1_url",
+            "test_d_accept_headers",
+            "test_e_get_transactions",
+            "test_f_admin_role_header",
+            "test_g1_auth_with_scope_write",
+            "test_g2_auth_with_grant_type_password",
+            "test_g3_auth_baseline",
+        ):
+            self.assertIn(name, body)
 
-        # Test C ska använda /v1/ i URL:en
-        self.assertIn("/v1/transactions", body["test_c_v1_url"]["url"])
-        # Test D ska ha Accept-headers
+        # Test E ska vara en GET, inte POST
+        self.assertEqual(body["test_e_get_transactions"]["method"], "GET")
+        self.assertEqual(body["test_e_get_transactions"]["status"], 200)
+
+        # Test F ska ha X-Bezala-Role: admin
         self.assertEqual(
-            body["test_d_accept_headers"]["sent_headers"]["Accept"],
-            "application/json",
+            body["test_f_admin_role_header"]["sent_headers"]["X-Bezala-Role"], "admin"
         )
-        self.assertEqual(
-            body["test_d_accept_headers"]["sent_headers"]["Accept-Language"], "fi",
+
+        # Test G ska hit auth-endpointen med olika body-keys
+        self.assertIn("scope", body["test_g1_auth_with_scope_write"]["sent_body_keys"])
+        self.assertIn(
+            "grant_type",
+            body["test_g2_auth_with_grant_type_password"]["sent_body_keys"],
         )
+
+        # Auth-responsen ska vara parsad som dict — scope/expires_in synliga,
+        # access_token maskerad
+        g1_body = body["test_g1_auth_with_scope_write"]["body"]
+        self.assertEqual(g1_body["scope"], "read write")
+        self.assertEqual(g1_body["expires_in"], 3600)
+        self.assertIn("maskerad", g1_body["access_token"])
 
         # Test B ska ha user_id i transaction-payload
         user_id_calls = [
-            c for c in calls
+            c for c in post_calls
             if (c["json"] or {}).get("transaction", {}).get("user_id") == 58106
         ]
         self.assertEqual(len(user_id_calls), 1)
+
+        # Test C ska använda /v1/ i URL:en
+        self.assertIn("/v1/transactions", body["test_c_v1_url"]["url"])
 
     def test_metadata_returns_rows_from_all_three(self):
         fake_bezala = MagicMock()

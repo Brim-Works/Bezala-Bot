@@ -958,13 +958,9 @@ def bezala_test_transaction(_: None = Depends(require_auth)):
     with httpx.Client(timeout=30.0) as client:
         for name, url, headers, payload in tests:
             entry: dict = {
+                "method": "POST",
                 "url": url,
-                "sent_headers": {
-                    # Maska bort själva token-värdet; spara prefixet för
-                    # debug så vi ser att auth faktiskt skickades.
-                    k: (v[:20] + "...[maskerad]" if k == "Authorization" else v)
-                    for k, v in headers.items()
-                },
+                "sent_headers": _mask_headers(headers),
                 "sent_payload_keys": sorted(payload.get("transaction", {}).keys()),
             }
             try:
@@ -982,7 +978,106 @@ def bezala_test_transaction(_: None = Depends(require_auth)):
                 logger.warning("test-transaction %s → %s", name, exc)
             results[name] = entry
 
+        # Test E — GET /transactions (läs-anrop) → verifierar att token
+        # över huvud taget kan användas på denna resurs (read-scope).
+        entry_e: dict = {
+            "method": "GET",
+            "url": f"{base}/transactions",
+            "sent_headers": _mask_headers(base_headers),
+        }
+        try:
+            resp = client.get(f"{base}/transactions", headers=base_headers)
+            entry_e["status"] = resp.status_code
+            entry_e["body"] = _safe_body(resp)[:500]
+            entry_e["response_headers"] = _interesting_response_headers(resp)
+        except httpx.HTTPError as exc:
+            entry_e["status"] = None
+            entry_e["error"] = f"HTTPError: {exc}"
+        results["test_e_get_transactions"] = entry_e
+
+        # Test F — POST med X-Bezala-Role: admin header
+        role_headers = {**base_headers, "X-Bezala-Role": "admin"}
+        entry_f: dict = {
+            "method": "POST",
+            "url": f"{base}/transactions",
+            "sent_headers": _mask_headers(role_headers),
+            "sent_payload_keys": sorted(minimum_tx.keys()),
+        }
+        try:
+            resp = client.post(
+                f"{base}/transactions", json=wrapped_minimum, headers=role_headers,
+            )
+            entry_f["status"] = resp.status_code
+            entry_f["body"] = _safe_body(resp)
+            entry_f["response_headers"] = _interesting_response_headers(resp)
+        except httpx.HTTPError as exc:
+            entry_f["status"] = None
+            entry_f["error"] = f"HTTPError: {exc}"
+        results["test_f_admin_role_header"] = entry_f
+
+        # Test G — två auth-varianter för att se om token kan få högre scope
+        email = bezala._email
+        password = bezala._password
+
+        def _auth_attempt(name: str, body: dict) -> dict:
+            entry: dict = {
+                "method": "POST",
+                "url": f"{base}/auth/token",
+                "sent_body_keys": sorted(body.keys()),
+            }
+            try:
+                resp = client.post(f"{base}/auth/token", json=body)
+                entry["status"] = resp.status_code
+                # Logga HELA auth-response så vi ser scope/token_type/expires_in
+                # (token-värdet maskeras fortfarande)
+                try:
+                    raw = resp.json()
+                    if isinstance(raw, dict):
+                        # Maska token-värden alltid (oavsett längd) så de
+                        # aldrig läcker i debug-loggar / UI.
+                        token_keys = ("access_token", "token", "refresh_token")
+                        masked = {
+                            k: (
+                                (str(v)[:8] + "...[maskerad]")
+                                if k in token_keys and v else v
+                            )
+                            for k, v in raw.items()
+                        }
+                        entry["body"] = masked
+                    else:
+                        entry["body"] = raw
+                except ValueError:
+                    entry["body"] = _safe_body(resp)
+                entry["response_headers"] = _interesting_response_headers(resp)
+            except httpx.HTTPError as exc:
+                entry["status"] = None
+                entry["error"] = f"HTTPError: {exc}"
+            return entry
+
+        results["test_g1_auth_with_scope_write"] = _auth_attempt(
+            "g1",
+            {"email": email, "password": password, "scope": "write"},
+        )
+        results["test_g2_auth_with_grant_type_password"] = _auth_attempt(
+            "g2",
+            {"email": email, "password": password, "grant_type": "password"},
+        )
+        # Baseline för jämförelse — exakt det format vi kör i produktion just nu
+        results["test_g3_auth_baseline"] = _auth_attempt(
+            "g3",
+            {"email": email, "password": password},
+        )
+
     return results
+
+
+def _mask_headers(headers: dict) -> dict:
+    """Maskera Authorization-värdet men behåll prefix så vi ser att
+    auth-hedern faktiskt skickades."""
+    return {
+        k: (v[:20] + "...[maskerad]" if k.lower() == "authorization" else v)
+        for k, v in headers.items()
+    }
 
 
 class UploadToBezalaPayload(BaseModel):
