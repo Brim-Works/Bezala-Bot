@@ -144,9 +144,19 @@ export function IconRefresh(props) {
   );
 }
 
+export function IconLink(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M9 11.5a3 3 0 0 0 4.2 0l2.3-2.3a3 3 0 1 0-4.2-4.2L10.5 6" />
+      <path d="M11 8.5a3 3 0 0 0-4.2 0l-2.3 2.3a3 3 0 1 0 4.2 4.2L9.5 14" />
+    </IconBase>
+  );
+}
+
 export const NAV_ICONS = {
   dashboard: IconDashboard,
   review: IconReview,
+  match: IconLink,
   log: IconLog,
   settings: IconSettings,
   trash: IconTrash,

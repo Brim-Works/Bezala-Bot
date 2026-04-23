@@ -4,6 +4,7 @@ export default {
   nav: {
     dashboard: 'Översikt',
     review: 'Granska',
+    match: 'Kortmatchning',
     log: 'Logg',
     settings: 'Inställningar',
     trash: 'Papperskorg',
@@ -490,9 +491,30 @@ export default {
         'Rader som legat i papperskorgen längre än vald tid raderas permanent kl 03:00 UTC.',
     },
   },
+  match: {
+    listTitle: 'Saknade kvitton i Bezala',
+    suggestionsCount: 'förslag',
+    matchAction: 'Koppla ihop',
+    matching: 'Kopplar…',
+    selectPrompt: 'Välj ett saknat kvitto till vänster.',
+    noSuggestions:
+      'Inga matchande kvitton i Bezala Bot — kanske bearbetas vid nästa scan.',
+    loadFailed: 'Kunde inte hämta saknade kvitton från Bezala',
+    unknownVendor: 'Okänd leverantör',
+    empty: {
+      title: 'Inga saknade kvitton',
+      body:
+        'Bezala har inga korttransaktioner som saknar kvitto just nu. Bra jobbat!',
+    },
+    toast: {
+      matched: 'Kvitto kopplat till Bezala-transaktionen',
+      matchFailed: 'Kunde inte koppla ihop',
+    },
+  },
   views: {
     dashboard: { title: 'Översikt' },
     review: { title: 'Granska' },
+    match: { title: 'Kortmatchning' },
     log: { title: 'Kommandocenter' },
     settings: { title: 'Inställningar' },
     trash: { title: 'Papperskorg' },

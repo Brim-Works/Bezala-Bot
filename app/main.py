@@ -24,6 +24,7 @@ from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import fetch_bezala_metadata, run_scan
 from app.services.receipt_analyzer import AnalyzerError, ReceiptAnalyzer
+from app.services.receipt_matcher import find_matches
 from app.services.settings_service import load_settings, settings_to_dict
 from app.services.trash_service import (
     drive_delete_safe,
@@ -875,6 +876,145 @@ def _safe_bezala_list(fn, label: str) -> dict:
         logger.warning("Bezala metadata %s misslyckades: %s", label, exc)
         return {"count": 0, "rows": [], "error": f"{exc.status_code}: {exc.body or str(exc)}"}
 
+
+def _normalize_missing_receipt(raw: dict) -> dict:
+    """Normalisera Bezalas missing_receipt-format till vår UI-shape."""
+    return {
+        "id": raw.get("id"),
+        "description": (
+            raw.get("description")
+            or raw.get("merchant")
+            or raw.get("name")
+            or ""
+        ),
+        "amount": raw.get("amount") or raw.get("sum"),
+        "currency": raw.get("currency") or "EUR",
+        "date": (
+            raw.get("date")
+            or raw.get("transaction_date")
+            or raw.get("purchase_date")
+        ),
+    }
+
+
+@app.get("/api/bezala/missing-receipts")
+def get_bezala_missing_receipts(_: None = Depends(require_auth)):
+    """FAS 5.4 — listar korttransaktioner i Bezala som saknar kvitto."""
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+    try:
+        rows = bezala.list_missing_receipts()
+    except BezalaError as exc:
+        logger.warning("Bezala missing_receipts misslyckades: %s", exc)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Bezala missing_receipts: {exc}",
+        ) from exc
+    finally:
+        bezala.close()
+    return [_normalize_missing_receipt(r) for r in rows]
+
+
+@app.get("/api/bezala/match-suggestions")
+def get_match_suggestions(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """För varje saknat kvitto i Bezala: hitta matchande
+    ProcessedMessage-rader baserat på belopp, datum, vendor."""
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+    try:
+        missing_rows = bezala.list_missing_receipts()
+    except BezalaError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Bezala missing_receipts: {exc}",
+        ) from exc
+    finally:
+        bezala.close()
+
+    # Kandidater: saved-rader som ännu inte är knutna till en Bezala-tx
+    candidates_q = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.status == "saved")
+        .filter(ProcessedMessage.bezala_upload_status != "success")
+        .order_by(desc(ProcessedMessage.received_at))
+        .limit(500)
+    )
+    candidate_dicts = [_serialize_message(r) for r in candidates_q.all()]
+
+    out: list[dict] = []
+    for raw in missing_rows:
+        missing = _normalize_missing_receipt(raw)
+        suggestions = find_matches(missing, candidate_dicts)
+        out.append({"missing_receipt": missing, "suggestions": suggestions})
+    return out
+
+
+class MatchToBezalaPayload(BaseModel):
+    missing_receipt_id: int | str
+
+
+@app.post("/api/messages/{msg_id}/match-to-bezala")
+def match_message_to_bezala(
+    msg_id: int,
+    payload: MatchToBezalaPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Koppla en ProcessedMessage till en befintlig missing-receipt i Bezala
+    genom att bifoga PDF:en till transaktionen + uppdatera vår DB-rad."""
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    if not row.drive_file_id or not row.file_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Meddelandet saknar Drive-fil — kan inte koppla till Bezala",
+        )
+
+    tx_id = str(payload.missing_receipt_id)
+
+    try:
+        drive = DriveClient()
+    except Exception as exc:
+        logger.exception("Drive-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+
+    try:
+        pdf_bytes = drive.download_pdf(row.drive_file_id)
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            raise HTTPException(
+                status_code=502,
+                detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
+            )
+        bezala.attach_file(tx_id, row.file_name, pdf_bytes)
+        row.bezala_transaction_id = tx_id
+        row.bezala_upload_status = "success"
+        row.bezala_error_message = None
+        db.commit()
+        logger.info(
+            "Kortmatchning klar: msg_id=%s → tx_id=%s", msg_id, tx_id,
+        )
+        return _serialize_message(row)
+    except BezalaError as exc:
+        logger.exception("Kortmatchning misslyckades för msg_id=%s tx_id=%s", msg_id, tx_id)
+        row.bezala_upload_status = "failed"
+        row.bezala_error_message = (f"{exc} | body={exc.body}" if exc.body else str(exc))[:2000]
+        db.commit()
+        raise HTTPException(status_code=502, detail=f"Bezala attach_file: {exc}") from exc
+    finally:
+        bezala.close()
 
 
 class UploadToBezalaPayload(BaseModel):

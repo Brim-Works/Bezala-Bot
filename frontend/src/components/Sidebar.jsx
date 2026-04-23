@@ -8,6 +8,7 @@ import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 const ITEMS = [
   { id: 'dashboard' },
   { id: 'review' },
+  { id: 'match' },
   { id: 'log' },
   { id: 'settings' },
   { id: 'trash' },

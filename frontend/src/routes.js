@@ -5,6 +5,7 @@
 export const ROUTES = {
   dashboard: '/',
   review: '/review',
+  match: '/match',
   log: '/log',
   settings: '/settings',
   trash: '/trash',
@@ -20,6 +21,8 @@ export function viewForPath(path) {
       return 'dashboard';
     case '/review':
       return 'review';
+    case '/match':
+      return 'match';
     case '/log':
       return 'log';
     case '/settings':

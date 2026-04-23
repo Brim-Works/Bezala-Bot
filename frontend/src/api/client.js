@@ -83,6 +83,13 @@ export const api = {
       method: 'POST',
       body: overrides || {},
     }),
+  bezalaMissingReceipts: () => request('/api/bezala/missing-receipts'),
+  bezalaMatchSuggestions: () => request('/api/bezala/match-suggestions'),
+  matchToBezala: (msgId, missingReceiptId) =>
+    request(`/api/messages/${msgId}/match-to-bezala`, {
+      method: 'POST',
+      body: { missing_receipt_id: missingReceiptId },
+    }),
   deleteErrors: () => request('/api/messages/errors', { method: 'DELETE' }),
   trashList: (limit = 200) => request(`/api/messages/trash?limit=${limit}`),
   trashCount: () => request('/api/messages/trash/count'),

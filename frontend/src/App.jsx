@@ -9,6 +9,7 @@ import AppShell from './components/AppShell.jsx';
 import ViewErrorBoundary from './components/ViewErrorBoundary.jsx';
 import Dashboard from './views/Dashboard.jsx';
 import Review from './views/Review.jsx';
+import Match from './views/Match.jsx';
 import Log from './views/Log.jsx';
 import Settings from './views/Settings.jsx';
 import Trash from './views/Trash.jsx';
@@ -31,6 +32,12 @@ function ViewForRoute() {
       return (
         <ViewErrorBoundary viewKey="review">
           <Review />
+        </ViewErrorBoundary>
+      );
+    case 'match':
+      return (
+        <ViewErrorBoundary viewKey="match">
+          <Match />
         </ViewErrorBoundary>
       );
     case 'log':
