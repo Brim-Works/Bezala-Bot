@@ -299,41 +299,52 @@ class BezalaClient:
     def create_transaction(
         self,
         *,
-        attachment_ids: list[str],
-        vendor: str | None,
-        amount: float | None,
-        currency: str | None,
-        date: str | None,
-        category: str | None,
-        description: str | None,
+        description: str,
+        date: str,
+        amount: float,
+        currency: str | None = None,
+        vendor: str | None = None,
+        account_id: int | str | None = None,
+        cost_center_id: int | str | None = None,
+        vat_lines: list[dict] | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> BezalaTransaction:
-        """Skapar en transaktion i Bezala.
+        """Skapa en transaktion i Bezala via POST /api/transactions med
+        JSON-body (Steg 1 av två i upload_receipt-flödet).
 
-        `extra_fields` är Gate 0-groundwork: låter anroparen lager in
-        account_id, cost_center_id, vat_rate_id, purchase_date m.fl. när
-        vi vet exakt vilka nycklar Bezala förväntar (fastställs när live-
-        response.text från 422 analyserats)."""
+        Bezala /api/attachments är bara för filbifogning på en befintlig
+        transaktion — metadata måste skickas via /api/transactions."""
+        if not description:
+            raise BezalaError("create_transaction: description saknas")
+        if not date:
+            raise BezalaError("create_transaction: date saknas (ÅÅÅÅ-MM-DD)")
+        if amount is None:
+            raise BezalaError("create_transaction: amount saknas")
+
         payload: dict[str, Any] = {
-            "attachment_ids": attachment_ids,
+            "description": description,
+            "date": date,
+            "amount": amount,
         }
-        if vendor:
-            payload["vendor"] = vendor
-        if amount is not None:
-            payload["amount"] = amount
         if currency:
             payload["currency"] = currency
-        if date:
-            payload["date"] = date
-        if category:
-            payload["category"] = category
-        if description:
-            payload["description"] = description
+        if vendor:
+            payload["vendor"] = vendor
+        if account_id is not None:
+            payload["account_id"] = account_id
+        if cost_center_id is not None:
+            payload["cost_center_id"] = cost_center_id
+        if vat_lines:
+            payload["vat_lines"] = vat_lines
         if extra_fields:
             for k, v in extra_fields.items():
                 if v is not None:
                     payload[k] = v
 
+        logger.info(
+            "create_transaction: POST /transactions payload_keys=%s",
+            sorted(payload.keys()),
+        )
         resp = self._request("POST", "/transactions", json=payload)
         if resp.status_code >= 400:
             raise BezalaError(
@@ -359,10 +370,59 @@ class BezalaClient:
             )
         url = data.get("url") or data.get("web_url")
         logger.info(
-            "Bezala: skapade transaction_id=%s med %d bilagor",
-            transaction_id, len(attachment_ids),
+            "Bezala: skapade transaction_id=%s description=%r",
+            transaction_id, description,
         )
         return BezalaTransaction(transaction_id=str(transaction_id), url=url)
+
+    def attach_file(
+        self,
+        transaction_id: str,
+        filename: str,
+        pdf_bytes: bytes,
+    ) -> BezalaAttachment:
+        """Bifoga en PDF-fil till en befintlig transaktion via
+        POST /api/attachments (Steg 2 av upload_receipt-flödet)."""
+        if not transaction_id:
+            raise BezalaError("attach_file: transaction_id saknas")
+        if not filename:
+            raise BezalaError("attach_file: filename saknas")
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            raise BezalaError("attach_file: pdf_bytes är inte en giltig PDF")
+
+        logger.info(
+            "attach_file: POST /attachments transaction_id=%s filename=%r bytes=%d",
+            transaction_id, filename, len(pdf_bytes),
+        )
+        resp = self._request(
+            "POST",
+            "/attachments",
+            files={"file": (filename, pdf_bytes, "application/pdf")},
+            data={"transaction_id": str(transaction_id)},
+        )
+        if resp.status_code >= 400:
+            raise BezalaError(
+                f"Bezala attach_file: {resp.status_code}",
+                status_code=resp.status_code,
+                body=_safe_body_snippet(resp),
+            )
+        try:
+            data = resp.json()
+        except ValueError:
+            # Vissa Rails-endpoints returnerar 204/tom body vid success
+            data = {}
+
+        attachment_id = (
+            data.get("id")
+            or data.get("attachment_id")
+            or (data.get("attachment") or {}).get("id")
+            or transaction_id  # fallback: använd transaction_id som referens
+        )
+        logger.info(
+            "Bezala: bifogade %s till transaction_id=%s (attachment_id=%s)",
+            filename, transaction_id, attachment_id,
+        )
+        return BezalaAttachment(attachment_id=str(attachment_id))
 
     # --------- Gate 0 groundwork: metadata-endpoints ---------
     #
@@ -425,13 +485,12 @@ class BezalaClient:
                     return []
             raise
 
-    # --------- receipt upload (Gate 0 fix) ---------
+    # --------- receipt upload — TWO-STEP ---------
     #
-    # Bezalas /attachments-endpoint är en RECEIPT-POST (Rails-baserad).
-    # 422-responsen "description/date/vat_lines kan inte vara tom" trots
-    # att vi skickar fälten bekräftar Rails strong-params-beteende:
-    # params.require(:attachment).permit(:description, ...). Top-level-
-    # fält ignoreras → vi måste nesta under attachment[...].
+    # Bezala API-docs (live-verifierad): POST /api/transactions för metadata,
+    # sedan POST /api/attachments med filen + transaction_id. /receipts
+    # existerar inte. Metadata + fil i samma request (tidigare försök)
+    # fungerar inte.
 
     def upload_receipt(
         self,
@@ -448,13 +507,14 @@ class BezalaClient:
         vendor: str | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> BezalaAttachment:
-        """Ladda upp ett kvitto till Bezala i en enda multipart-request.
+        """Ladda upp ett kvitto till Bezala via TWO-STEP-flödet:
 
-        Form-fält namnges enligt Rails strong-params-konvention:
-          attachment[file], attachment[description], attachment[date], ...
-          attachment[vat_lines] = JSON-sträng "[{amount, vat_code_id}]"
+          Steg 1: POST /transactions (JSON) → transaction_id
+          Steg 2: POST /attachments (multipart file + transaction_id)
 
-        Returnerar BezalaAttachment med id:t som Bezala genererade."""
+        Om steg 1 lyckas men steg 2 misslyckas: transaction_id loggas
+        som ORPHAN och BezalaError propageras. Kvittot finns då i Bezala
+        utan bifogad PDF och måste rensas eller bifogas manuellt."""
         if not filename:
             raise BezalaError("upload_receipt: filename saknas")
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
@@ -463,98 +523,57 @@ class BezalaClient:
             raise BezalaError("upload_receipt: description saknas")
         if not date:
             raise BezalaError("upload_receipt: date saknas (ÅÅÅÅ-MM-DD)")
-
-        # Logga PDF-info INNAN requesten så vi ser vad som försöker skickas.
-        # Skyddsnät för debug när Bezala returnerar "nil:NilClass"-fel.
-        logger.info(
-            "upload_receipt: filename=%r pdf_bytes=%d description=%r date=%r "
-            "amount=%s currency=%s account_id=%s cost_center_id=%s vat_lines=%s",
-            filename, len(pdf_bytes), description, date,
-            amount, currency, account_id, cost_center_id,
-            vat_lines,
-        )
-
-        # Synlig INFO-logg av värdena som faktiskt skickas — debug 422:or
-        # utan att behöva gissa.
-        logger.info(
-            "Bezala upload_receipt payload: description=%r date=%r amount=%r "
-            "currency=%r account_id=%r cost_center_id=%r vat_lines=%s",
-            description, date, amount, currency, account_id, cost_center_id,
-            vat_lines,
-        )
-
-        form: dict[str, Any] = {
-            _field_key("description"): description,
-            _field_key("date"): date,
-        }
-        if amount is not None:
-            form[_field_key("amount")] = str(amount)
-        if currency:
-            form[_field_key("currency")] = currency
-        if vendor:
-            form[_field_key("vendor")] = vendor
-        if account_id is not None:
-            form[_field_key("account_id")] = str(account_id)
-        if cost_center_id is not None:
-            form[_field_key("cost_center_id")] = str(cost_center_id)
-        if vat_lines:
-            # JSON-sträng — Bezalas serializer parsar. Stringifierar numeriska
-            # värden (amount, vat_code_id) så Rails strong params inte tolkar
-            # 503.0 som Float (känsligt) utan som sträng som sedan coercas.
-            stringified = [
-                {k: (str(v) if isinstance(v, (int, float)) else v) for k, v in line.items()}
-                for line in vat_lines
-            ]
-            form[_field_key("vat_lines")] = json.dumps(stringified, ensure_ascii=False)
-        if extra_fields:
-            for k, v in extra_fields.items():
-                if v is None:
-                    continue
-                # Redan-prefixade nycklar respekteras, annars använd _field_key.
-                if k.startswith("attachment[") or FIELD_NAMING == "flat":
-                    key = k
-                else:
-                    key = _field_key(k)
-                form[key] = v if isinstance(v, str) else json.dumps(v)
+        if amount is None:
+            raise BezalaError("upload_receipt: amount saknas (krävs av /transactions)")
 
         logger.info(
-            "upload_receipt: POST /attachments file_field=%r field_naming=%s form_keys=%s",
-            FILE_FIELD_NAME, FIELD_NAMING, sorted(form.keys()),
+            "upload_receipt: two-step filename=%r bytes=%d description=%r "
+            "date=%r amount=%s currency=%s account_id=%s cost_center_id=%s "
+            "vat_lines=%s",
+            filename, len(pdf_bytes), description, date, amount, currency,
+            account_id, cost_center_id, vat_lines,
         )
-        resp = self._request(
-            "POST",
-            "/attachments",
-            files={FILE_FIELD_NAME: (filename, pdf_bytes, "application/pdf")},
-            data=form,
+
+        # Steg 1: skapa transaktionen
+        transaction = self.create_transaction(
+            description=description,
+            date=date,
+            amount=amount,
+            currency=currency,
+            vendor=vendor,
+            account_id=account_id,
+            cost_center_id=cost_center_id,
+            vat_lines=vat_lines,
+            extra_fields=extra_fields,
         )
-        if resp.status_code >= 400:
-            raise BezalaError(
-                f"Bezala upload_receipt: {resp.status_code}",
-                status_code=resp.status_code,
-                body=_safe_body_snippet(resp),
-            )
+        transaction_id = transaction.transaction_id
+
+        # Steg 2: bifoga filen
         try:
-            data = resp.json()
-        except ValueError as exc:
+            attachment = self.attach_file(transaction_id, filename, pdf_bytes)
+        except BezalaError as exc:
+            # ORPHAN: transaktionen finns i Bezala utan PDF. Logga tydligt
+            # så ansvarig kan städa manuellt eller bifoga filen via API:et.
+            logger.error(
+                "Bezala ORPHAN transaction: tx_id=%s (skapad men fil-bifogning "
+                "misslyckades: %s | body=%s)",
+                transaction_id, exc, exc.body,
+            )
             raise BezalaError(
-                f"Bezala upload_receipt: icke-JSON svar ({exc})"
+                f"Transaktion {transaction_id} skapad men fil-bifogning "
+                f"misslyckades: {exc}",
+                status_code=exc.status_code,
+                body=exc.body,
             ) from exc
 
-        receipt_id = (
-            data.get("id")
-            or data.get("attachment_id")
-            or (data.get("attachment") or {}).get("id")
-            or (data.get("receipt") or {}).get("id")
-        )
-        if not receipt_id:
-            raise BezalaError(
-                f"Bezala upload_receipt: saknar id i svar ({data})"
-            )
         logger.info(
-            "Bezala: laddade upp kvitto %s som id=%s (account_id=%s, vat_lines=%d)",
-            filename, receipt_id, account_id, len(vat_lines or []),
+            "Bezala: two-step klart — transaction_id=%s attachment_id=%s",
+            transaction_id, attachment.attachment_id,
         )
-        return BezalaAttachment(attachment_id=str(receipt_id))
+        # Returnera transaction_id som "attachment_id" — det är ID:t som
+        # lagras i ProcessedMessage.bezala_transaction_id och används för
+        # deep-link till Bezala-UI.
+        return BezalaAttachment(attachment_id=transaction_id)
 
     def close(self) -> None:
         self._client.close()
