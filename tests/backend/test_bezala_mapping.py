@@ -529,7 +529,7 @@ class BezalaLoggingTest(unittest.TestCase):
             # 2xx ska INTE vara ERROR
             self.assertNotIn("ERROR", line)
 
-    def test_create_transaction_422_bubbles_full_body(self):
+    def test_update_transaction_422_bubbles_full_body(self):
         """Vid 422 ska BezalaError.body innehålla hela response.text."""
         from app.services.bezala_client import BezalaError
 
@@ -537,7 +537,6 @@ class BezalaLoggingTest(unittest.TestCase):
         resp = MagicMock()
         resp.status_code = 422
         resp.headers = {"content-type": "application/json"}
-        # 800 tecken — tidigare skulle trunkerats vid 500
         resp.text = '{"detail":"' + ("x" * 800) + '"}'
 
         def fake_request(method, url, **kwargs):
@@ -546,30 +545,28 @@ class BezalaLoggingTest(unittest.TestCase):
         client._client.request = fake_request
 
         with self.assertRaises(BezalaError) as ctx:
-            client.create_transaction(
+            client.update_transaction(
+                "tx-42",
                 description="Test",
                 date="2026-04-22",
-                credit_account_id=67100,
+                credit_account_id=82320,
             )
         err = ctx.exception
         self.assertEqual(err.status_code, 422)
-        # BODY_LOG_LIMIT = 4000 → all ~800-tecken text ska rymmas
         self.assertGreater(len(err.body), 700)
         self.assertIn("xxxx", err.body)
 
-    def test_create_transaction_sends_nested_body_with_new_field_names(self):
-        """Senaste API-docs: POST /transactions body är
-        {'transaction': {description, date, credit_account_id,
-        vat_lines_attributes: [...]}}. amount/currency/vendor/cost_center
-        ligger INTE top-level."""
+    def test_update_transaction_sends_nested_body_with_new_field_names(self):
+        """PUT /transactions/{id} body: {transaction: {...}} med
+        credit_account_id (betalningsmetod) och vat_lines_attributes."""
         captured = {}
 
         client = _make_client()
         resp = MagicMock()
         resp.status_code = 200
         resp.headers = {"content-type": "application/json"}
-        resp.text = '{"id": "tx-42"}'
-        resp.json = MagicMock(return_value={"id": "tx-42"})
+        resp.text = '{"id": 2804}'
+        resp.json = MagicMock(return_value={"id": 2804})
 
         def fake_request(method, url, **kwargs):
             captured["method"] = method
@@ -587,30 +584,30 @@ class BezalaLoggingTest(unittest.TestCase):
             "cost_center_ids": [927151],
             "vat_code_id": 1355,
         }
-        result = client.create_transaction(
+        result = client.update_transaction(
+            "2804",
             description="Finnair HEL-CPH",
             date="2026-04-22",
-            credit_account_id=67100,
+            credit_account_id=82320,
             vat_lines_attributes=[vat_line],
         )
-        self.assertEqual(result.transaction_id, "tx-42")
-        self.assertEqual(captured["method"], "POST")
-        self.assertTrue(captured["url"].endswith("/transactions"))
+        self.assertEqual(result.transaction_id, "2804")
+        self.assertEqual(captured["method"], "PUT")
+        self.assertTrue(captured["url"].endswith("/transactions/2804"))
 
         payload = captured["json"]
         self.assertIn("transaction", payload)
         tx = payload["transaction"]
         self.assertEqual(tx["description"], "Finnair HEL-CPH")
         self.assertEqual(tx["date"], "2026-04-22")
-        self.assertEqual(tx["credit_account_id"], 67100)
+        # credit_account_id = betalningsmetod (kreditkort, t.ex. 82320)
+        self.assertEqual(tx["credit_account_id"], 82320)
+        # expense_account_id = kategori (67100 Matkaliput) ligger i vat_line
         self.assertEqual(tx["vat_lines_attributes"], [vat_line])
-        # Gamla fält ska INTE finnas top-level
-        self.assertNotIn("amount", tx)
-        self.assertNotIn("currency", tx)
-        self.assertNotIn("vendor", tx)
-        self.assertNotIn("cost_center_id", tx)
-        self.assertNotIn("account_id", tx)
-        self.assertNotIn("vat_lines", tx)
+        # Gamla/felaktiga fält ska INTE finnas
+        for key in ("amount", "currency", "vendor", "cost_center_id",
+                     "account_id", "vat_lines"):
+            self.assertNotIn(key, tx)
 
 
 class BezalaMetadataEndpointsTest(unittest.TestCase):

@@ -310,8 +310,73 @@ class BezalaClient:
         logger.info("Bezala: laddade upp %s som attachment_id=%s", filename, attachment_id)
         return BezalaAttachment(attachment_id=str(attachment_id))
 
-    def create_transaction(
+    def upload_file_as_draft(
         self,
+        pdf_bytes: bytes,
+        filename: str,
+    ) -> tuple[str, str]:
+        """Steg 1 i nya two-step-flödet: POST /api/attachments med
+        multipart file + draft=1. Bezala skapar automatiskt en draft-
+        transaktion och returnerar både attachment_id och transaction_id.
+
+        Returnerar (attachment_id, transaction_id) som strängar."""
+        if not filename:
+            raise BezalaError("upload_file_as_draft: filename saknas")
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            raise BezalaError(
+                "upload_file_as_draft: pdf_bytes är inte en giltig PDF"
+            )
+
+        logger.info(
+            "upload_file_as_draft: POST /attachments filename=%r bytes=%d",
+            filename, len(pdf_bytes),
+        )
+        resp = self._request(
+            "POST",
+            "/attachments",
+            files={"file": (filename, pdf_bytes, "application/pdf")},
+            data={"draft": "1"},
+        )
+        if resp.status_code >= 400:
+            raise BezalaError(
+                f"Bezala upload_file_as_draft: {resp.status_code}",
+                status_code=resp.status_code,
+                body=_safe_body_snippet(resp),
+            )
+        try:
+            data = resp.json()
+        except ValueError as exc:
+            raise BezalaError(
+                f"Bezala upload_file_as_draft: icke-JSON svar ({exc})"
+            ) from exc
+
+        attachment_id = (
+            data.get("id")
+            or data.get("attachment_id")
+            or (data.get("attachment") or {}).get("id")
+        )
+        transaction_id = data.get("transaction_id")
+        if not transaction_id and isinstance(data.get("attachment"), dict):
+            transaction_id = data["attachment"].get("transaction_id")
+        if not transaction_id and isinstance(data.get("transaction"), dict):
+            transaction_id = data["transaction"].get("id")
+        if not attachment_id:
+            raise BezalaError(
+                f"Bezala upload_file_as_draft: saknar attachment id i svar ({data})"
+            )
+        if not transaction_id:
+            raise BezalaError(
+                f"Bezala upload_file_as_draft: saknar transaction_id i svar ({data})"
+            )
+        logger.info(
+            "Bezala: draft-upload klar — attachment_id=%s transaction_id=%s",
+            attachment_id, transaction_id,
+        )
+        return (str(attachment_id), str(transaction_id))
+
+    def update_transaction(
+        self,
+        transaction_id: str,
         *,
         description: str,
         date: str,
@@ -319,8 +384,8 @@ class BezalaClient:
         vat_lines_attributes: list[dict] | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> BezalaTransaction:
-        """Skapa en transaktion i Bezala via POST /api/transactions med
-        nested JSON-body enligt API-docs:
+        """Steg 2: PUT /api/transactions/{tx_id} med metadata enligt
+        API-docs:
 
           {"transaction": {
             "description": "...",
@@ -329,12 +394,14 @@ class BezalaClient:
             "vat_lines_attributes": [{...}]
           }}
 
-        amount/currency/vendor/cost_center_id finns INTE längre top-level
-        — allt ekonomiskt innehåll ligger inuti vat_lines_attributes[]."""
+        Returnerar BezalaTransaction — bekräftat ID från svaret
+        (eller tillbaka samma som skickades)."""
+        if not transaction_id:
+            raise BezalaError("update_transaction: transaction_id saknas")
         if not description:
-            raise BezalaError("create_transaction: description saknas")
+            raise BezalaError("update_transaction: description saknas")
         if not date:
-            raise BezalaError("create_transaction: date saknas (ÅÅÅÅ-MM-DD)")
+            raise BezalaError("update_transaction: date saknas (ÅÅÅÅ-MM-DD)")
 
         payload: dict[str, Any] = {
             "description": description,
@@ -349,93 +416,37 @@ class BezalaClient:
                 if v is not None:
                     payload[k] = v
 
-        # Rails-konvention: params.require(:transaction).permit(...) kräver
-        # att body:n wrappas i {"transaction": {...}}. Flat JSON gav 500
-        # (NoMethodError i controllern) i live-test.
         wrapped = {"transaction": payload}
-
         logger.info(
-            "create_transaction: POST /transactions body=%s",
+            "update_transaction: PUT /transactions/%s body=%s",
+            transaction_id,
             json.dumps(wrapped, ensure_ascii=False, default=str),
         )
-        resp = self._request("POST", "/transactions", json=wrapped)
-        if resp.status_code >= 400:
-            raise BezalaError(
-                f"Bezala create_transaction: {resp.status_code}",
-                status_code=resp.status_code,
-                body=_safe_body_snippet(resp),
-            )
-        try:
-            data = resp.json()
-        except ValueError as exc:
-            raise BezalaError(
-                f"Bezala create_transaction: icke-JSON svar ({exc})"
-            ) from exc
-
-        transaction_id = (
-            data.get("id")
-            or data.get("transaction_id")
-            or (data.get("transaction") or {}).get("id")
-        )
-        if not transaction_id:
-            raise BezalaError(
-                f"Bezala create_transaction: saknar id i svar ({data})"
-            )
-        url = data.get("url") or data.get("web_url")
-        logger.info(
-            "Bezala: skapade transaction_id=%s description=%r",
-            transaction_id, description,
-        )
-        return BezalaTransaction(transaction_id=str(transaction_id), url=url)
-
-    def attach_file(
-        self,
-        transaction_id: str,
-        filename: str,
-        pdf_bytes: bytes,
-    ) -> BezalaAttachment:
-        """Bifoga en PDF-fil till en befintlig transaktion via
-        POST /api/attachments (Steg 2 av upload_receipt-flödet)."""
-        if not transaction_id:
-            raise BezalaError("attach_file: transaction_id saknas")
-        if not filename:
-            raise BezalaError("attach_file: filename saknas")
-        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
-            raise BezalaError("attach_file: pdf_bytes är inte en giltig PDF")
-
-        logger.info(
-            "attach_file: POST /attachments transaction_id=%s filename=%r bytes=%d",
-            transaction_id, filename, len(pdf_bytes),
-        )
         resp = self._request(
-            "POST",
-            "/attachments",
-            files={"file": (filename, pdf_bytes, "application/pdf")},
-            data={"transaction_id": str(transaction_id)},
+            "PUT", f"/transactions/{transaction_id}", json=wrapped,
         )
         if resp.status_code >= 400:
             raise BezalaError(
-                f"Bezala attach_file: {resp.status_code}",
+                f"Bezala update_transaction: {resp.status_code}",
                 status_code=resp.status_code,
                 body=_safe_body_snippet(resp),
             )
         try:
             data = resp.json()
         except ValueError:
-            # Vissa Rails-endpoints returnerar 204/tom body vid success
             data = {}
 
-        attachment_id = (
+        confirmed_id = (
             data.get("id")
-            or data.get("attachment_id")
-            or (data.get("attachment") or {}).get("id")
-            or transaction_id  # fallback: använd transaction_id som referens
+            or (data.get("transaction") or {}).get("id")
+            or transaction_id
         )
+        url = data.get("url") or data.get("web_url") or (data.get("transaction") or {}).get("url")
         logger.info(
-            "Bezala: bifogade %s till transaction_id=%s (attachment_id=%s)",
-            filename, transaction_id, attachment_id,
+            "Bezala: uppdaterade transaction_id=%s description=%r",
+            confirmed_id, description,
         )
-        return BezalaAttachment(attachment_id=str(attachment_id))
+        return BezalaTransaction(transaction_id=str(confirmed_id), url=url)
 
     # --------- Gate 0 groundwork: metadata-endpoints ---------
     #
@@ -516,14 +527,18 @@ class BezalaClient:
         vat_lines_attributes: list[dict] | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> BezalaAttachment:
-        """Ladda upp ett kvitto till Bezala via TWO-STEP-flödet:
+        """Ladda upp ett kvitto till Bezala via TWO-STEP (omvänd ordning):
 
-          Steg 1: POST /transactions (JSON, {"transaction": {...}}) → tx_id
-          Steg 2: POST /attachments (multipart file + transaction_id)
+          Steg 1: POST /attachments med multipart file + draft=1
+                  → Bezala skapar draft-transaktion automatiskt
+                  → returnerar (attachment_id, transaction_id)
+          Steg 2: PUT /transactions/{tx_id} med metadata-JSON
+                  → fyller i description, date, credit_account_id,
+                    vat_lines_attributes
 
-        Om steg 1 lyckas men steg 2 misslyckas: transaction_id loggas
-        som ORPHAN och BezalaError propageras. Kvittot finns då i Bezala
-        utan bifogad PDF och måste rensas eller bifogas manuellt."""
+        Om steg 2 misslyckas: draft-transaktionen finns i Bezala med
+        filen men utan metadata. tx_id loggas som ORPHAN så den kan
+        städas eller fyllas i manuellt via Bezala-UI."""
         if not filename:
             raise BezalaError("upload_receipt: filename saknas")
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
@@ -534,35 +549,37 @@ class BezalaClient:
             raise BezalaError("upload_receipt: date saknas (ÅÅÅÅ-MM-DD)")
 
         logger.info(
-            "upload_receipt: two-step filename=%r bytes=%d description=%r "
+            "upload_receipt: draft-first filename=%r bytes=%d description=%r "
             "date=%r credit_account_id=%s vat_lines_attributes_count=%d",
             filename, len(pdf_bytes), description, date,
             credit_account_id, len(vat_lines_attributes or []),
         )
 
-        # Steg 1: skapa transaktionen
-        transaction = self.create_transaction(
-            description=description,
-            date=date,
-            credit_account_id=credit_account_id,
-            vat_lines_attributes=vat_lines_attributes,
-            extra_fields=extra_fields,
+        # Steg 1: POST /attachments med draft=1 → få tx_id
+        attachment_id, transaction_id = self.upload_file_as_draft(
+            pdf_bytes, filename,
         )
-        transaction_id = transaction.transaction_id
 
-        # Steg 2: bifoga filen
+        # Steg 2: PUT /transactions/{tx_id} med metadata
         try:
-            attachment = self.attach_file(transaction_id, filename, pdf_bytes)
+            self.update_transaction(
+                transaction_id,
+                description=description,
+                date=date,
+                credit_account_id=credit_account_id,
+                vat_lines_attributes=vat_lines_attributes,
+                extra_fields=extra_fields,
+            )
         except BezalaError as exc:
-            # ORPHAN: transaktionen finns i Bezala utan PDF. Logga tydligt
-            # så ansvarig kan städa manuellt eller bifoga filen via API:et.
+            # ORPHAN: draft-transaktionen finns i Bezala med filen men
+            # utan metadata. Användaren måste städa eller fylla i manuellt.
             logger.error(
-                "Bezala ORPHAN transaction: tx_id=%s (skapad men fil-bifogning "
-                "misslyckades: %s | body=%s)",
-                transaction_id, exc, exc.body,
+                "Bezala ORPHAN draft: tx_id=%s attachment_id=%s "
+                "(draft skapad men metadata-PUT misslyckades: %s | body=%s)",
+                transaction_id, attachment_id, exc, exc.body,
             )
             raise BezalaError(
-                f"Transaktion {transaction_id} skapad men fil-bifogning "
+                f"Draft-transaktion {transaction_id} skapad men metadata-PUT "
                 f"misslyckades: {exc}",
                 status_code=exc.status_code,
                 body=exc.body,
@@ -570,7 +587,7 @@ class BezalaClient:
 
         logger.info(
             "Bezala: two-step klart — transaction_id=%s attachment_id=%s",
-            transaction_id, attachment.attachment_id,
+            transaction_id, attachment_id,
         )
         # Returnera transaction_id som "attachment_id" — det är ID:t som
         # lagras i ProcessedMessage.bezala_transaction_id och används för

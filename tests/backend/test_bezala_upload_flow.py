@@ -69,24 +69,26 @@ class UploadReceiptTest(unittest.TestCase):
     """BezalaClient.upload_receipt — single-step multipart med metadata."""
 
     def test_two_step_flow_happy_path(self):
-        """Verifiera att upload_receipt gör TVÅ anrop i ordning:
-          1. POST /transactions med metadata som JSON
-          2. POST /attachments med file + transaction_id som multipart."""
+        """Nya flödet (draft-first): upload_receipt gör TVÅ anrop:
+          1. POST /attachments (multipart file + draft=1) → får tx_id
+          2. PUT /transactions/{tx_id} med metadata-JSON."""
         calls: list = []
 
         client = _make_client()
 
-        tx_resp = MagicMock()
-        tx_resp.status_code = 200
-        tx_resp.headers = {"content-type": "application/json"}
-        tx_resp.text = '{"id": "tx-42"}'
-        tx_resp.json = MagicMock(return_value={"id": "tx-42"})
+        draft_resp = MagicMock()
+        draft_resp.status_code = 201
+        draft_resp.headers = {"content-type": "application/json"}
+        draft_resp.text = '{"id": 1091, "transaction_id": 2804}'
+        draft_resp.json = MagicMock(
+            return_value={"id": 1091, "transaction_id": 2804},
+        )
 
-        att_resp = MagicMock()
-        att_resp.status_code = 200
-        att_resp.headers = {"content-type": "application/json"}
-        att_resp.text = '{"id": "att-99"}'
-        att_resp.json = MagicMock(return_value={"id": "att-99"})
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"id": 2804}'
+        put_resp.json = MagicMock(return_value={"id": 2804})
 
         def fake_request(method, url, **kwargs):
             calls.append({
@@ -95,7 +97,13 @@ class UploadReceiptTest(unittest.TestCase):
                 "files": kwargs.get("files"),
                 "data": kwargs.get("data"),
             })
-            return tx_resp if url.endswith("/transactions") else att_resp
+            # POST /attachments → draft_resp
+            # PUT /transactions/{id} → put_resp
+            if method == "POST" and url.endswith("/attachments"):
+                return draft_resp
+            if method == "PUT" and "/transactions/" in url:
+                return put_resp
+            return draft_resp
 
         client._client.request = fake_request
 
@@ -115,20 +123,30 @@ class UploadReceiptTest(unittest.TestCase):
             }],
         )
 
-        # Två anrop: först /transactions, sedan /attachments
         self.assertEqual(len(calls), 2)
 
+        # Steg 1: POST /attachments med file + draft=1
         step1 = calls[0]
         self.assertEqual(step1["method"], "POST")
-        self.assertTrue(step1["url"].endswith("/transactions"))
-        self.assertIsNone(step1["files"])
-        # Rails-nested: allt under "transaction"-wrappern.
-        wrapped = step1["json"]
+        self.assertTrue(step1["url"].endswith("/attachments"))
+        self.assertIsNone(step1["json"])
+        self.assertIn("file", step1["files"])
+        fname, bytes_, mime = step1["files"]["file"]
+        self.assertEqual(fname, "20260422 Finnair.pdf")
+        self.assertEqual(bytes_, PDF_BYTES)
+        self.assertEqual(mime, "application/pdf")
+        self.assertEqual(step1["data"], {"draft": "1"})
+
+        # Steg 2: PUT /transactions/{tx_id} med metadata
+        step2 = calls[1]
+        self.assertEqual(step2["method"], "PUT")
+        self.assertTrue(step2["url"].endswith("/transactions/2804"))
+        self.assertIsNone(step2["files"])
+        wrapped = step2["json"]
         self.assertIn("transaction", wrapped)
         body = wrapped["transaction"]
         self.assertEqual(body["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(body["date"], "2026-04-22")
-        # Nya Bezala-fältnamn: credit_account_id + vat_lines_attributes
         self.assertEqual(body["credit_account_id"], 67100)
         self.assertEqual(body["vat_lines_attributes"], [{
             "taxable": "503.00",
@@ -138,27 +156,9 @@ class UploadReceiptTest(unittest.TestCase):
             "cost_center_ids": [927151],
             "vat_code_id": 1355,
         }])
-        # amount/currency/vendor får INTE finnas top-level längre
-        self.assertNotIn("amount", body)
-        self.assertNotIn("currency", body)
-        self.assertNotIn("vendor", body)
-        self.assertNotIn("cost_center_id", body)
-        self.assertNotIn("account_id", body)
-        self.assertNotIn("vat_lines", body)
-
-        step2 = calls[1]
-        self.assertEqual(step2["method"], "POST")
-        self.assertTrue(step2["url"].endswith("/attachments"))
-        self.assertIsNone(step2["json"])
-        self.assertIn("file", step2["files"])
-        fname, bytes_, mime = step2["files"]["file"]
-        self.assertEqual(fname, "20260422 Finnair.pdf")
-        self.assertEqual(bytes_, PDF_BYTES)
-        self.assertEqual(mime, "application/pdf")
-        self.assertEqual(step2["data"], {"transaction_id": "tx-42"})
 
         # Returnerat attachment_id = transaction_id (används för deep-link)
-        self.assertEqual(result.attachment_id, "tx-42")
+        self.assertEqual(result.attachment_id, "2804")
 
     def test_rejects_missing_description(self):
         from app.services.bezala_client import BezalaError
@@ -198,16 +198,19 @@ class UploadReceiptTest(unittest.TestCase):
             )
         self.assertIn("pdf", str(ctx.exception).lower())
 
-    def test_attach_file_sends_file_plus_transaction_id(self):
-        """attach_file skickar file som multipart + transaction_id i data."""
+    def test_upload_file_as_draft_returns_attachment_and_transaction_ids(self):
+        """POST /attachments med draft=1 → returnerar både attachment_id
+        och transaction_id från Bezala-svaret."""
         captured = {}
 
         client = _make_client()
         resp = MagicMock()
-        resp.status_code = 200
+        resp.status_code = 201
         resp.headers = {"content-type": "application/json"}
-        resp.text = '{"id": "att-1"}'
-        resp.json = MagicMock(return_value={"id": "att-1"})
+        resp.text = '{"id": 1091, "transaction_id": 2804}'
+        resp.json = MagicMock(
+            return_value={"id": 1091, "transaction_id": 2804},
+        )
 
         def fake_request(method, url, **kwargs):
             captured["method"] = method
@@ -218,39 +221,46 @@ class UploadReceiptTest(unittest.TestCase):
 
         client._client.request = fake_request
 
-        result = client.attach_file("tx-77", "kvitto.pdf", PDF_BYTES)
-        self.assertEqual(result.attachment_id, "att-1")
+        attachment_id, transaction_id = client.upload_file_as_draft(
+            PDF_BYTES, "kvitto.pdf",
+        )
+        self.assertEqual(attachment_id, "1091")
+        self.assertEqual(transaction_id, "2804")
         self.assertEqual(captured["method"], "POST")
         self.assertTrue(captured["url"].endswith("/attachments"))
-        self.assertEqual(captured["data"], {"transaction_id": "tx-77"})
+        self.assertEqual(captured["data"], {"draft": "1"})
+        self.assertIn("file", captured["files"])
         fname, bytes_, mime = captured["files"]["file"]
         self.assertEqual(fname, "kvitto.pdf")
         self.assertEqual(bytes_, PDF_BYTES)
         self.assertEqual(mime, "application/pdf")
 
-    def test_attach_file_failure_after_tx_creation_logs_orphan(self):
-        """Steg 2 misslyckas → transaction_id ska loggas som ORPHAN +
-        BezalaError propageras med info om vilken tx som måste städas."""
+    def test_put_transaction_failure_logs_orphan(self):
+        """Nya flödet: steg 1 (POST /attachments draft) lyckas men
+        steg 2 (PUT /transactions/{id}) 500:ar → ORPHAN-log med tx_id
+        så användaren kan städa manuellt."""
         from app.services.bezala_client import BezalaError
 
         client = _make_client()
 
-        tx_resp = MagicMock()
-        tx_resp.status_code = 200
-        tx_resp.headers = {"content-type": "application/json"}
-        tx_resp.text = '{"id": "tx-orphan-1"}'
-        tx_resp.json = MagicMock(return_value={"id": "tx-orphan-1"})
+        draft_resp = MagicMock()
+        draft_resp.status_code = 201
+        draft_resp.headers = {"content-type": "application/json"}
+        draft_resp.text = '{"id": 1091, "transaction_id": "tx-orphan-1"}'
+        draft_resp.json = MagicMock(return_value={
+            "id": 1091, "transaction_id": "tx-orphan-1",
+        })
 
-        att_resp = MagicMock()
-        att_resp.status_code = 500
-        att_resp.headers = {"content-type": "application/json"}
-        att_resp.text = '{"error": "internal"}'
-        att_resp.json = MagicMock(return_value={"error": "internal"})
+        put_resp = MagicMock()
+        put_resp.status_code = 500
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"error": "internal"}'
+        put_resp.json = MagicMock(return_value={"error": "internal"})
 
         def fake_request(method, url, **kwargs):
-            if url.endswith("/transactions"):
-                return tx_resp
-            return att_resp
+            if method == "POST" and url.endswith("/attachments"):
+                return draft_resp
+            return put_resp
 
         client._client.request = fake_request
 
@@ -377,8 +387,11 @@ class PipelineAutoUploadTest(unittest.TestCase):
         self.assertIsNone(err)
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["credit_account_id"], 67100)
-        # Ny vat_lines_attributes-struktur från build_receipt_params
+        # credit_account_id = betalningsmetod (kreditkort), default 82320
+        # från BEZALA_CREDIT_ACCOUNT_ID env — inte kategori-kontot.
+        self.assertEqual(kwargs["credit_account_id"], 82320)
+        # expense_account_id i vat_lines_attributes är däremot kategorin
+        # (67100 Matkaliput för Flyg).
         self.assertEqual(kwargs["vat_lines_attributes"], [{
             "taxable": "503.00",
             "tax_percentage": "0.255",
@@ -435,7 +448,8 @@ class PipelineAutoUploadTest(unittest.TestCase):
         # vat_lines_attributes ska vara tom när default_vat_id=None
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
         self.assertEqual(kwargs["vat_lines_attributes"], [])
-        self.assertEqual(kwargs["credit_account_id"], 82612)
+        # credit_account_id = hårdkodad default 82320 (betalningsmetod)
+        self.assertEqual(kwargs["credit_account_id"], 82320)
 
     def test_missing_amount_or_date_returns_pending(self):
         from app.services.pipeline import _attempt_bezala_upload
@@ -585,25 +599,19 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.app_module.app.dependency_overrides.clear()
 
-    def test_test_transaction_hypothesis_endpoint_shape(self):
-        """GET /api/bezala/test-transaction kör A-G test med olika
-        headers/URL/payload/auth-varianter och returnerar diagnostik."""
+    def test_test_transaction_diagnostic_endpoint_shape(self):
+        """GET /api/bezala/test-transaction kör steg 0 (draft-upload) +
+        4 PUT-varianter (A/B/C/D) mot samma draft-tx_id och returnerar
+        diagnostik per steg."""
         import httpx
 
-        post_calls: list = []
-        get_calls: list = []
+        put_calls: list = []
 
         class FakeResponse:
-            def __init__(self, status_code, text, headers=None, json_data=None):
+            def __init__(self, status_code, text, headers=None):
                 self.status_code = status_code
                 self.text = text
                 self.headers = headers or {}
-                self._json = json_data
-            def json(self):
-                if self._json is None:
-                    import json as _json
-                    return _json.loads(self.text)
-                return self._json
 
         class FakeClient:
             def __init__(self, *a, **kw):
@@ -612,45 +620,20 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
                 return self
             def __exit__(self, *a):
                 pass
-
-            def post(self, url, json=None, headers=None):
-                post_calls.append({
+            def put(self, url, json=None, headers=None):
+                put_calls.append({
                     "url": url, "json": json, "headers": dict(headers or {}),
                 })
-                if url.endswith("/auth/token"):
-                    # Simulera Bezala auth-respons
-                    return FakeResponse(
-                        200,
-                        '{"access_token":"new-token-abcdef","token_type":"Bearer",'
-                        '"expires_in":3600,"scope":"read write"}',
-                        {"content-type": "application/json"},
-                        json_data={
-                            "access_token": "new-token-abcdef",
-                            "token_type": "Bearer",
-                            "expires_in": 3600,
-                            "scope": "read write",
-                        },
-                    )
                 return FakeResponse(
-                    500,
-                    '{"error":"Internal Server Error"}',
+                    422,
+                    '{"errors":{"credit_account":["maste finnas"]}}',
                     {"content-type": "application/json", "x-request-id": "req-1"},
-                )
-
-            def get(self, url, headers=None):
-                get_calls.append({"url": url, "headers": dict(headers or {})})
-                return FakeResponse(
-                    200,
-                    '[]',
-                    {"content-type": "application/json"},
-                    json_data=[],
                 )
 
         fake_bezala = MagicMock()
         fake_bezala._get_token.return_value = "fake-token-xxxxxxxxxxxxxxxxxxxxxx"
         fake_bezala._base_url = "https://mock.bezala/api"
-        fake_bezala._email = "user@example.com"
-        fake_bezala._password = "secret123"
+        fake_bezala.upload_file_as_draft.return_value = ("att-1", "tx-draft-42")
 
         with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala), \
              patch.object(httpx, "Client", FakeClient):
@@ -659,52 +642,39 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
 
-        # Alla A-F samt G1-G3 ska vara körda
+        self.assertEqual(body["step0_upload_draft"]["status"], 201)
+        self.assertEqual(body["step0_upload_draft"]["transaction_id"], "tx-draft-42")
+
         for name in (
-            "test_a_default_headers",
-            "test_b_with_user_id",
-            "test_c_v1_url",
-            "test_d_accept_headers",
-            "test_e_get_transactions",
-            "test_f_admin_role_header",
-            "test_g1_auth_with_scope_write",
-            "test_g2_auth_with_grant_type_password",
-            "test_g3_auth_baseline",
+            "test_a_baseline_int_header",
+            "test_b_credit_as_string",
+            "test_c_expense_as_string",
+            "test_d_token_as_url_param",
         ):
             self.assertIn(name, body)
+            self.assertEqual(body[name]["method"], "PUT")
+            self.assertIn("tx-draft-42", body[name]["url"])
 
-        # Test E ska vara en GET, inte POST
-        self.assertEqual(body["test_e_get_transactions"]["method"], "GET")
-        self.assertEqual(body["test_e_get_transactions"]["status"], 200)
+        self.assertEqual(len(put_calls), 4)
 
-        # Test F ska ha X-Bezala-Role: admin
-        self.assertEqual(
-            body["test_f_admin_role_header"]["sent_headers"]["X-Bezala-Role"], "admin"
-        )
-
-        # Test G ska hit auth-endpointen med olika body-keys
-        self.assertIn("scope", body["test_g1_auth_with_scope_write"]["sent_body_keys"])
-        self.assertIn(
-            "grant_type",
-            body["test_g2_auth_with_grant_type_password"]["sent_body_keys"],
-        )
-
-        # Auth-responsen ska vara parsad som dict — scope/expires_in synliga,
-        # access_token maskerad
-        g1_body = body["test_g1_auth_with_scope_write"]["body"]
-        self.assertEqual(g1_body["scope"], "read write")
-        self.assertEqual(g1_body["expires_in"], 3600)
-        self.assertIn("maskerad", g1_body["access_token"])
-
-        # Test B ska ha user_id i transaction-payload
-        user_id_calls = [
-            c for c in post_calls
-            if (c["json"] or {}).get("transaction", {}).get("user_id") == 58106
+        b_calls = [
+            c for c in put_calls
+            if c["json"]["transaction"]["credit_account_id"] == "67100"
+            and c["json"]["transaction"]["vat_lines_attributes"][0]["expense_account_id"] == 67100
         ]
-        self.assertEqual(len(user_id_calls), 1)
+        self.assertEqual(len(b_calls), 1)
 
-        # Test C ska använda /v1/ i URL:en
-        self.assertIn("/v1/transactions", body["test_c_v1_url"]["url"])
+        c_calls = [
+            c for c in put_calls
+            if c["json"]["transaction"]["credit_account_id"] == "67100"
+            and c["json"]["transaction"]["vat_lines_attributes"][0]["expense_account_id"] == "67100"
+        ]
+        self.assertEqual(len(c_calls), 1)
+
+        d_calls = [c for c in put_calls if "?token=" in c["url"]]
+        self.assertEqual(len(d_calls), 1)
+        self.assertIsNone(d_calls[0]["headers"].get("Authorization"))
+        self.assertIn("maskerad", body["test_d_token_as_url_param"]["url"])
 
     def test_metadata_returns_rows_from_all_three(self):
         fake_bezala = MagicMock()
@@ -871,7 +841,8 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
 
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["credit_account_id"], 67100)
+        # credit_account_id = betalningsmetod (82320 default)
+        self.assertEqual(kwargs["credit_account_id"], 82320)
         self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(kwargs["date"], "2026-04-22")
         self.assertEqual(kwargs["vat_lines_attributes"], [{
@@ -919,8 +890,10 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        # Inget credit_account_id eftersom metadata saknas helt
-        self.assertIsNone(kwargs.get("credit_account_id"))
+        # credit_account_id = betalningsmetod (env-default 82320) — oberoende
+        # av Bezala-metadata eftersom det är kreditkortet, inte kategorin.
+        self.assertEqual(kwargs.get("credit_account_id"), 82320)
+        # vat_lines_attributes är tom när vi saknar account-metadata
         self.assertEqual(kwargs.get("vat_lines_attributes", []), [])
 
     def test_empty_drive_download_returns_502(self):
