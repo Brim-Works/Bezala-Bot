@@ -878,65 +878,109 @@ def _safe_bezala_list(fn, label: str) -> dict:
 
 @app.get("/api/bezala/test-transaction")
 def bezala_test_transaction(_: None = Depends(require_auth)):
-    """Binär-sökning: kör 5 increment-payloads mot /transactions och
-    returnerar status+body per försök. Stoppa vid första 500 → då vet
-    vi vilket fält Bezala kraschar på.
+    """Hypotes-debugging när Test 1 (minimum) redan ger 500.
 
-    OBS: Skapar (om lyckat) upp till 5 dummy-transaktioner i Bezala
-    med beskrivning 'BezalaBot test'. Måste städas manuellt efter."""
+    Kör 4 test parallellt med olika headers / URL / payload och
+    returnerar full diagnostik (sent URL, sent headers, response
+    status, response body, response headers).
+
+    Test A: minimum payload, default headers — baslinje
+    Test B: + user_id i payload (Bezala kan kräva explicit user_id)
+    Test C: mot /api/v1/transactions (ev. versionerad endpoint)
+    Test D: + Accept: application/json + Accept-Language: fi
+
+    OBS: Kan skapa upp till 4 dummy-transaktioner om någon lyckas.
+    Beskrivning 'BezalaBot test (kan raderas)' — städa manuellt."""
+    import httpx
+
     try:
         bezala = BezalaClient()
     except BezalaError as exc:
         raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
 
-    base = {
+    try:
+        token = bezala._get_token()
+    except BezalaError as exc:
+        raise HTTPException(
+            status_code=502, detail=f"Bezala-auth: {exc}"
+        ) from exc
+    base = bezala._base_url  # t.ex. "https://app.bezala.com/api"
+    bezala.close()
+
+    minimum_tx = {
         "description": "BezalaBot test (kan raderas)",
         "date": "2026-04-23",
-        "amount": 100.0,
+        "amount": 1.0,
         "currency": "EUR",
     }
-    test_payloads = [
-        ("test1_minimum", base),
-        ("test2_account", {**base, "account_id": 67100}),
-        ("test3_cost_center", {**base, "account_id": 67100, "cost_center_id": 927151}),
-        ("test4_vat_lines", {
-            **base, "account_id": 67100, "cost_center_id": 927151,
-            "vat_lines": [{"amount": 100.0, "vat_code_id": 1355}],
-        }),
-        ("test5_vendor", {
-            **base, "account_id": 67100, "cost_center_id": 927151,
-            "vat_lines": [{"amount": 100.0, "vat_code_id": 1355}],
-            "vendor": "BezalaBot Test",
-        }),
+    wrapped_minimum = {"transaction": minimum_tx}
+    wrapped_with_user = {"transaction": {**minimum_tx, "user_id": 58106}}
+
+    def _v1_base() -> str:
+        # Försök konstruera /api/v1 från basen. Om base redan slutar på
+        # /api → /api/v1. Annars appenda /v1.
+        if base.endswith("/api"):
+            return base + "/v1"
+        if "/api" in base and not base.endswith("/v1"):
+            return base.replace("/api", "/api/v1", 1)
+        return base + "/v1"
+
+    base_headers = {"Authorization": f"Bearer {token}"}
+    accept_headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+        "Accept-Language": "fi",
+    }
+
+    def _safe_body(resp) -> str:
+        try:
+            return (resp.text or "")[:2000]
+        except Exception:  # noqa: BLE001
+            return "<kunde inte läsa body>"
+
+    def _interesting_response_headers(resp) -> dict:
+        return {
+            k: v for k, v in resp.headers.items()
+            if k.lower() in (
+                "content-type", "x-request-id", "x-correlation-id",
+                "retry-after", "server", "x-runtime",
+            )
+        }
+
+    tests = [
+        ("test_a_default_headers", f"{base}/transactions", base_headers, wrapped_minimum),
+        ("test_b_with_user_id",   f"{base}/transactions", base_headers, wrapped_with_user),
+        ("test_c_v1_url",         f"{_v1_base()}/transactions", base_headers, wrapped_minimum),
+        ("test_d_accept_headers", f"{base}/transactions", accept_headers, wrapped_minimum),
     ]
 
     results: dict = {}
-    try:
-        for name, payload in test_payloads:
+    with httpx.Client(timeout=30.0) as client:
+        for name, url, headers, payload in tests:
+            entry: dict = {
+                "url": url,
+                "sent_headers": {
+                    # Maska bort själva token-värdet; spara prefixet för
+                    # debug så vi ser att auth faktiskt skickades.
+                    k: (v[:20] + "...[maskerad]" if k == "Authorization" else v)
+                    for k, v in headers.items()
+                },
+                "sent_payload_keys": sorted(payload.get("transaction", {}).keys()),
+            }
             try:
-                tx = bezala.create_transaction(**payload)
-                results[name] = {
-                    "status": 200,
-                    "transaction_id": tx.transaction_id,
-                    "payload_keys": sorted(payload.keys()),
-                }
-                logger.info("test-transaction %s → 200 tx_id=%s", name, tx.transaction_id)
-            except BezalaError as exc:
-                results[name] = {
-                    "status": exc.status_code or 500,
-                    "body": (exc.body or "")[:2000],
-                    "payload_keys": sorted(payload.keys()),
-                }
-                logger.warning(
+                resp = client.post(url, json=payload, headers=headers)
+                entry["status"] = resp.status_code
+                entry["body"] = _safe_body(resp)
+                entry["response_headers"] = _interesting_response_headers(resp)
+                logger.info(
                     "test-transaction %s → %s body=%s",
-                    name, exc.status_code, (exc.body or "")[:300],
+                    name, resp.status_code, entry["body"][:300],
                 )
-                # Stoppa vid första fel — fältet som lades till i detta steg
-                # är troligen orsaken.
-                results["stopped_at"] = name
-                break
-    finally:
-        bezala.close()
+            except httpx.HTTPError as exc:
+                entry["status"] = None
+                entry["error"] = f"HTTPError: {exc}"
+                logger.warning("test-transaction %s → %s", name, exc)
+            results[name] = entry
 
     return results
 

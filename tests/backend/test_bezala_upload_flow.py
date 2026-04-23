@@ -565,48 +565,77 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.app_module.app.dependency_overrides.clear()
 
-    def test_test_transaction_endpoint_stops_at_first_failure(self):
-        """GET /api/bezala/test-transaction stoppar vid första 500.
-        Returnerar status+body för varje test så användaren ser vilket
-        fält som orsakar krasch."""
-        from app.services.bezala_client import BezalaError
+    def test_test_transaction_hypothesis_endpoint_shape(self):
+        """GET /api/bezala/test-transaction kör 4 hypothesis-test (A/B/C/D)
+        med olika headers/URL/payload och returnerar full diagnostik."""
+        import httpx
+
+        calls: list = []
+
+        class FakeResponse:
+            def __init__(self, status_code, text, headers=None):
+                self.status_code = status_code
+                self.text = text
+                self.headers = headers or {}
+
+        class FakeClient:
+            def __init__(self, *a, **kw):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                pass
+            def post(self, url, json=None, headers=None):
+                calls.append({"url": url, "json": json, "headers": dict(headers or {})})
+                return FakeResponse(
+                    500,
+                    '{"error":"Internal Server Error"}',
+                    {"content-type": "application/json", "x-request-id": "req-1"},
+                )
 
         fake_bezala = MagicMock()
-        # test1 lyckas, test2 lyckas, test3 kraschar med 500
-        fake_bezala.create_transaction.side_effect = [
-            MagicMock(transaction_id="tx-1"),
-            MagicMock(transaction_id="tx-2"),
-            BezalaError("500", status_code=500, body='{"error":"cost_center invalid"}'),
-        ]
+        fake_bezala._get_token.return_value = "fake-token-xxxxxxxxxxxxxxxxxxxxxx"
+        fake_bezala._base_url = "https://mock.bezala/api"
 
-        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala), \
+             patch.object(httpx, "Client", FakeClient):
             resp = self.client.get("/api/bezala/test-transaction")
 
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
-        self.assertEqual(body["test1_minimum"]["status"], 200)
-        self.assertEqual(body["test2_account"]["status"], 200)
-        self.assertEqual(body["test3_cost_center"]["status"], 500)
-        self.assertIn("cost_center", body["test3_cost_center"]["body"])
-        # Test 4 + 5 ska ALDRIG ha körts (stoppat vid test3)
-        self.assertNotIn("test4_vat_lines", body)
-        self.assertEqual(body["stopped_at"], "test3_cost_center")
+        # Alla 4 tester körda
+        self.assertIn("test_a_default_headers", body)
+        self.assertIn("test_b_with_user_id", body)
+        self.assertIn("test_c_v1_url", body)
+        self.assertIn("test_d_accept_headers", body)
 
-    def test_test_transaction_endpoint_all_pass_runs_all_5(self):
-        fake_bezala = MagicMock()
-        fake_bezala.create_transaction.side_effect = [
-            MagicMock(transaction_id=f"tx-{i}") for i in range(5)
+        # Alla har status + body + url + sent_headers
+        for name in ("test_a_default_headers", "test_b_with_user_id",
+                      "test_c_v1_url", "test_d_accept_headers"):
+            entry = body[name]
+            self.assertIn("status", entry)
+            self.assertIn("url", entry)
+            self.assertIn("sent_headers", entry)
+            # Authorization ska vara maskerad
+            self.assertIn("maskerad", entry["sent_headers"]["Authorization"])
+
+        # Test C ska använda /v1/ i URL:en
+        self.assertIn("/v1/transactions", body["test_c_v1_url"]["url"])
+        # Test D ska ha Accept-headers
+        self.assertEqual(
+            body["test_d_accept_headers"]["sent_headers"]["Accept"],
+            "application/json",
+        )
+        self.assertEqual(
+            body["test_d_accept_headers"]["sent_headers"]["Accept-Language"], "fi",
+        )
+
+        # Test B ska ha user_id i transaction-payload
+        user_id_calls = [
+            c for c in calls
+            if (c["json"] or {}).get("transaction", {}).get("user_id") == 58106
         ]
-
-        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
-            resp = self.client.get("/api/bezala/test-transaction")
-
-        self.assertEqual(resp.status_code, 200, resp.text)
-        body = resp.json()
-        for name in ("test1_minimum", "test2_account", "test3_cost_center",
-                      "test4_vat_lines", "test5_vendor"):
-            self.assertEqual(body[name]["status"], 200)
-        self.assertNotIn("stopped_at", body)
+        self.assertEqual(len(user_id_calls), 1)
 
     def test_metadata_returns_rows_from_all_three(self):
         fake_bezala = MagicMock()
