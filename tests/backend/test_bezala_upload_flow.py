@@ -119,7 +119,10 @@ class UploadReceiptTest(unittest.TestCase):
         self.assertEqual(step1["method"], "POST")
         self.assertTrue(step1["url"].endswith("/transactions"))
         self.assertIsNone(step1["files"])
-        body = step1["json"]
+        # Rails-nested: allt under "transaction"-wrappern.
+        wrapped = step1["json"]
+        self.assertIn("transaction", wrapped)
+        body = wrapped["transaction"]
         self.assertEqual(body["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(body["date"], "2026-04-22")
         self.assertEqual(body["amount"], 503.0)

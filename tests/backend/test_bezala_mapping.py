@@ -595,15 +595,18 @@ class BezalaLoggingTest(unittest.TestCase):
         self.assertTrue(captured["url"].endswith("/transactions"))
 
         payload = captured["json"]
-        self.assertEqual(payload["description"], "Finnair HEL-CPH")
-        self.assertEqual(payload["date"], "2026-04-22")
-        self.assertEqual(payload["amount"], 503.0)
-        self.assertEqual(payload["currency"], "EUR")
-        self.assertEqual(payload["vendor"], "Finnair")
-        self.assertEqual(payload["account_id"], 67100)
-        self.assertEqual(payload["cost_center_id"], 927151)
+        # Rails-nested: allt under "transaction"-nyckeln.
+        self.assertIn("transaction", payload)
+        tx = payload["transaction"]
+        self.assertEqual(tx["description"], "Finnair HEL-CPH")
+        self.assertEqual(tx["date"], "2026-04-22")
+        self.assertEqual(tx["amount"], 503.0)
+        self.assertEqual(tx["currency"], "EUR")
+        self.assertEqual(tx["vendor"], "Finnair")
+        self.assertEqual(tx["account_id"], 67100)
+        self.assertEqual(tx["cost_center_id"], 927151)
         self.assertEqual(
-            payload["vat_lines"],
+            tx["vat_lines"],
             [{"amount": 503.0, "vat_code_id": 1355}],
         )
 
