@@ -565,18 +565,22 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.app_module.app.dependency_overrides.clear()
 
-    def test_test_transaction_endpoint_stops_at_first_failure(self):
-        """GET /api/bezala/test-transaction stoppar vid första 500.
-        Returnerar status+body för varje test så användaren ser vilket
-        fält som orsakar krasch."""
+    def test_test_transaction_endpoint_runs_all_6_even_after_failure(self):
+        """GET /api/bezala/test-transaction stoppar INTE vid första 500 —
+        kör alla 6 så användaren ser full picture."""
         from app.services.bezala_client import BezalaError
 
         fake_bezala = MagicMock()
-        # test1 lyckas, test2 lyckas, test3 kraschar med 500
+        # test1 OK, test2 OK, test3 500 (cost_center fel),
+        # test4 OK (tillsammans med vat_lines fungerar något oväntat),
+        # test5 500 (vendor), test6 500 (vendor)
         fake_bezala.create_transaction.side_effect = [
             MagicMock(transaction_id="tx-1"),
             MagicMock(transaction_id="tx-2"),
-            BezalaError("500", status_code=500, body='{"error":"cost_center invalid"}'),
+            BezalaError("500", status_code=500, body='{"error":"cost_center"}'),
+            MagicMock(transaction_id="tx-4"),
+            BezalaError("500", status_code=500, body='{"error":"vendor"}'),
+            BezalaError("500", status_code=500, body='{"error":"vendor"}'),
         ]
 
         with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
@@ -584,18 +588,20 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
-        self.assertEqual(body["test1_minimum"]["status"], 200)
-        self.assertEqual(body["test2_account"]["status"], 200)
+        # Alla 6 tester körda — inga "stopped_at"
+        self.assertEqual(body["test1_minimum"]["status"], 201)
+        self.assertEqual(body["test2_account"]["status"], 201)
         self.assertEqual(body["test3_cost_center"]["status"], 500)
         self.assertIn("cost_center", body["test3_cost_center"]["body"])
-        # Test 4 + 5 ska ALDRIG ha körts (stoppat vid test3)
-        self.assertNotIn("test4_vat_lines", body)
-        self.assertEqual(body["stopped_at"], "test3_cost_center")
+        self.assertEqual(body["test4_vat_lines"]["status"], 201)
+        self.assertEqual(body["test5_vendor"]["status"], 500)
+        self.assertEqual(body["test6_full"]["status"], 500)
+        self.assertNotIn("stopped_at", body)
 
-    def test_test_transaction_endpoint_all_pass_runs_all_5(self):
+    def test_test_transaction_endpoint_all_pass_runs_all_6(self):
         fake_bezala = MagicMock()
         fake_bezala.create_transaction.side_effect = [
-            MagicMock(transaction_id=f"tx-{i}") for i in range(5)
+            MagicMock(transaction_id=f"tx-{i}") for i in range(6)
         ]
 
         with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
@@ -604,9 +610,11 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
         for name in ("test1_minimum", "test2_account", "test3_cost_center",
-                      "test4_vat_lines", "test5_vendor"):
-            self.assertEqual(body[name]["status"], 200)
-        self.assertNotIn("stopped_at", body)
+                      "test4_vat_lines", "test5_vendor", "test6_full"):
+            self.assertEqual(body[name]["status"], 201)
+        self.assertEqual(body["test1_minimum"]["sent_keys"],
+                          ["amount", "currency", "date", "description"])
+        self.assertIn("account_id", body["test2_account"]["sent_keys"])
 
     def test_metadata_returns_rows_from_all_three(self):
         fake_bezala = MagicMock()

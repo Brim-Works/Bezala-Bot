@@ -878,34 +878,41 @@ def _safe_bezala_list(fn, label: str) -> dict:
 
 @app.get("/api/bezala/test-transaction")
 def bezala_test_transaction(_: None = Depends(require_auth)):
-    """Binär-sökning: kör 5 increment-payloads mot /transactions och
-    returnerar status+body per försök. Stoppa vid första 500 → då vet
-    vi vilket fält Bezala kraschar på.
+    """Binär-sökning: kör 6 increment-payloads mot /transactions och
+    returnerar status+body per försök. Stoppar INTE vid fel — alla 6
+    körs så användaren ser alla status-koder samtidigt.
 
-    OBS: Skapar (om lyckat) upp till 5 dummy-transaktioner i Bezala
-    med beskrivning 'BezalaBot test'. Måste städas manuellt efter."""
+    OBS: Skapar (om lyckat) upp till 6 dummy-transaktioner i Bezala
+    med beskrivning 'BezalaBot test (kan raderas)'. Måste städas manuellt."""
     try:
         bezala = BezalaClient()
     except BezalaError as exc:
         raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
 
-    base = {
+    minimum = {
         "description": "BezalaBot test (kan raderas)",
         "date": "2026-04-23",
-        "amount": 100.0,
+        "amount": 1.0,
         "currency": "EUR",
     }
     test_payloads = [
-        ("test1_minimum", base),
-        ("test2_account", {**base, "account_id": 67100}),
-        ("test3_cost_center", {**base, "account_id": 67100, "cost_center_id": 927151}),
+        ("test1_minimum", minimum),
+        ("test2_account", {**minimum, "account_id": 67100}),
+        ("test3_cost_center", {
+            **minimum, "account_id": 67100, "cost_center_id": 927151,
+        }),
         ("test4_vat_lines", {
-            **base, "account_id": 67100, "cost_center_id": 927151,
-            "vat_lines": [{"amount": 100.0, "vat_code_id": 1355}],
+            **minimum, "account_id": 67100, "cost_center_id": 927151,
+            "vat_lines": [{"amount": 1.0, "vat_code_id": 1355}],
         }),
         ("test5_vendor", {
-            **base, "account_id": 67100, "cost_center_id": 927151,
-            "vat_lines": [{"amount": 100.0, "vat_code_id": 1355}],
+            **minimum, "account_id": 67100, "cost_center_id": 927151,
+            "vat_lines": [{"amount": 1.0, "vat_code_id": 1355}],
+            "vendor": "BezalaBot Test",
+        }),
+        ("test6_full", {
+            **minimum, "account_id": 67100, "cost_center_id": 927151,
+            "vat_lines": [{"amount": 1.0, "vat_code_id": 1355}],
             "vendor": "BezalaBot Test",
         }),
     ]
@@ -913,28 +920,29 @@ def bezala_test_transaction(_: None = Depends(require_auth)):
     results: dict = {}
     try:
         for name, payload in test_payloads:
+            sent_keys = sorted(payload.keys())
             try:
                 tx = bezala.create_transaction(**payload)
                 results[name] = {
-                    "status": 200,
+                    "status": 201,
                     "transaction_id": tx.transaction_id,
-                    "payload_keys": sorted(payload.keys()),
+                    "sent_keys": sent_keys,
                 }
-                logger.info("test-transaction %s → 200 tx_id=%s", name, tx.transaction_id)
+                logger.info(
+                    "test-transaction %s → 201 tx_id=%s",
+                    name, tx.transaction_id,
+                )
             except BezalaError as exc:
                 results[name] = {
                     "status": exc.status_code or 500,
                     "body": (exc.body or "")[:2000],
-                    "payload_keys": sorted(payload.keys()),
+                    "sent_keys": sent_keys,
                 }
                 logger.warning(
                     "test-transaction %s → %s body=%s",
                     name, exc.status_code, (exc.body or "")[:300],
                 )
-                # Stoppa vid första fel — fältet som lades till i detta steg
-                # är troligen orsaken.
-                results["stopped_at"] = name
-                break
+                # Kör vidare — alla 6 tester ska ge data oavsett.
     finally:
         bezala.close()
 
