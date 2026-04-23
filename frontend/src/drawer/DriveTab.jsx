@@ -15,7 +15,7 @@ function Row({ label, children }) {
   );
 }
 
-function DownloadBanner({ message }) {
+function DownloadBanner({ message, onUpdated }) {
   const { t } = useI18n();
   const toast = useToast();
   const { bumpMessagesVersion } = useTrashCountContext();
@@ -26,9 +26,16 @@ function DownloadBanner({ message }) {
   async function runFetch() {
     setBusy(true);
     try {
-      await api.fetchPdf(message.id);
+      const updated = await api.fetchPdf(message.id);
       toast.show({ kind: 'ok', message: t.drawer.drive.downloadSuccess });
-      bumpMessagesVersion();
+      // Parent (PipelineDrawer) uppdaterar selectedMessage + refetchar
+      // Dashboard. Behåll bumpMessagesVersion som fallback för de callers
+      // som inte har onUpdated-prop.
+      if (onUpdated) {
+        onUpdated(updated);
+      } else {
+        bumpMessagesVersion();
+      }
     } catch (err) {
       toast.show({
         kind: 'err',
@@ -69,7 +76,7 @@ function DownloadBanner({ message }) {
   );
 }
 
-export default function DriveTab({ message }) {
+export default function DriveTab({ message, onUpdated }) {
   const { t, lang } = useI18n();
   const [iframeError, setIframeError] = useState(false);
   if (!message) return null;
@@ -86,7 +93,7 @@ export default function DriveTab({ message }) {
   if (needsDownload) {
     return (
       <div className="drawer-section" data-testid="drawer-tab-drive-content">
-        <DownloadBanner message={message} />
+        <DownloadBanner message={message} onUpdated={onUpdated} />
       </div>
     );
   }

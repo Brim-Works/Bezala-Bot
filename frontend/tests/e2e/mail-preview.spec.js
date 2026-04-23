@@ -85,6 +85,32 @@ test('Gate 5 — klick på detekterad länk → confirm → POST + success-toast
   ).toBeVisible();
 });
 
+test('Gate 5 — fetch success → switch till Drive-flik + preview-iframe visas', async ({
+  page,
+}) => {
+  const pending = buildPendingDownloadMessage();
+  await setupApiMocks(page, { messages: [...buildMessages(), pending] });
+
+  page.on('dialog', (dialog) => dialog.accept());
+
+  await page.goto('/');
+  await page.locator(`tr[data-row-id="${pending.id}"]`).click();
+  await page.getByTestId('show-mail-preview').click();
+  await page
+    .getByTestId('mail-preview-link-https://arlandaexpress.se/r/abc')
+    .click();
+
+  // Efter success: drawern ska automatiskt byta till Drive-fliken
+  await expect(page.getByTestId('drawer-tab-drive')).toHaveAttribute(
+    'aria-selected',
+    'true',
+  );
+  // Drive-tabben ska visa preview-iframen (inte längre "Kvittot ligger
+  // bakom en länk"-bannern)
+  await expect(page.getByTestId('drawer-drive-iframe')).toBeVisible();
+  await expect(page.getByTestId('download-banner')).toHaveCount(0);
+});
+
 test('Gate 5 — fetch-pdf-from-url 422 → error-toast', async ({ page }) => {
   const pending = buildPendingDownloadMessage();
   await setupApiMocks(page, {
