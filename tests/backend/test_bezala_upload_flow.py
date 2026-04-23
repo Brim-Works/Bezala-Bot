@@ -104,12 +104,15 @@ class UploadReceiptTest(unittest.TestCase):
             pdf_bytes=PDF_BYTES,
             description="20260422 Finnair HEL-CPH",
             date="2026-04-22",
-            amount=503.0,
-            currency="EUR",
-            vat_lines=[{"amount": 503.0, "vat_code_id": 11}],
-            account_id=101,
-            cost_center_id=77,
-            vendor="Finnair",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "503.00",
+                "tax_percentage": "0.255",
+                "currency": "EUR",
+                "expense_account_id": 67100,
+                "cost_center_ids": [927151],
+                "vat_code_id": 1355,
+            }],
         )
 
         # Två anrop: först /transactions, sedan /attachments
@@ -125,12 +128,23 @@ class UploadReceiptTest(unittest.TestCase):
         body = wrapped["transaction"]
         self.assertEqual(body["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(body["date"], "2026-04-22")
-        self.assertEqual(body["amount"], 503.0)
-        self.assertEqual(body["currency"], "EUR")
-        self.assertEqual(body["account_id"], 101)
-        self.assertEqual(body["cost_center_id"], 77)
-        self.assertEqual(body["vendor"], "Finnair")
-        self.assertEqual(body["vat_lines"], [{"amount": 503.0, "vat_code_id": 11}])
+        # Nya Bezala-fältnamn: credit_account_id + vat_lines_attributes
+        self.assertEqual(body["credit_account_id"], 67100)
+        self.assertEqual(body["vat_lines_attributes"], [{
+            "taxable": "503.00",
+            "tax_percentage": "0.255",
+            "currency": "EUR",
+            "expense_account_id": 67100,
+            "cost_center_ids": [927151],
+            "vat_code_id": 1355,
+        }])
+        # amount/currency/vendor får INTE finnas top-level längre
+        self.assertNotIn("amount", body)
+        self.assertNotIn("currency", body)
+        self.assertNotIn("vendor", body)
+        self.assertNotIn("cost_center_id", body)
+        self.assertNotIn("account_id", body)
+        self.assertNotIn("vat_lines", body)
 
         step2 = calls[1]
         self.assertEqual(step2["method"], "POST")
@@ -156,8 +170,6 @@ class UploadReceiptTest(unittest.TestCase):
                 pdf_bytes=PDF_BYTES,
                 description="",
                 date="2026-04-22",
-                amount=10.0,
-                currency="EUR",
             )
         self.assertIn("description", str(ctx.exception).lower())
 
@@ -171,8 +183,6 @@ class UploadReceiptTest(unittest.TestCase):
                 pdf_bytes=PDF_BYTES,
                 description="x",
                 date="",
-                amount=10.0,
-                currency="EUR",
             )
 
     def test_rejects_invalid_pdf(self):
@@ -185,8 +195,6 @@ class UploadReceiptTest(unittest.TestCase):
                 pdf_bytes=b"not a pdf",
                 description="x",
                 date="2026-04-22",
-                amount=10.0,
-                currency="EUR",
             )
         self.assertIn("pdf", str(ctx.exception).lower())
 
@@ -253,9 +261,12 @@ class UploadReceiptTest(unittest.TestCase):
                     pdf_bytes=PDF_BYTES,
                     description="Test",
                     date="2026-04-22",
-                    amount=10.0,
-                    currency="EUR",
-                    vat_lines=[{"amount": 10, "vat_code_id": 1}],
+                    credit_account_id=67100,
+                    vat_lines_attributes=[{
+                        "taxable": "10.00", "tax_percentage": "0.255",
+                        "currency": "EUR", "expense_account_id": 67100,
+                        "vat_code_id": 1355,
+                    }],
                 )
 
         # Felet ska nämna tx_id i felmeddelandet
@@ -294,9 +305,12 @@ class UploadReceiptTest(unittest.TestCase):
                 pdf_bytes=PDF_BYTES,
                 description="Test",
                 date="2026-04-22",
-                amount=10.0,
-                currency="EUR",
-                vat_lines=[{"amount": 10, "vat_code_id": 1}],
+                credit_account_id=67100,
+                vat_lines_attributes=[{
+                    "taxable": "10.00", "tax_percentage": "0.255",
+                    "currency": "EUR", "expense_account_id": 67100,
+                    "vat_code_id": 1355,
+                }],
             )
         err = ctx.exception
         self.assertEqual(err.status_code, 422)
@@ -363,10 +377,16 @@ class PipelineAutoUploadTest(unittest.TestCase):
         self.assertIsNone(err)
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["account_id"], 67100)
-        self.assertEqual(kwargs["cost_center_id"], 927151)
-        # vat_lines kommer från account.default_vat_id, inte separat vat_rates
-        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 1355}])
+        self.assertEqual(kwargs["credit_account_id"], 67100)
+        # Ny vat_lines_attributes-struktur från build_receipt_params
+        self.assertEqual(kwargs["vat_lines_attributes"], [{
+            "taxable": "503.00",
+            "tax_percentage": "0.255",
+            "currency": "EUR",
+            "expense_account_id": 67100,
+            "cost_center_ids": [927151],
+            "vat_code_id": 1355,
+        }])
         self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(kwargs["date"], "2026-04-22")
 
@@ -412,10 +432,10 @@ class PipelineAutoUploadTest(unittest.TestCase):
         self.assertEqual(txn_id, "r-1")
         self.assertIsNone(err)
         fake_bezala.upload_receipt.assert_called_once()
-        # vat_lines ska vara tom — Bezala väljer själv
+        # vat_lines_attributes ska vara tom när default_vat_id=None
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["vat_lines"], [])
-        self.assertEqual(kwargs["account_id"], 82612)
+        self.assertEqual(kwargs["vat_lines_attributes"], [])
+        self.assertEqual(kwargs["credit_account_id"], 82612)
 
     def test_missing_amount_or_date_returns_pending(self):
         from app.services.pipeline import _attempt_bezala_upload
@@ -851,11 +871,17 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
 
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["account_id"], 67100)
-        self.assertEqual(kwargs["cost_center_id"], 927151)
+        self.assertEqual(kwargs["credit_account_id"], 67100)
         self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
         self.assertEqual(kwargs["date"], "2026-04-22")
-        self.assertEqual(kwargs["vat_lines"], [{"amount": 503.0, "vat_code_id": 1355}])
+        self.assertEqual(kwargs["vat_lines_attributes"], [{
+            "taxable": "503.00",
+            "tax_percentage": "0.255",
+            "currency": "EUR",
+            "expense_account_id": 67100,
+            "cost_center_ids": [927151],
+            "vat_code_id": 1355,
+        }])
 
     def test_missing_date_returns_400(self):
         mid = self._seed(receipt_date=None)
@@ -893,10 +919,9 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        # Inget account_id / cost_center_id eftersom metadata saknas helt
-        self.assertIsNone(kwargs.get("account_id"))
-        self.assertIsNone(kwargs.get("cost_center_id"))
-        self.assertEqual(kwargs["vat_lines"], [])
+        # Inget credit_account_id eftersom metadata saknas helt
+        self.assertIsNone(kwargs.get("credit_account_id"))
+        self.assertEqual(kwargs.get("vat_lines_attributes", []), [])
 
     def test_empty_drive_download_returns_502(self):
         """Om DriveClient.download_pdf levererar tom bytes (eller ogiltig
@@ -980,8 +1005,9 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         fake_bezala.upload_receipt.assert_called_once()
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
-        self.assertEqual(kwargs["amount"], 320.0)
         self.assertEqual(kwargs["date"], "2026-04-21")
+        # amount överfört via vat_lines_attributes.taxable (string)
+        self.assertEqual(kwargs["vat_lines_attributes"][0]["taxable"], "320.00")
         # DB ska ha uppdaterats med överstyrda värden
         with self.SessionLocal() as db:
             row = db.query(self.ProcessedMessage).filter_by(id=mid).first()

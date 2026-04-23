@@ -1195,12 +1195,8 @@ def upload_message_to_bezala(
             pdf_bytes=pdf_bytes,
             description=params["description"],
             date=params["date"],
-            amount=params["amount"],
-            currency=params["currency"],
-            vat_lines=params["vat_lines"],
-            account_id=params.get("account_id"),
-            cost_center_id=params.get("cost_center_id"),
-            vendor=params.get("vendor"),
+            credit_account_id=params.get("credit_account_id"),
+            vat_lines_attributes=params.get("vat_lines_attributes", []),
         )
         row.bezala_transaction_id = receipt.attachment_id
         row.bezala_upload_status = "success"

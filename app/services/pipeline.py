@@ -305,12 +305,8 @@ def _attempt_bezala_upload(
             pdf_bytes=pdf_bytes,
             description=params["description"],
             date=params["date"],
-            amount=params["amount"],
-            currency=params["currency"],
-            vat_lines=params["vat_lines"],
-            account_id=params.get("account_id"),
-            cost_center_id=params.get("cost_center_id"),
-            vendor=params.get("vendor"),
+            credit_account_id=params.get("credit_account_id"),
+            vat_lines_attributes=params.get("vat_lines_attributes", []),
         )
         return "success", receipt.attachment_id, None
     except BezalaError as exc:
