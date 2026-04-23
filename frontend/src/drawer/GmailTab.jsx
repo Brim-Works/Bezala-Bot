@@ -77,7 +77,7 @@ function MailPreview({ body, onFetchUrl, fetchingUrl }) {
   );
 }
 
-export default function GmailTab({ message, onUpdated }) {
+export default function GmailTab({ message, onUpdated, onTabChange }) {
   const { t, lang } = useI18n();
   const toast = useToast();
   const [body, setBody] = useState(null);
@@ -120,7 +120,10 @@ export default function GmailTab({ message, onUpdated }) {
       try {
         const updated = await api.fetchPdfFromUrl(message.id, link.href);
         toast.show({ kind: 'ok', message: t.drawer.gmail.fetchSuccess });
+        // Uppdatera drawer + Dashboard-listan
         onUpdated?.(updated);
+        // Switcha till Drive-fliken så användaren ser previewan direkt
+        onTabChange?.('drive');
       } catch (err) {
         const detail = err instanceof ApiError ? err.message : String(err);
         toast.show({

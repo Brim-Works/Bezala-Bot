@@ -10,6 +10,7 @@ import { IconMail, IconTrash } from '../icons/index.jsx';
 import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
 import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 import DeleteReasonDialog from '../components/trash/DeleteReasonDialog.jsx';
+import { withStatuses } from '../api/adapters.js';
 
 function stepStatusMap(message) {
   if (!message) return {};
@@ -35,10 +36,26 @@ function stepStatusMap(message) {
  * React:s default-beteende). */
 export default function PipelineDrawer({ onRefetch }) {
   const { t } = useI18n();
-  const { selectedMessage, activeTab, isOpen, setTab, closeDrawer, closeIfFor } =
-    useDrawer();
+  const {
+    selectedMessage,
+    activeTab,
+    isOpen,
+    setTab,
+    closeDrawer,
+    closeIfFor,
+    selectMessage,
+  } = useDrawer();
   const { bump: bumpTrashCount, bumpMessagesVersion } = useTrashCountContext();
   const closeBtnRef = useRef(null);
+
+  // Gemensam handler: när en tab uppdaterar raden (t.ex. fetch-pdf-from-url
+  // lyckas) → uppdatera drawer-state + refresha Dashboard-listan.
+  const onMessageUpdated = (updated) => {
+    if (!updated) return;
+    selectMessage(withStatuses(updated));
+    bumpMessagesVersion();
+    onRefetch?.();
+  };
 
   const deleteFlow = useDeleteFlow({
     refetch: () => {
@@ -142,9 +159,20 @@ export default function PipelineDrawer({ onRefetch }) {
         <DrawerTabs active={activeTab} onChange={setTab} statusMap={statusMap} />
 
         <div className="drawer__body">
-          {activeTab === 'gmail' ? <GmailTab message={selectedMessage} /> : null}
+          {activeTab === 'gmail' ? (
+            <GmailTab
+              message={selectedMessage}
+              onUpdated={onMessageUpdated}
+              onTabChange={setTab}
+            />
+          ) : null}
           {activeTab === 'ai' ? <AiTab message={selectedMessage} /> : null}
-          {activeTab === 'drive' ? <DriveTab message={selectedMessage} /> : null}
+          {activeTab === 'drive' ? (
+            <DriveTab
+              message={selectedMessage}
+              onUpdated={onMessageUpdated}
+            />
+          ) : null}
           {activeTab === 'bezala' ? (
             <BezalaTab
               message={selectedMessage}
