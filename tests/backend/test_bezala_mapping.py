@@ -530,8 +530,7 @@ class BezalaLoggingTest(unittest.TestCase):
             self.assertNotIn("ERROR", line)
 
     def test_create_transaction_422_bubbles_full_body(self):
-        """Vid 422 ska BezalaError.body innehålla hela response.text
-        (inte trunkerat till 500 tecken som tidigare)."""
+        """Vid 422 ska BezalaError.body innehålla hela response.text."""
         from app.services.bezala_client import BezalaError
 
         client = _make_client()
@@ -548,13 +547,11 @@ class BezalaLoggingTest(unittest.TestCase):
 
         with self.assertRaises(BezalaError) as ctx:
             client.create_transaction(
-                attachment_ids=["a1"],
-                vendor="X",
-                amount=10,
-                currency="EUR",
-                date="2026-04-22",
-                category="Flyg",
                 description="Test",
+                date="2026-04-22",
+                amount=10.0,
+                currency="EUR",
+                vendor="X",
             )
         err = ctx.exception
         self.assertEqual(err.status_code, 422)
@@ -562,16 +559,18 @@ class BezalaLoggingTest(unittest.TestCase):
         self.assertGreater(len(err.body), 700)
         self.assertIn("xxxx", err.body)
 
-    def test_create_transaction_includes_extra_fields_in_payload(self):
-        """extra_fields (Gate 0-groundwork) ska lagras in i JSON-payload."""
+    def test_create_transaction_sends_json_body_with_mapped_fields(self):
+        """Nya two-step-flödet: create_transaction POSTar JSON till
+        /transactions med description/date/amount/account_id/cost_center_id/
+        vat_lines som första-klass fält (ingen attachment[]-wrapper)."""
         captured = {}
 
         client = _make_client()
         resp = MagicMock()
         resp.status_code = 200
         resp.headers = {"content-type": "application/json"}
-        resp.text = '{"id": "txn-42"}'
-        resp.json = MagicMock(return_value={"id": "txn-42"})
+        resp.text = '{"id": "tx-42"}'
+        resp.json = MagicMock(return_value={"id": "tx-42"})
 
         def fake_request(method, url, **kwargs):
             captured["method"] = method
@@ -581,24 +580,32 @@ class BezalaLoggingTest(unittest.TestCase):
 
         client._client.request = fake_request
 
-        client.create_transaction(
-            attachment_ids=["a1"],
-            vendor="Finnair",
+        result = client.create_transaction(
+            description="Finnair HEL-CPH",
+            date="2026-04-22",
             amount=503.0,
             currency="EUR",
-            date="2026-04-22",
-            category="Flyg",
-            description="Finnair HEL-CPH",
-            extra_fields={"account_id": 101, "cost_center_id": 77, "vat_rate_id": 11, "purchase_date": "2026-04-22"},
+            vendor="Finnair",
+            account_id=67100,
+            cost_center_id=927151,
+            vat_lines=[{"amount": 503.0, "vat_code_id": 1355}],
         )
+        self.assertEqual(result.transaction_id, "tx-42")
+        self.assertEqual(captured["method"], "POST")
+        self.assertTrue(captured["url"].endswith("/transactions"))
+
         payload = captured["json"]
-        self.assertEqual(payload["account_id"], 101)
-        self.assertEqual(payload["cost_center_id"], 77)
-        self.assertEqual(payload["vat_rate_id"], 11)
-        self.assertEqual(payload["purchase_date"], "2026-04-22")
-        # Gamla fält ska fortfarande finnas
-        self.assertEqual(payload["attachment_ids"], ["a1"])
+        self.assertEqual(payload["description"], "Finnair HEL-CPH")
+        self.assertEqual(payload["date"], "2026-04-22")
         self.assertEqual(payload["amount"], 503.0)
+        self.assertEqual(payload["currency"], "EUR")
+        self.assertEqual(payload["vendor"], "Finnair")
+        self.assertEqual(payload["account_id"], 67100)
+        self.assertEqual(payload["cost_center_id"], 927151)
+        self.assertEqual(
+            payload["vat_lines"],
+            [{"amount": 503.0, "vat_code_id": 1355}],
+        )
 
 
 class BezalaMetadataEndpointsTest(unittest.TestCase):

@@ -68,28 +68,38 @@ def _make_client():
 class UploadReceiptTest(unittest.TestCase):
     """BezalaClient.upload_receipt — single-step multipart med metadata."""
 
-    def test_happy_path_sends_all_fields(self):
-        """Verifiera att file + description + date + amount + vat_lines
-        + account_id + cost_center_id går ut i samma request."""
-        captured: dict = {}
+    def test_two_step_flow_happy_path(self):
+        """Verifiera att upload_receipt gör TVÅ anrop i ordning:
+          1. POST /transactions med metadata som JSON
+          2. POST /attachments med file + transaction_id som multipart."""
+        calls: list = []
 
         client = _make_client()
-        resp = MagicMock()
-        resp.status_code = 200
-        resp.headers = {"content-type": "application/json"}
-        resp.text = '{"id": "receipt-42"}'
-        resp.json = MagicMock(return_value={"id": "receipt-42"})
+
+        tx_resp = MagicMock()
+        tx_resp.status_code = 200
+        tx_resp.headers = {"content-type": "application/json"}
+        tx_resp.text = '{"id": "tx-42"}'
+        tx_resp.json = MagicMock(return_value={"id": "tx-42"})
+
+        att_resp = MagicMock()
+        att_resp.status_code = 200
+        att_resp.headers = {"content-type": "application/json"}
+        att_resp.text = '{"id": "att-99"}'
+        att_resp.json = MagicMock(return_value={"id": "att-99"})
 
         def fake_request(method, url, **kwargs):
-            captured["method"] = method
-            captured["url"] = url
-            captured["files"] = kwargs.get("files")
-            captured["data"] = kwargs.get("data")
-            return resp
+            calls.append({
+                "method": method, "url": url,
+                "json": kwargs.get("json"),
+                "files": kwargs.get("files"),
+                "data": kwargs.get("data"),
+            })
+            return tx_resp if url.endswith("/transactions") else att_resp
 
         client._client.request = fake_request
 
-        receipt = client.upload_receipt(
+        result = client.upload_receipt(
             filename="20260422 Finnair.pdf",
             pdf_bytes=PDF_BYTES,
             description="20260422 Finnair HEL-CPH",
@@ -102,37 +112,36 @@ class UploadReceiptTest(unittest.TestCase):
             vendor="Finnair",
         )
 
-        self.assertEqual(receipt.attachment_id, "receipt-42")
-        self.assertEqual(captured["method"], "POST")
-        self.assertTrue(captured["url"].endswith("/attachments"))
+        # Två anrop: först /transactions, sedan /attachments
+        self.assertEqual(len(calls), 2)
 
-        # Alternativ A: platta fältnamn (default FIELD_NAMING=flat).
-        # Metadata top-level tillsammans med filen — Rails kan tolka
-        # både platt och nested, och live-test visar att platt funkar.
-        data = captured["data"]
-        self.assertEqual(data["description"], "20260422 Finnair HEL-CPH")
-        self.assertEqual(data["date"], "2026-04-22")
-        self.assertEqual(data["amount"], "503.0")
-        self.assertEqual(data["currency"], "EUR")
-        self.assertEqual(data["account_id"], "101")
-        self.assertEqual(data["cost_center_id"], "77")
-        self.assertEqual(data["vendor"], "Finnair")
-        # vat_lines som JSON-sträng med stringifierade numeriska värden.
-        self.assertIsInstance(data["vat_lines"], str)
-        self.assertEqual(
-            json.loads(data["vat_lines"]),
-            [{"amount": "503.0", "vat_code_id": "11"}],
-        )
+        step1 = calls[0]
+        self.assertEqual(step1["method"], "POST")
+        self.assertTrue(step1["url"].endswith("/transactions"))
+        self.assertIsNone(step1["files"])
+        body = step1["json"]
+        self.assertEqual(body["description"], "20260422 Finnair HEL-CPH")
+        self.assertEqual(body["date"], "2026-04-22")
+        self.assertEqual(body["amount"], 503.0)
+        self.assertEqual(body["currency"], "EUR")
+        self.assertEqual(body["account_id"], 101)
+        self.assertEqual(body["cost_center_id"], 77)
+        self.assertEqual(body["vendor"], "Finnair")
+        self.assertEqual(body["vat_lines"], [{"amount": 503.0, "vat_code_id": 11}])
 
-        # Filen skickas som top-level "file" (se FILE_FIELD_NAME).
-        # Bezala-controllern läser params[:file].tempfile — nested
-        # attachment[file] gav "undefined method tempfile for nil" i prod.
-        files = captured["files"]
-        self.assertIn("file", files)
-        fname, bytes_, mime = files["file"]
+        step2 = calls[1]
+        self.assertEqual(step2["method"], "POST")
+        self.assertTrue(step2["url"].endswith("/attachments"))
+        self.assertIsNone(step2["json"])
+        self.assertIn("file", step2["files"])
+        fname, bytes_, mime = step2["files"]["file"]
         self.assertEqual(fname, "20260422 Finnair.pdf")
         self.assertEqual(bytes_, PDF_BYTES)
         self.assertEqual(mime, "application/pdf")
+        self.assertEqual(step2["data"], {"transaction_id": "tx-42"})
+
+        # Returnerat attachment_id = transaction_id (används för deep-link)
+        self.assertEqual(result.attachment_id, "tx-42")
 
     def test_rejects_missing_description(self):
         from app.services.bezala_client import BezalaError
@@ -178,108 +187,84 @@ class UploadReceiptTest(unittest.TestCase):
             )
         self.assertIn("pdf", str(ctx.exception).lower())
 
-    def test_default_flat_metadata_file_top_level(self):
-        """Default FIELD_NAMING=flat → metadata utan attachment[]-prefix,
-        filen top-level 'file'. (Alternativ A från live-analys.)"""
+    def test_attach_file_sends_file_plus_transaction_id(self):
+        """attach_file skickar file som multipart + transaction_id i data."""
         captured = {}
 
         client = _make_client()
         resp = MagicMock()
         resp.status_code = 200
         resp.headers = {"content-type": "application/json"}
-        resp.text = '{"id": "r-1"}'
-        resp.json = MagicMock(return_value={"id": "r-1"})
+        resp.text = '{"id": "att-1"}'
+        resp.json = MagicMock(return_value={"id": "att-1"})
 
         def fake_request(method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
             captured["files"] = kwargs.get("files")
             captured["data"] = kwargs.get("data")
             return resp
 
         client._client.request = fake_request
 
-        client.upload_receipt(
-            filename="x.pdf",
-            pdf_bytes=PDF_BYTES,
-            description="Test",
-            date="2026-04-22",
-            amount=100.0,
-            currency="EUR",
-            vat_lines=[{"amount": 100, "vat_code_id": 1}],
-            account_id=1,
-            cost_center_id=2,
-            vendor="V",
-            extra_fields={"supplier_id": "abc"},
-        )
+        result = client.attach_file("tx-77", "kvitto.pdf", PDF_BYTES)
+        self.assertEqual(result.attachment_id, "att-1")
+        self.assertEqual(captured["method"], "POST")
+        self.assertTrue(captured["url"].endswith("/attachments"))
+        self.assertEqual(captured["data"], {"transaction_id": "tx-77"})
+        fname, bytes_, mime = captured["files"]["file"]
+        self.assertEqual(fname, "kvitto.pdf")
+        self.assertEqual(bytes_, PDF_BYTES)
+        self.assertEqual(mime, "application/pdf")
 
-        # All metadata top-level (INGEN attachment[...]-prefix)
-        for key in captured["data"].keys():
-            self.assertFalse(
-                key.startswith("attachment["),
-                f"Form-nyckel {key!r} ska inte vara nested i flat-läge",
-            )
-        self.assertIn("description", captured["data"])
-        self.assertIn("supplier_id", captured["data"])
+    def test_attach_file_failure_after_tx_creation_logs_orphan(self):
+        """Steg 2 misslyckas → transaction_id ska loggas som ORPHAN +
+        BezalaError propageras med info om vilken tx som måste städas."""
+        from app.services.bezala_client import BezalaError
 
-        # Filen top-level 'file'
-        self.assertIn("file", captured["files"])
-        self.assertNotIn("attachment[file]", captured["files"])
+        client = _make_client()
 
-    def test_field_key_helper_flat_vs_nested(self):
-        """_field_key(name) följer FIELD_NAMING-modulvariabeln. Undviker
-        importlib.reload som bryter isinstance-checkar i andra tester."""
-        from app.services import bezala_client as bz
+        tx_resp = MagicMock()
+        tx_resp.status_code = 200
+        tx_resp.headers = {"content-type": "application/json"}
+        tx_resp.text = '{"id": "tx-orphan-1"}'
+        tx_resp.json = MagicMock(return_value={"id": "tx-orphan-1"})
 
-        original = bz.FIELD_NAMING
-        try:
-            bz.FIELD_NAMING = "flat"
-            self.assertEqual(bz._field_key("description"), "description")
-            self.assertEqual(bz._field_key("vat_lines"), "vat_lines")
+        att_resp = MagicMock()
+        att_resp.status_code = 500
+        att_resp.headers = {"content-type": "application/json"}
+        att_resp.text = '{"error": "internal"}'
+        att_resp.json = MagicMock(return_value={"error": "internal"})
 
-            bz.FIELD_NAMING = "nested"
-            self.assertEqual(bz._field_key("description"), "attachment[description]")
-            self.assertEqual(bz._field_key("vat_lines"), "attachment[vat_lines]")
-        finally:
-            bz.FIELD_NAMING = original
+        def fake_request(method, url, **kwargs):
+            if url.endswith("/transactions"):
+                return tx_resp
+            return att_resp
 
-    def test_nested_mode_monkeypatched_produces_attachment_keys(self):
-        """Verifiera nested-läget utan att reloada modulen."""
-        from app.services import bezala_client as bz
+        client._client.request = fake_request
 
-        captured = {}
-        original = bz.FIELD_NAMING
-        try:
-            bz.FIELD_NAMING = "nested"
-            client = _make_client()
+        with self.assertLogs("app.services.bezala_client", level="ERROR") as cm:
+            with self.assertRaises(BezalaError) as ctx:
+                client.upload_receipt(
+                    filename="x.pdf",
+                    pdf_bytes=PDF_BYTES,
+                    description="Test",
+                    date="2026-04-22",
+                    amount=10.0,
+                    currency="EUR",
+                    vat_lines=[{"amount": 10, "vat_code_id": 1}],
+                )
 
-            resp = MagicMock()
-            resp.status_code = 200
-            resp.headers = {"content-type": "application/json"}
-            resp.text = '{"id": "r"}'
-            resp.json = MagicMock(return_value={"id": "r"})
+        # Felet ska nämna tx_id i felmeddelandet
+        self.assertIn("tx-orphan-1", str(ctx.exception))
+        # ORPHAN-log ska ha skrivits
+        orphan_logs = [line for line in cm.output if "ORPHAN" in line]
+        self.assertTrue(orphan_logs, f"Saknar ORPHAN-log i: {cm.output}")
+        self.assertIn("tx-orphan-1", orphan_logs[0])
 
-            def fake_request(method, url, **kwargs):
-                captured["data"] = kwargs.get("data")
-                return resp
-
-            client._client.request = fake_request
-
-            client.upload_receipt(
-                filename="x.pdf",
-                pdf_bytes=PDF_BYTES,
-                description="T",
-                date="2026-04-22",
-                amount=10.0,
-                currency="EUR",
-                vat_lines=[{"amount": 10, "vat_code_id": 1}],
-            )
-
-            self.assertIn("attachment[description]", captured["data"])
-            self.assertIn("attachment[vat_lines]", captured["data"])
-        finally:
-            bz.FIELD_NAMING = original
-
-    def test_422_bubbles_full_body(self):
-        """Bezalas 422 → BezalaError.body innehåller hela response.text."""
+    def test_transactions_422_bubbles_full_body(self):
+        """Steg 1 (POST /transactions) 422 → BezalaError.body innehåller
+        hela response.text + /attachments anropas aldrig."""
         from app.services.bezala_client import BezalaError
 
         client = _make_client()
@@ -292,7 +277,10 @@ class UploadReceiptTest(unittest.TestCase):
         )
         resp.json = MagicMock(return_value={})
 
+        call_count = {"n": 0}
+
         def fake_request(method, url, **kwargs):
+            call_count["n"] += 1
             return resp
 
         client._client.request = fake_request
@@ -311,6 +299,8 @@ class UploadReceiptTest(unittest.TestCase):
         self.assertEqual(err.status_code, 422)
         self.assertIn("vat_lines", err.body)
         self.assertIn("account_id", err.body)
+        # Bara steg 1 ska ha anropats — /attachments ska aldrig träffas
+        self.assertEqual(call_count["n"], 1)
 
 
 class PipelineAutoUploadTest(unittest.TestCase):
