@@ -341,11 +341,16 @@ class BezalaClient:
                 if v is not None:
                     payload[k] = v
 
+        # Rails-konvention: params.require(:transaction).permit(...) kräver
+        # att body:n wrappas i {"transaction": {...}}. Flat JSON gav 500
+        # (NoMethodError i controllern) i live-test.
+        wrapped = {"transaction": payload}
+
         logger.info(
-            "create_transaction: POST /transactions payload_keys=%s",
-            sorted(payload.keys()),
+            "create_transaction: POST /transactions body=%s",
+            json.dumps(wrapped, ensure_ascii=False, default=str),
         )
-        resp = self._request("POST", "/transactions", json=payload)
+        resp = self._request("POST", "/transactions", json=wrapped)
         if resp.status_code >= 400:
             raise BezalaError(
                 f"Bezala create_transaction: {resp.status_code}",
