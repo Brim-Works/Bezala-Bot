@@ -451,6 +451,17 @@ VAT_PERCENTAGE_BY_CODE: dict[int, str] = {
 }
 
 
+# credit_account_id = BETALNINGSMETODEN (kreditkort), inte utgiftskategorin.
+# Rotorsak till 422 'credit_account måste finnas': vi skickade kategori-kontot
+# (67100 Matkaliput) som credit_account, men Bezala förväntade sig ett
+# payment-account (kreditkort). Mikkos kreditkort = 82320.
+# expense_account_id i vat_lines_attributes är däremot utgiftskategorin
+# (Flyg→67100, Hotell→67102, etc.) och kommer från select_account().
+DEFAULT_CREDIT_ACCOUNT_ID = int(
+    os.environ.get("BEZALA_CREDIT_ACCOUNT_ID", "82320")
+)
+
+
 def tax_percentage_for_vat_code(vat_code_id: int | str | None) -> str:
     """Slår upp tax_percentage-sträng från vat_code_id. Default '0.255'
     (FI standard) om okänt — Bezala kommer korrigera via default_vat_id
@@ -580,19 +591,21 @@ def build_receipt_params(
         "currency": currency,
         "vendor": vendor,
         "vat_lines_attributes": vat_lines_attributes,
+        # credit_account_id = betalningsmetod (kreditkort), inte kategori.
+        # Hårdkodad default från env (kan överstyras per användare).
+        "credit_account_id": DEFAULT_CREDIT_ACCOUNT_ID,
     }
-    if account:
-        params["credit_account_id"] = account.get("id") or account.get("account_id")
 
     logger.info(
         "bezala-mapper(receipt): country=%s category=%s → "
-        "credit_account=%s (id=%s default_vat_id=%s) cost_center=%s "
-        "vat_lines_attributes=%d",
+        "expense_account=%s (id=%s default_vat_id=%s) cost_center=%s "
+        "credit_account_id=%s vat_lines_attributes=%d",
         country, category,
         (account or {}).get("name"),
         (account or {}).get("id"),
         (account or {}).get("default_vat_id"),
         (cost_center or {}).get("name"),
+        DEFAULT_CREDIT_ACCOUNT_ID,
         len(vat_lines_attributes),
     )
     return params

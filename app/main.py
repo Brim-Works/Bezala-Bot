@@ -878,19 +878,20 @@ def _safe_bezala_list(fn, label: str) -> dict:
 
 @app.get("/api/bezala/test-transaction")
 def bezala_test_transaction(_: None = Depends(require_auth)):
-    """Hypotes-debugging när Test 1 (minimum) redan ger 500.
+    """Diagnostik för nya two-step-flödet + 4 varianter av PUT-metadata.
 
-    Kör 4 test parallellt med olika headers / URL / payload och
-    returnerar full diagnostik (sent URL, sent headers, response
-    status, response body, response headers).
+    Workflow:
+      Steg 0: POST /attachments (draft=1) → en draft-tx_id
+      Test A: PUT med credit_account_id som INT (baseline)
+      Test B: PUT med credit_account_id som STRING
+      Test C: PUT med expense_account_id som STRING (inuti vat_lines)
+      Test D: PUT med token som URL-param (?token=...) istället för header
 
-    Test A: minimum payload, default headers — baslinje
-    Test B: + user_id i payload (Bezala kan kräva explicit user_id)
-    Test C: mot /api/v1/transactions (ev. versionerad endpoint)
-    Test D: + Accept: application/json + Accept-Language: fi
+    Varje PUT överskriver samma tx (idempotent) → bara EN orphan-draft
+    per endpoint-anrop istället för 4.
 
-    OBS: Kan skapa upp till 4 dummy-transaktioner om någon lyckas.
-    Beskrivning 'BezalaBot test (kan raderas)' — städa manuellt."""
+    OBS: Skapar en dummy-draft i Bezala (beskrivning 'BezalaBot test').
+    Städa manuellt om fler än en finns kvar."""
     import httpx
 
     try:
@@ -901,36 +902,9 @@ def bezala_test_transaction(_: None = Depends(require_auth)):
     try:
         token = bezala._get_token()
     except BezalaError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Bezala-auth: {exc}"
-        ) from exc
-    base = bezala._base_url  # t.ex. "https://app.bezala.com/api"
-    bezala.close()
-
-    minimum_tx = {
-        "description": "BezalaBot test (kan raderas)",
-        "date": "2026-04-23",
-        "amount": 1.0,
-        "currency": "EUR",
-    }
-    wrapped_minimum = {"transaction": minimum_tx}
-    wrapped_with_user = {"transaction": {**minimum_tx, "user_id": 58106}}
-
-    def _v1_base() -> str:
-        # Försök konstruera /api/v1 från basen. Om base redan slutar på
-        # /api → /api/v1. Annars appenda /v1.
-        if base.endswith("/api"):
-            return base + "/v1"
-        if "/api" in base and not base.endswith("/v1"):
-            return base.replace("/api", "/api/v1", 1)
-        return base + "/v1"
-
-    base_headers = {"Authorization": f"Bearer {token}"}
-    accept_headers = {
-        "Authorization": f"Bearer {token}",
-        "Accept": "application/json",
-        "Accept-Language": "fi",
-    }
+        bezala.close()
+        raise HTTPException(status_code=502, detail=f"Bezala-auth: {exc}") from exc
+    base = bezala._base_url
 
     def _safe_body(resp) -> str:
         try:
@@ -938,135 +912,114 @@ def bezala_test_transaction(_: None = Depends(require_auth)):
         except Exception:  # noqa: BLE001
             return "<kunde inte läsa body>"
 
-    def _interesting_response_headers(resp) -> dict:
+    def _resp_headers(resp) -> dict:
         return {
             k: v for k, v in resp.headers.items()
             if k.lower() in (
-                "content-type", "x-request-id", "x-correlation-id",
-                "retry-after", "server", "x-runtime",
+                "content-type", "x-request-id", "x-runtime",
             )
         }
-
-    tests = [
-        ("test_a_default_headers", f"{base}/transactions", base_headers, wrapped_minimum),
-        ("test_b_with_user_id",   f"{base}/transactions", base_headers, wrapped_with_user),
-        ("test_c_v1_url",         f"{_v1_base()}/transactions", base_headers, wrapped_minimum),
-        ("test_d_accept_headers", f"{base}/transactions", accept_headers, wrapped_minimum),
-    ]
 
     results: dict = {}
-    with httpx.Client(timeout=30.0) as client:
-        for name, url, headers, payload in tests:
-            entry: dict = {
-                "method": "POST",
-                "url": url,
-                "sent_headers": _mask_headers(headers),
-                "sent_payload_keys": sorted(payload.get("transaction", {}).keys()),
-            }
-            try:
-                resp = client.post(url, json=payload, headers=headers)
-                entry["status"] = resp.status_code
-                entry["body"] = _safe_body(resp)
-                entry["response_headers"] = _interesting_response_headers(resp)
-                logger.info(
-                    "test-transaction %s → %s body=%s",
-                    name, resp.status_code, entry["body"][:300],
-                )
-            except httpx.HTTPError as exc:
-                entry["status"] = None
-                entry["error"] = f"HTTPError: {exc}"
-                logger.warning("test-transaction %s → %s", name, exc)
-            results[name] = entry
+    try:
+        # Minimalt giltig PDF för draft-upload
+        dummy_pdf = (
+            b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+            b"2 0 obj<</Type/Pages/Kids[]/Count 0>>endobj\n"
+            b"xref\n0 3\n0000000000 65535 f\n"
+            b"0000000009 00000 n\n"
+            b"0000000055 00000 n\n"
+            b"trailer<</Size 3/Root 1 0 R>>\nstartxref\n100\n%%EOF\n"
+        )
 
-        # Test E — GET /transactions (läs-anrop) → verifierar att token
-        # över huvud taget kan användas på denna resurs (read-scope).
-        entry_e: dict = {
-            "method": "GET",
-            "url": f"{base}/transactions",
-            "sent_headers": _mask_headers(base_headers),
-        }
+        # Steg 0 — POST /attachments (draft=1)
+        step0: dict = {"step": "POST /attachments (draft=1)"}
+        transaction_id: str | None = None
         try:
-            resp = client.get(f"{base}/transactions", headers=base_headers)
-            entry_e["status"] = resp.status_code
-            entry_e["body"] = _safe_body(resp)[:500]
-            entry_e["response_headers"] = _interesting_response_headers(resp)
-        except httpx.HTTPError as exc:
-            entry_e["status"] = None
-            entry_e["error"] = f"HTTPError: {exc}"
-        results["test_e_get_transactions"] = entry_e
-
-        # Test F — POST med X-Bezala-Role: admin header
-        role_headers = {**base_headers, "X-Bezala-Role": "admin"}
-        entry_f: dict = {
-            "method": "POST",
-            "url": f"{base}/transactions",
-            "sent_headers": _mask_headers(role_headers),
-            "sent_payload_keys": sorted(minimum_tx.keys()),
-        }
-        try:
-            resp = client.post(
-                f"{base}/transactions", json=wrapped_minimum, headers=role_headers,
+            attachment_id, transaction_id = bezala.upload_file_as_draft(
+                dummy_pdf, "bezalabot-test.pdf",
             )
-            entry_f["status"] = resp.status_code
-            entry_f["body"] = _safe_body(resp)
-            entry_f["response_headers"] = _interesting_response_headers(resp)
-        except httpx.HTTPError as exc:
-            entry_f["status"] = None
-            entry_f["error"] = f"HTTPError: {exc}"
-        results["test_f_admin_role_header"] = entry_f
+            step0["status"] = 201
+            step0["attachment_id"] = attachment_id
+            step0["transaction_id"] = transaction_id
+        except BezalaError as exc:
+            step0["status"] = exc.status_code or 500
+            step0["body"] = (exc.body or "")[:2000]
+        results["step0_upload_draft"] = step0
 
-        # Test G — två auth-varianter för att se om token kan få högre scope
-        email = bezala._email
-        password = bezala._password
+        if not transaction_id:
+            results["tests_skipped"] = (
+                "Steg 0 misslyckades → A/B/C/D körs inte (saknar tx_id)"
+            )
+            return results
 
-        def _auth_attempt(name: str, body: dict) -> dict:
-            entry: dict = {
-                "method": "POST",
-                "url": f"{base}/auth/token",
-                "sent_body_keys": sorted(body.keys()),
+        # Gemensam baseline-body för alla 4 tester — per-test variation
+        # injiceras nedan.
+        def _build_body(*, credit_as_string: bool, expense_as_string: bool) -> dict:
+            credit_val = "67100" if credit_as_string else 67100
+            expense_val = "67100" if expense_as_string else 67100
+            return {
+                "transaction": {
+                    "description": "BezalaBot test (kan raderas)",
+                    "date": "2026-04-23",
+                    "credit_account_id": credit_val,
+                    "vat_lines_attributes": [{
+                        "taxable": "1.00",
+                        "tax_percentage": "0.255",
+                        "currency": "EUR",
+                        "expense_account_id": expense_val,
+                        "cost_center_ids": [927151],
+                        "vat_code_id": 1355,
+                    }],
+                }
             }
-            try:
-                resp = client.post(f"{base}/auth/token", json=body)
-                entry["status"] = resp.status_code
-                # Logga HELA auth-response så vi ser scope/token_type/expires_in
-                # (token-värdet maskeras fortfarande)
-                try:
-                    raw = resp.json()
-                    if isinstance(raw, dict):
-                        # Maska token-värden alltid (oavsett längd) så de
-                        # aldrig läcker i debug-loggar / UI.
-                        token_keys = ("access_token", "token", "refresh_token")
-                        masked = {
-                            k: (
-                                (str(v)[:8] + "...[maskerad]")
-                                if k in token_keys and v else v
-                            )
-                            for k, v in raw.items()
-                        }
-                        entry["body"] = masked
-                    else:
-                        entry["body"] = raw
-                except ValueError:
-                    entry["body"] = _safe_body(resp)
-                entry["response_headers"] = _interesting_response_headers(resp)
-            except httpx.HTTPError as exc:
-                entry["status"] = None
-                entry["error"] = f"HTTPError: {exc}"
-            return entry
 
-        results["test_g1_auth_with_scope_write"] = _auth_attempt(
-            "g1",
-            {"email": email, "password": password, "scope": "write"},
-        )
-        results["test_g2_auth_with_grant_type_password"] = _auth_attempt(
-            "g2",
-            {"email": email, "password": password, "grant_type": "password"},
-        )
-        # Baseline för jämförelse — exakt det format vi kör i produktion just nu
-        results["test_g3_auth_baseline"] = _auth_attempt(
-            "g3",
-            {"email": email, "password": password},
-        )
+        put_url = f"{base}/transactions/{transaction_id}"
+        bearer_headers = {"Authorization": f"Bearer {token}"}
+
+        variants = [
+            ("test_a_baseline_int_header", put_url, bearer_headers,
+             _build_body(credit_as_string=False, expense_as_string=False),
+             "credit_account_id=INT, auth via Bearer header"),
+            ("test_b_credit_as_string", put_url, bearer_headers,
+             _build_body(credit_as_string=True, expense_as_string=False),
+             "credit_account_id='67100' (STRING)"),
+            ("test_c_expense_as_string", put_url, bearer_headers,
+             _build_body(credit_as_string=True, expense_as_string=True),
+             "credit+expense båda som STRING"),
+            ("test_d_token_as_url_param",
+             f"{put_url}?token={token}",
+             {},  # inga Authorization-headers — token i URL
+             _build_body(credit_as_string=False, expense_as_string=False),
+             "token i URL (?token=...), ingen Bearer-header"),
+        ]
+
+        with httpx.Client(timeout=30.0) as client:
+            for name, url, headers, body, description in variants:
+                entry: dict = {
+                    "method": "PUT",
+                    "variant": description,
+                    "url": (
+                        url.replace(token, token[:8] + "...[maskerad]")
+                        if token and token in url else url
+                    ),
+                    "sent_headers": _mask_headers(headers),
+                }
+                try:
+                    resp = client.put(url, json=body, headers=headers)
+                    entry["status"] = resp.status_code
+                    entry["body"] = _safe_body(resp)
+                    entry["response_headers"] = _resp_headers(resp)
+                    logger.info(
+                        "test-transaction %s → %s body=%s",
+                        name, resp.status_code, entry["body"][:300],
+                    )
+                except httpx.HTTPError as exc:
+                    entry["status"] = None
+                    entry["error"] = f"HTTPError: {exc}"
+                results[name] = entry
+    finally:
+        bezala.close()
 
     return results
 
