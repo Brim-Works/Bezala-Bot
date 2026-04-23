@@ -460,6 +460,55 @@ class BezalaClient:
         """Hämtar kostnadsställen. Varje post har typiskt {id, name, default?}."""
         return self._fetch_list("/cost_centers")
 
+    def list_missing_receipts(self) -> list[dict]:
+        """Hämtar korttransaktioner utan kvitto från Bezala
+        (GET /api/missing_receipts). FAS 5.4 kortmatchning."""
+        return self._fetch_list("/missing_receipts")
+
+    def attach_file(
+        self,
+        transaction_id: str,
+        filename: str,
+        pdf_bytes: bytes,
+    ) -> BezalaAttachment:
+        """Bifoga en PDF till en BEFINTLIG transaktion (utan draft=1).
+        Används av match-flödet när Bezala redan skapat transaktionen
+        och vi bara fyller i filen."""
+        if not transaction_id:
+            raise BezalaError("attach_file: transaction_id saknas")
+        if not filename:
+            raise BezalaError("attach_file: filename saknas")
+        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+            raise BezalaError("attach_file: pdf_bytes är inte en giltig PDF")
+
+        logger.info(
+            "attach_file: POST /attachments transaction_id=%s filename=%r bytes=%d",
+            transaction_id, filename, len(pdf_bytes),
+        )
+        resp = self._request(
+            "POST",
+            "/attachments",
+            files={FILE_FIELD_NAME: (filename, pdf_bytes, "application/pdf")},
+            data={"transaction_id": str(transaction_id)},
+        )
+        if resp.status_code >= 400:
+            raise BezalaError(
+                f"Bezala attach_file: {resp.status_code}",
+                status_code=resp.status_code,
+                body=_safe_body_snippet(resp),
+            )
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        attachment_id = (
+            data.get("id")
+            or data.get("attachment_id")
+            or (data.get("attachment") or {}).get("id")
+            or transaction_id
+        )
+        return BezalaAttachment(attachment_id=str(attachment_id))
+
     def list_vat_rates(self) -> list[dict]:
         """Hämtar momssatser. Bezala-endpointen kan heta /vat_rates eller
         /vat_codes — vi försöker den gängse varianten först och returnerar

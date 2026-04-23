@@ -4,6 +4,7 @@ export default {
   nav: {
     dashboard: 'Overview',
     review: 'Review',
+    match: 'Card matching',
     log: 'Log',
     settings: 'Settings',
     trash: 'Trash',
@@ -489,9 +490,30 @@ export default {
         'Rows in trash older than the chosen period are permanently deleted at 03:00 UTC.',
     },
   },
+  match: {
+    listTitle: 'Missing receipts in Bezala',
+    suggestionsCount: 'suggestions',
+    matchAction: 'Link',
+    matching: 'Linking…',
+    selectPrompt: 'Select a missing receipt on the left.',
+    noSuggestions:
+      'No matching receipts in Bezala Bot — wait for the next scan.',
+    loadFailed: 'Could not load missing receipts from Bezala',
+    unknownVendor: 'Unknown vendor',
+    empty: {
+      title: 'No missing receipts',
+      body:
+        'Bezala has no card transactions without receipts right now. Nice work!',
+    },
+    toast: {
+      matched: 'Receipt linked to the Bezala transaction',
+      matchFailed: 'Could not link receipt',
+    },
+  },
   views: {
     dashboard: { title: 'Overview' },
     review: { title: 'Review' },
+    match: { title: 'Card matching' },
     log: { title: 'Command center' },
     settings: { title: 'Settings' },
     trash: { title: 'Trash' },
