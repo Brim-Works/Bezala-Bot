@@ -565,6 +565,49 @@ class BezalaMetadataEndpointTest(unittest.TestCase):
     def tearDownClass(cls):
         cls.app_module.app.dependency_overrides.clear()
 
+    def test_test_transaction_endpoint_stops_at_first_failure(self):
+        """GET /api/bezala/test-transaction stoppar vid första 500.
+        Returnerar status+body för varje test så användaren ser vilket
+        fält som orsakar krasch."""
+        from app.services.bezala_client import BezalaError
+
+        fake_bezala = MagicMock()
+        # test1 lyckas, test2 lyckas, test3 kraschar med 500
+        fake_bezala.create_transaction.side_effect = [
+            MagicMock(transaction_id="tx-1"),
+            MagicMock(transaction_id="tx-2"),
+            BezalaError("500", status_code=500, body='{"error":"cost_center invalid"}'),
+        ]
+
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/test-transaction")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["test1_minimum"]["status"], 200)
+        self.assertEqual(body["test2_account"]["status"], 200)
+        self.assertEqual(body["test3_cost_center"]["status"], 500)
+        self.assertIn("cost_center", body["test3_cost_center"]["body"])
+        # Test 4 + 5 ska ALDRIG ha körts (stoppat vid test3)
+        self.assertNotIn("test4_vat_lines", body)
+        self.assertEqual(body["stopped_at"], "test3_cost_center")
+
+    def test_test_transaction_endpoint_all_pass_runs_all_5(self):
+        fake_bezala = MagicMock()
+        fake_bezala.create_transaction.side_effect = [
+            MagicMock(transaction_id=f"tx-{i}") for i in range(5)
+        ]
+
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/test-transaction")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        for name in ("test1_minimum", "test2_account", "test3_cost_center",
+                      "test4_vat_lines", "test5_vendor"):
+            self.assertEqual(body[name]["status"], 200)
+        self.assertNotIn("stopped_at", body)
+
     def test_metadata_returns_rows_from_all_three(self):
         fake_bezala = MagicMock()
         fake_bezala.list_accounts.return_value = [{"id": 1, "name": "Matkaliput"}]

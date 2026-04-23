@@ -876,6 +876,71 @@ def _safe_bezala_list(fn, label: str) -> dict:
         return {"count": 0, "rows": [], "error": f"{exc.status_code}: {exc.body or str(exc)}"}
 
 
+@app.get("/api/bezala/test-transaction")
+def bezala_test_transaction(_: None = Depends(require_auth)):
+    """Binär-sökning: kör 5 increment-payloads mot /transactions och
+    returnerar status+body per försök. Stoppa vid första 500 → då vet
+    vi vilket fält Bezala kraschar på.
+
+    OBS: Skapar (om lyckat) upp till 5 dummy-transaktioner i Bezala
+    med beskrivning 'BezalaBot test'. Måste städas manuellt efter."""
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+
+    base = {
+        "description": "BezalaBot test (kan raderas)",
+        "date": "2026-04-23",
+        "amount": 100.0,
+        "currency": "EUR",
+    }
+    test_payloads = [
+        ("test1_minimum", base),
+        ("test2_account", {**base, "account_id": 67100}),
+        ("test3_cost_center", {**base, "account_id": 67100, "cost_center_id": 927151}),
+        ("test4_vat_lines", {
+            **base, "account_id": 67100, "cost_center_id": 927151,
+            "vat_lines": [{"amount": 100.0, "vat_code_id": 1355}],
+        }),
+        ("test5_vendor", {
+            **base, "account_id": 67100, "cost_center_id": 927151,
+            "vat_lines": [{"amount": 100.0, "vat_code_id": 1355}],
+            "vendor": "BezalaBot Test",
+        }),
+    ]
+
+    results: dict = {}
+    try:
+        for name, payload in test_payloads:
+            try:
+                tx = bezala.create_transaction(**payload)
+                results[name] = {
+                    "status": 200,
+                    "transaction_id": tx.transaction_id,
+                    "payload_keys": sorted(payload.keys()),
+                }
+                logger.info("test-transaction %s → 200 tx_id=%s", name, tx.transaction_id)
+            except BezalaError as exc:
+                results[name] = {
+                    "status": exc.status_code or 500,
+                    "body": (exc.body or "")[:2000],
+                    "payload_keys": sorted(payload.keys()),
+                }
+                logger.warning(
+                    "test-transaction %s → %s body=%s",
+                    name, exc.status_code, (exc.body or "")[:300],
+                )
+                # Stoppa vid första fel — fältet som lades till i detta steg
+                # är troligen orsaken.
+                results["stopped_at"] = name
+                break
+    finally:
+        bezala.close()
+
+    return results
+
+
 class UploadToBezalaPayload(BaseModel):
     """Valfri override för Bezala-upload. Granska-vyn skickar redigerade
     värden här så användaren kan fylla i saknat belopp/datum/etc utan

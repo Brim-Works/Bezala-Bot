@@ -72,15 +72,69 @@ class ExtractReceiptLinkTest(unittest.TestCase):
         url = extract_receipt_link("Inget här.", "<p>Inga länkar</p>")
         self.assertIsNone(url)
 
-    def test_falls_back_to_first_url_with_path(self):
-        """Om inget nyckelord matchar men det finns URL:er med path:
-        returnera första som fallback."""
+    def test_falls_back_to_first_long_url(self):
+        """Om inget nyckelord matchar men det finns en URL som överlever
+        exclude-filtret (≥40 tecken, ej tracking-pattern) → returnera den."""
         from app.services.link_extractor import extract_receipt_link
 
-        # Inget keyword: ingen av URL:erna innehåller receipt/invoice/download/etc
-        body = "Besök https://arlandaexpress.se/ticket/42 för detaljer."
+        # Lång URL utan kvitto-keyword men > 40 tecken och inte en bild
+        body = "Besök https://arlandaexpress.se/journey/1234567890abcdef för detaljer."
         url = extract_receipt_link(body, "")
-        self.assertEqual(url, "https://arlandaexpress.se/ticket/42")
+        self.assertEqual(url, "https://arlandaexpress.se/journey/1234567890abcdef")
+
+    def test_excludes_short_tracking_pixel_url(self):
+        """Korta URL:er (< 40 tecken) räknas som tracking och returneras inte."""
+        from app.services.link_extractor import extract_receipt_link
+
+        body = "Klicka https://t.co/abc"
+        url = extract_receipt_link(body, "")
+        self.assertIsNone(url)
+
+    def test_excludes_image_urls(self):
+        """PNG/JPG-URLs ska aldrig returneras (tracking-pixlar / logos)."""
+        from app.services.link_extractor import extract_receipt_link
+
+        html = (
+            '<img src="https://cdn.example.com/very-long-tracking-pixel.png">'
+            '<img src="https://cdn.example.com/long-logo-image.gif">'
+            '<a href="https://app.example.com/receipts/abcdefghijklmnop">Kvitto</a>'
+        )
+        url = extract_receipt_link("", html)
+        self.assertEqual(url, "https://app.example.com/receipts/abcdefghijklmnop")
+
+    def test_excludes_dimension_url(self):
+        """URLs med dimensions-mönster (33x20, 1x1) räknas som bilder."""
+        from app.services.link_extractor import extract_receipt_link
+
+        body = (
+            "https://tracker.example.com/p/33x20/long-token-string-here-yes "
+            "https://app.example.com/order/long-token-1234567890abcdef"
+        )
+        url = extract_receipt_link(body, "")
+        # Bara den utan dimensioner ska returneras
+        self.assertEqual(url, "https://app.example.com/order/long-token-1234567890abcdef")
+
+    def test_anchor_text_kvitto_outranks_other_url(self):
+        """Anchor-text 'Ladda ner kvitto (PDF)' rankar URL:en högst
+        även om en annan URL kommer tidigare i HTML:en."""
+        from app.services.link_extractor import extract_receipt_link
+
+        html = (
+            '<a href="https://app.example.com/booking/long-token-abcdef1234">Boka igen</a>'
+            '<a href="https://app.example.com/r/long-token-xyz4567890123">Ladda ner kvitto (PDF)</a>'
+        )
+        url = extract_receipt_link("", html)
+        self.assertEqual(url, "https://app.example.com/r/long-token-xyz4567890123")
+
+    def test_excludes_tracking_tokens_in_url(self):
+        from app.services.link_extractor import extract_receipt_link
+
+        html = (
+            '<a href="https://example.com/track/abcdef-very-long-token">trk</a>'
+            '<a href="https://example.com/order/abcdef-very-long-token">order</a>'
+        )
+        url = extract_receipt_link("", html)
+        self.assertEqual(url, "https://example.com/order/abcdef-very-long-token")
 
 
 class FetchPdfFromLinkTest(unittest.TestCase):
@@ -361,11 +415,13 @@ class PipelineLinkFetchTest(unittest.TestCase):
             db.query(self.ProcessedMessage).delete()
             db.commit()
 
-    def test_link_fetch_sender_with_attachment_ignores_attachment(self):
-        """Mail från link_fetch_senders med bilaga + kvitto-länk i body:
-        bilagan ignoreras, raden sparas som needs_manual_download."""
+    def test_link_fetch_sender_with_pdf_uses_pdf_not_link(self):
+        """Fix 3: Mail från link_fetch_senders MED giltig PDF-bilaga
+        ska processera PDF:en normalt (inte hoppa till link_fetch).
+        Arlanda Express 'biljett och kvitto' har båda — PDF:en räcker."""
         from app.services.gmail_client import GmailMessage, Attachment
         from app.services.pipeline import _process_one_message, ScanResult
+        from app.services.drive_client import DriveUploadResult
 
         msg = GmailMessage(
             message_id="link-1",
@@ -388,6 +444,63 @@ class PipelineLinkFetchTest(unittest.TestCase):
         fake_gmail = MagicMock()
         fake_gmail.fetch_message.return_value = msg
         fake_drive = MagicMock()
+        fake_drive.upload_pdf.return_value = DriveUploadResult(
+            file_id="drv-1", web_view_link="https://drive/drv-1", name="boarding.pdf",
+        )
+        fake_drive.filename_exists.return_value = False
+        fake_namer = MagicMock()
+        fake_namer.name_for.return_value = "20260421 Arlanda Express boarding.pdf"
+        fake_analyzer = MagicMock()
+        fake_analyzer.enabled = False
+
+        result = ScanResult()
+        _process_one_message(
+            "link-1",
+            fake_gmail,
+            fake_drive,
+            fake_namer,
+            fake_analyzer,
+            None,
+            result,
+            link_fetch_senders=["noreply@arlandaexpress.se"],
+        )
+
+        # PDF:en SKA laddas upp till Drive (link_fetch hoppas över när PDF finns)
+        fake_drive.upload_pdf.assert_called_once()
+        # Raden ska sparas som 'saved', inte 'needs_manual_download'
+        with self.SessionLocal() as db:
+            row = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="link-1")
+                .first()
+            )
+            self.assertIsNotNone(row)
+            self.assertEqual(row.status, "saved")
+        # Gmail markeras klar (mark_done) eftersom PDF processades
+        fake_gmail.mark_done.assert_called_once()
+
+    def test_link_fetch_sender_without_pdf_uses_link(self):
+        """Mail från link_fetch_senders UTAN PDF-bilaga (Mail B):
+        bilagan ignoreras (det finns ingen), raden sparas som
+        needs_manual_download."""
+        from app.services.gmail_client import GmailMessage
+        from app.services.pipeline import _process_one_message, ScanResult
+
+        msg = GmailMessage(
+            message_id="link-1",
+            thread_id="t-1",
+            sender="noreply@arlandaexpress.se",
+            subject="Kvitto för ditt köp",
+            received_at=datetime(2026, 4, 21, tzinfo=timezone.utc),
+            snippet="",
+            attachments=[],
+            body_text="Hämta kvitto: https://arlandaexpress.se/receipt/abcdefg-token-1234567",
+            body_html="",
+        )
+
+        fake_gmail = MagicMock()
+        fake_gmail.fetch_message.return_value = msg
+        fake_drive = MagicMock()
         fake_namer = MagicMock()
         fake_analyzer = MagicMock()
         fake_analyzer.enabled = False
@@ -404,7 +517,7 @@ class PipelineLinkFetchTest(unittest.TestCase):
             link_fetch_senders=["noreply@arlandaexpress.se"],
         )
 
-        # Bilagan får INTE röra Drive
+        # Drive SKA INTE röras — ingen PDF
         fake_drive.upload_pdf.assert_not_called()
         # Gmail SKA INTE markeras klar — användaren behöver trigga fetch-pdf
         fake_gmail.mark_done.assert_not_called()

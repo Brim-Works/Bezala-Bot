@@ -50,6 +50,20 @@ BODY_LOG_LIMIT = 4000
 # produktion). Overridable via env om vi felar igen och måste experimentera.
 FILE_FIELD_NAME = os.environ.get("BEZALA_FILE_FIELD_NAME", "file")
 
+# Escape-hatches om Bezala 500:ar på fält som inte ingår i strong_params.
+# Sätt env BEZALA_INCLUDE_VENDOR=false eller BEZALA_INCLUDE_VAT_LINES=false
+# i Railway för att utesluta fältet från /transactions-payloaden utan
+# code-deploy. Default är båda inkluderade.
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in ("1", "true", "yes", "on")
+
+
+INCLUDE_VENDOR = _env_bool("BEZALA_INCLUDE_VENDOR", True)
+INCLUDE_VAT_LINES = _env_bool("BEZALA_INCLUDE_VAT_LINES", True)
+
 # Hur metadata-fält namnsätts i multipart-requesten:
 #   "flat"   → description, date, amount, ...       (default — Alternativ A)
 #   "nested" → attachment[description], attachment[date], ...
@@ -328,13 +342,13 @@ class BezalaClient:
         }
         if currency:
             payload["currency"] = currency
-        if vendor:
+        if vendor and INCLUDE_VENDOR:
             payload["vendor"] = vendor
         if account_id is not None:
             payload["account_id"] = account_id
         if cost_center_id is not None:
             payload["cost_center_id"] = cost_center_id
-        if vat_lines:
+        if vat_lines and INCLUDE_VAT_LINES:
             payload["vat_lines"] = vat_lines
         if extra_fields:
             for k, v in extra_fields.items():
