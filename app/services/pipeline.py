@@ -367,10 +367,19 @@ def _process_one_message(
 
     msg = gmail.fetch_message(message_id)
 
-    # Länk-fetch-gren: avsändare matchar link_fetch_senders → ignorera
-    # alla befintliga bilagor och leta i body:n efter kvitto-länk. Raden
-    # sparas som 'needs_manual_download' och väntar på manuell /fetch-pdf.
-    if link_fetch_senders and sender_matches_link_fetch(msg.sender, link_fetch_senders):
+    # Länk-fetch-gren: avsändare matchar link_fetch_senders OCH mailet
+    # saknar PDF-bilaga. Om en giltig PDF FINNS bifogad använder vi den
+    # istället — Arlanda Express-mail "biljett och kvitto" har t.ex. både
+    # PDF (biljett) och länk (kvitto) i samma mail; PDF:en räcker som
+    # underlag och vi slipper extra fetch-anrop.
+    has_valid_pdf = any(
+        looks_like_pdf(a.filename, a.mime_type, a.data) for a in msg.attachments
+    )
+    if (
+        link_fetch_senders
+        and sender_matches_link_fetch(msg.sender, link_fetch_senders)
+        and not has_valid_pdf
+    ):
         link = extract_receipt_link(msg.body_text, msg.body_html)
         if link:
             try:

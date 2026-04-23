@@ -185,7 +185,25 @@ class ReceiptAnalyzer:
                 f"Kunde inte parsa Claude-JSON: {exc} (raw: {raw_text[:500]!r})"
             ) from exc
 
-        return _normalize(payload, received_at=received_at, sender=sender, subject=subject)
+        analysis = _normalize(
+            payload, received_at=received_at, sender=sender, subject=subject,
+        )
+
+        # Fix 4: tydlig debug-logg när AI missar amount/date — ofta ett tecken
+        # på en bild-PDF (OCR behövs) eller en kvitto-PDF där belopp ligger
+        # längst ner och dokumentet trunkerades. Loggar PDF-storlek + första
+        # raden av Claude:s payload så vi kan diagnosa.
+        if analysis.is_receipt and analysis.amount is None:
+            pdf_size = len(attachment_bytes)
+            looks_text_pdf = b"/Font" in attachment_bytes[:50_000]
+            logger.warning(
+                "AI missade amount för %r (sender=%r confidence=%d%% "
+                "pdf_size=%d text_pdf_indikator=%s) — claude_payload=%s",
+                original_filename, sender, analysis.confidence, pdf_size,
+                looks_text_pdf, json.dumps(payload, ensure_ascii=False)[:600],
+            )
+
+        return analysis
 
 
 class AnalyzerError(RuntimeError):

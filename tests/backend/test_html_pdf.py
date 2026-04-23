@@ -219,8 +219,8 @@ class PipelineHtmlToPdfTest(unittest.TestCase):
 
         msg = self._build_msg(
             mid="link-1",
-            body_html="<p>Hämta kvitto: https://arlandaexpress.se/receipt/abc</p>",
-            body_text="Hämta kvitto: https://arlandaexpress.se/receipt/abc",
+            body_html="<p>Hämta kvitto: https://arlandaexpress.se/receipt/abcdefg-token-1234567</p>",
+            body_text="Hämta kvitto: https://arlandaexpress.se/receipt/abcdefg-token-1234567",
         )
         # Override sender till en länk-fetch-avsändare
         msg.sender = "noreply@arlandaexpress.se"
