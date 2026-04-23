@@ -50,36 +50,6 @@ BODY_LOG_LIMIT = 4000
 # produktion). Overridable via env om vi felar igen och måste experimentera.
 FILE_FIELD_NAME = os.environ.get("BEZALA_FILE_FIELD_NAME", "file")
 
-# Escape-hatches om Bezala 500:ar på fält som inte ingår i strong_params.
-# Sätt env BEZALA_INCLUDE_VENDOR=false eller BEZALA_INCLUDE_VAT_LINES=false
-# i Railway för att utesluta fältet från /transactions-payloaden utan
-# code-deploy. Default är båda inkluderade.
-def _env_bool(name: str, default: bool) -> bool:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    return raw.strip().lower() in ("1", "true", "yes", "on")
-
-
-INCLUDE_VENDOR = _env_bool("BEZALA_INCLUDE_VENDOR", True)
-INCLUDE_VAT_LINES = _env_bool("BEZALA_INCLUDE_VAT_LINES", True)
-
-# Hur metadata-fält namnsätts i multipart-requesten:
-#   "flat"   → description, date, amount, ...       (default — Alternativ A)
-#   "nested" → attachment[description], attachment[date], ...
-# Live-test visar att flat format passar Bezalas controller — Rails strong
-# params kan tolka båda, men blandningen "file top-level + metadata nested"
-# gav 422 "fields empty" trots att värdena skickades. Switch om det behövs
-# via env utan redeploy.
-FIELD_NAMING = os.environ.get("BEZALA_FIELD_NAMING", "flat").lower()
-
-
-def _field_key(name: str) -> str:
-    """Returnera rätt fältnamn baserat på FIELD_NAMING."""
-    if FIELD_NAMING == "nested":
-        return f"attachment[{name}]"
-    return name
-
 
 class BezalaError(RuntimeError):
     """Generic Bezala API error. Bär statuskod och serversvar där tillgängligt."""
