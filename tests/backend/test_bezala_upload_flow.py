@@ -106,21 +106,21 @@ class UploadReceiptTest(unittest.TestCase):
         self.assertEqual(captured["method"], "POST")
         self.assertTrue(captured["url"].endswith("/attachments"))
 
-        # Rails strong-params-konvention: allt nested under attachment[...]
+        # Alternativ A: platta fältnamn (default FIELD_NAMING=flat).
+        # Metadata top-level tillsammans med filen — Rails kan tolka
+        # både platt och nested, och live-test visar att platt funkar.
         data = captured["data"]
-        self.assertEqual(data["attachment[description]"], "20260422 Finnair HEL-CPH")
-        self.assertEqual(data["attachment[date]"], "2026-04-22")
-        self.assertEqual(data["attachment[amount]"], "503.0")
-        self.assertEqual(data["attachment[currency]"], "EUR")
-        self.assertEqual(data["attachment[account_id]"], "101")
-        self.assertEqual(data["attachment[cost_center_id]"], "77")
-        self.assertEqual(data["attachment[vendor]"], "Finnair")
-        # vat_lines skickas som JSON-sträng under attachment[vat_lines].
-        # Bug 3: numeriska värden inuti vat_lines stringifieras också
-        # så Rails' strong-params-validator kan coerca dem säkert.
-        self.assertIsInstance(data["attachment[vat_lines]"], str)
+        self.assertEqual(data["description"], "20260422 Finnair HEL-CPH")
+        self.assertEqual(data["date"], "2026-04-22")
+        self.assertEqual(data["amount"], "503.0")
+        self.assertEqual(data["currency"], "EUR")
+        self.assertEqual(data["account_id"], "101")
+        self.assertEqual(data["cost_center_id"], "77")
+        self.assertEqual(data["vendor"], "Finnair")
+        # vat_lines som JSON-sträng med stringifierade numeriska värden.
+        self.assertIsInstance(data["vat_lines"], str)
         self.assertEqual(
-            json.loads(data["attachment[vat_lines]"]),
+            json.loads(data["vat_lines"]),
             [{"amount": "503.0", "vat_code_id": "11"}],
         )
 
@@ -178,9 +178,9 @@ class UploadReceiptTest(unittest.TestCase):
             )
         self.assertIn("pdf", str(ctx.exception).lower())
 
-    def test_metadata_nested_file_top_level(self):
-        """Metadata måste vara nested (attachment[...]) men filen är
-        top-level 'file' — Bezalas controller läser params[:file].tempfile."""
+    def test_default_flat_metadata_file_top_level(self):
+        """Default FIELD_NAMING=flat → metadata utan attachment[]-prefix,
+        filen top-level 'file'. (Alternativ A från live-analys.)"""
         captured = {}
 
         client = _make_client()
@@ -211,18 +211,72 @@ class UploadReceiptTest(unittest.TestCase):
             extra_fields={"supplier_id": "abc"},
         )
 
-        # All metadata under attachment[...]
+        # All metadata top-level (INGEN attachment[...]-prefix)
         for key in captured["data"].keys():
-            self.assertTrue(
+            self.assertFalse(
                 key.startswith("attachment["),
-                f"Form-nyckel {key!r} är INTE Rails-nested under attachment[...]",
+                f"Form-nyckel {key!r} ska inte vara nested i flat-läge",
             )
-        # extra_fields utan prefix auto-wrappas
-        self.assertIn("attachment[supplier_id]", captured["data"])
+        self.assertIn("description", captured["data"])
+        self.assertIn("supplier_id", captured["data"])
 
-        # Filen ska vara top-level 'file' (INTE attachment[file])
+        # Filen top-level 'file'
         self.assertIn("file", captured["files"])
         self.assertNotIn("attachment[file]", captured["files"])
+
+    def test_field_key_helper_flat_vs_nested(self):
+        """_field_key(name) följer FIELD_NAMING-modulvariabeln. Undviker
+        importlib.reload som bryter isinstance-checkar i andra tester."""
+        from app.services import bezala_client as bz
+
+        original = bz.FIELD_NAMING
+        try:
+            bz.FIELD_NAMING = "flat"
+            self.assertEqual(bz._field_key("description"), "description")
+            self.assertEqual(bz._field_key("vat_lines"), "vat_lines")
+
+            bz.FIELD_NAMING = "nested"
+            self.assertEqual(bz._field_key("description"), "attachment[description]")
+            self.assertEqual(bz._field_key("vat_lines"), "attachment[vat_lines]")
+        finally:
+            bz.FIELD_NAMING = original
+
+    def test_nested_mode_monkeypatched_produces_attachment_keys(self):
+        """Verifiera nested-läget utan att reloada modulen."""
+        from app.services import bezala_client as bz
+
+        captured = {}
+        original = bz.FIELD_NAMING
+        try:
+            bz.FIELD_NAMING = "nested"
+            client = _make_client()
+
+            resp = MagicMock()
+            resp.status_code = 200
+            resp.headers = {"content-type": "application/json"}
+            resp.text = '{"id": "r"}'
+            resp.json = MagicMock(return_value={"id": "r"})
+
+            def fake_request(method, url, **kwargs):
+                captured["data"] = kwargs.get("data")
+                return resp
+
+            client._client.request = fake_request
+
+            client.upload_receipt(
+                filename="x.pdf",
+                pdf_bytes=PDF_BYTES,
+                description="T",
+                date="2026-04-22",
+                amount=10.0,
+                currency="EUR",
+                vat_lines=[{"amount": 10, "vat_code_id": 1}],
+            )
+
+            self.assertIn("attachment[description]", captured["data"])
+            self.assertIn("attachment[vat_lines]", captured["data"])
+        finally:
+            bz.FIELD_NAMING = original
 
     def test_422_bubbles_full_body(self):
         """Bezalas 422 → BezalaError.body innehåller hela response.text."""
