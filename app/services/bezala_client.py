@@ -315,41 +315,35 @@ class BezalaClient:
         *,
         description: str,
         date: str,
-        amount: float,
-        currency: str | None = None,
-        vendor: str | None = None,
-        account_id: int | str | None = None,
-        cost_center_id: int | str | None = None,
-        vat_lines: list[dict] | None = None,
+        credit_account_id: int | str | None = None,
+        vat_lines_attributes: list[dict] | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> BezalaTransaction:
         """Skapa en transaktion i Bezala via POST /api/transactions med
-        JSON-body (Steg 1 av två i upload_receipt-flödet).
+        nested JSON-body enligt API-docs:
 
-        Bezala /api/attachments är bara för filbifogning på en befintlig
-        transaktion — metadata måste skickas via /api/transactions."""
+          {"transaction": {
+            "description": "...",
+            "date": "YYYY-MM-DD",
+            "credit_account_id": 67100,
+            "vat_lines_attributes": [{...}]
+          }}
+
+        amount/currency/vendor/cost_center_id finns INTE längre top-level
+        — allt ekonomiskt innehåll ligger inuti vat_lines_attributes[]."""
         if not description:
             raise BezalaError("create_transaction: description saknas")
         if not date:
             raise BezalaError("create_transaction: date saknas (ÅÅÅÅ-MM-DD)")
-        if amount is None:
-            raise BezalaError("create_transaction: amount saknas")
 
         payload: dict[str, Any] = {
             "description": description,
             "date": date,
-            "amount": amount,
         }
-        if currency:
-            payload["currency"] = currency
-        if vendor and INCLUDE_VENDOR:
-            payload["vendor"] = vendor
-        if account_id is not None:
-            payload["account_id"] = account_id
-        if cost_center_id is not None:
-            payload["cost_center_id"] = cost_center_id
-        if vat_lines and INCLUDE_VAT_LINES:
-            payload["vat_lines"] = vat_lines
+        if credit_account_id is not None:
+            payload["credit_account_id"] = credit_account_id
+        if vat_lines_attributes:
+            payload["vat_lines_attributes"] = vat_lines_attributes
         if extra_fields:
             for k, v in extra_fields.items():
                 if v is not None:
@@ -518,17 +512,13 @@ class BezalaClient:
         pdf_bytes: bytes,
         description: str,
         date: str,
-        amount: float | None,
-        currency: str | None,
-        vat_lines: list[dict] | None = None,
-        account_id: int | str | None = None,
-        cost_center_id: int | str | None = None,
-        vendor: str | None = None,
+        credit_account_id: int | str | None = None,
+        vat_lines_attributes: list[dict] | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> BezalaAttachment:
         """Ladda upp ett kvitto till Bezala via TWO-STEP-flödet:
 
-          Steg 1: POST /transactions (JSON) → transaction_id
+          Steg 1: POST /transactions (JSON, {"transaction": {...}}) → tx_id
           Steg 2: POST /attachments (multipart file + transaction_id)
 
         Om steg 1 lyckas men steg 2 misslyckas: transaction_id loggas
@@ -542,27 +532,20 @@ class BezalaClient:
             raise BezalaError("upload_receipt: description saknas")
         if not date:
             raise BezalaError("upload_receipt: date saknas (ÅÅÅÅ-MM-DD)")
-        if amount is None:
-            raise BezalaError("upload_receipt: amount saknas (krävs av /transactions)")
 
         logger.info(
             "upload_receipt: two-step filename=%r bytes=%d description=%r "
-            "date=%r amount=%s currency=%s account_id=%s cost_center_id=%s "
-            "vat_lines=%s",
-            filename, len(pdf_bytes), description, date, amount, currency,
-            account_id, cost_center_id, vat_lines,
+            "date=%r credit_account_id=%s vat_lines_attributes_count=%d",
+            filename, len(pdf_bytes), description, date,
+            credit_account_id, len(vat_lines_attributes or []),
         )
 
         # Steg 1: skapa transaktionen
         transaction = self.create_transaction(
             description=description,
             date=date,
-            amount=amount,
-            currency=currency,
-            vendor=vendor,
-            account_id=account_id,
-            cost_center_id=cost_center_id,
-            vat_lines=vat_lines,
+            credit_account_id=credit_account_id,
+            vat_lines_attributes=vat_lines_attributes,
             extra_fields=extra_fields,
         )
         transaction_id = transaction.transaction_id

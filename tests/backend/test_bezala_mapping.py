@@ -549,9 +549,7 @@ class BezalaLoggingTest(unittest.TestCase):
             client.create_transaction(
                 description="Test",
                 date="2026-04-22",
-                amount=10.0,
-                currency="EUR",
-                vendor="X",
+                credit_account_id=67100,
             )
         err = ctx.exception
         self.assertEqual(err.status_code, 422)
@@ -559,10 +557,11 @@ class BezalaLoggingTest(unittest.TestCase):
         self.assertGreater(len(err.body), 700)
         self.assertIn("xxxx", err.body)
 
-    def test_create_transaction_sends_json_body_with_mapped_fields(self):
-        """Nya two-step-flödet: create_transaction POSTar JSON till
-        /transactions med description/date/amount/account_id/cost_center_id/
-        vat_lines som första-klass fält (ingen attachment[]-wrapper)."""
+    def test_create_transaction_sends_nested_body_with_new_field_names(self):
+        """Senaste API-docs: POST /transactions body är
+        {'transaction': {description, date, credit_account_id,
+        vat_lines_attributes: [...]}}. amount/currency/vendor/cost_center
+        ligger INTE top-level."""
         captured = {}
 
         client = _make_client()
@@ -580,35 +579,38 @@ class BezalaLoggingTest(unittest.TestCase):
 
         client._client.request = fake_request
 
+        vat_line = {
+            "taxable": "503.00",
+            "tax_percentage": "0.255",
+            "currency": "EUR",
+            "expense_account_id": 67100,
+            "cost_center_ids": [927151],
+            "vat_code_id": 1355,
+        }
         result = client.create_transaction(
             description="Finnair HEL-CPH",
             date="2026-04-22",
-            amount=503.0,
-            currency="EUR",
-            vendor="Finnair",
-            account_id=67100,
-            cost_center_id=927151,
-            vat_lines=[{"amount": 503.0, "vat_code_id": 1355}],
+            credit_account_id=67100,
+            vat_lines_attributes=[vat_line],
         )
         self.assertEqual(result.transaction_id, "tx-42")
         self.assertEqual(captured["method"], "POST")
         self.assertTrue(captured["url"].endswith("/transactions"))
 
         payload = captured["json"]
-        # Rails-nested: allt under "transaction"-nyckeln.
         self.assertIn("transaction", payload)
         tx = payload["transaction"]
         self.assertEqual(tx["description"], "Finnair HEL-CPH")
         self.assertEqual(tx["date"], "2026-04-22")
-        self.assertEqual(tx["amount"], 503.0)
-        self.assertEqual(tx["currency"], "EUR")
-        self.assertEqual(tx["vendor"], "Finnair")
-        self.assertEqual(tx["account_id"], 67100)
-        self.assertEqual(tx["cost_center_id"], 927151)
-        self.assertEqual(
-            tx["vat_lines"],
-            [{"amount": 503.0, "vat_code_id": 1355}],
-        )
+        self.assertEqual(tx["credit_account_id"], 67100)
+        self.assertEqual(tx["vat_lines_attributes"], [vat_line])
+        # Gamla fält ska INTE finnas top-level
+        self.assertNotIn("amount", tx)
+        self.assertNotIn("currency", tx)
+        self.assertNotIn("vendor", tx)
+        self.assertNotIn("cost_center_id", tx)
+        self.assertNotIn("account_id", tx)
+        self.assertNotIn("vat_lines", tx)
 
 
 class BezalaMetadataEndpointsTest(unittest.TestCase):
