@@ -302,6 +302,7 @@ export default {
       vendor: 'Vendor',
       date: 'Date',
       amount: 'Amount',
+      amountRequired: 'Enter amount before submitting to Bezala',
       currency: 'Currency',
       vatRate: 'VAT',
       category: 'Category',

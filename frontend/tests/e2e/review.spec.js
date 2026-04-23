@@ -139,6 +139,58 @@ test('Review — Nästa-knappen navigerar mellan rader', async ({ page }) => {
   await expect(vendorInput).toHaveValue('Scandic'); // id 3 (2026-04-10, äldst)
 });
 
+test('Review — saknat belopp: röd ram + approve-knappen disabled', async ({
+  page,
+}) => {
+  // Skapa en pending-rad utan amount
+  const messages = buildMessages().map((m) =>
+    m.id === 1 ? { ...m, amount: null } : m,
+  );
+  await setupApiMocks(page, { messages });
+
+  await page.goto('/review');
+  // id 1 blir första nu eftersom receipt_date 2026-04-20 är senaste bland pending
+  const form = page.getByTestId('review-form');
+  const approve = page.getByTestId('approve-button');
+  await expect(approve).toBeDisabled();
+
+  // Amount-fältet har fld--invalid på label + aria-invalid=true
+  const amountInput = page.getByTestId('review-amount-input');
+  await expect(amountInput).toHaveAttribute('aria-invalid', 'true');
+  const amountLabel = amountInput.locator('xpath=ancestor::label[1]');
+  await expect(amountLabel).toHaveClass(/fld--invalid/);
+
+  // Fyll i → approve-knappen blir enabled + invalid-class försvinner
+  await amountInput.fill('320.50');
+  await expect(amountInput).toHaveAttribute('aria-invalid', 'false');
+  await expect(approve).toBeEnabled();
+});
+
+test('Review — approve skickar override-belopp till POST /upload-to-bezala', async ({
+  page,
+}) => {
+  const messages = buildMessages().map((m) =>
+    m.id === 1 ? { ...m, amount: null } : m,
+  );
+  await setupApiMocks(page, { messages });
+
+  const uploadRequest = page.waitForRequest(
+    (req) =>
+      req.url().includes('/api/messages/1/upload-to-bezala') &&
+      req.method() === 'POST',
+  );
+
+  await page.goto('/review');
+  const amountInput = page.getByTestId('review-amount-input');
+  await amountInput.fill('320.50');
+  await page.getByTestId('approve-button').click();
+
+  const req = await uploadRequest;
+  const body = req.postDataJSON();
+  // Body ska innehålla amount-override
+  expect(body.amount).toBe(320.5);
+});
+
 test('Review — tom-state när inga pending (SV + EN)', async ({ page }) => {
   // Byt ut fixture till bara non-pending rader
   const all = buildMessages().map((m) => ({

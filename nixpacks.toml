@@ -1,15 +1,19 @@
 [phases.setup]
-# weasyprint kräver pango + libffi + glib + cairo som systemdeps
+# weasyprint kräver pango + cairo + harfbuzz + glib + libffi som systemdeps.
+# Railway-produktion kraschade tidigare på "cannot load library
+# 'libgobject-2.0-0'" → gobject-introspection + freetype tillagda.
 nixPkgs = [
   "python311",
   "nodejs_20",
   "gcc",
+  "gobject-introspection",
   "pango",
-  "libffi",
-  "glib",
   "cairo",
   "harfbuzz",
+  "glib",
+  "libffi",
   "fontconfig",
+  "freetype",
 ]
 
 [phases.install]

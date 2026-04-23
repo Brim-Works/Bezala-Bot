@@ -115,11 +115,13 @@ class UploadReceiptTest(unittest.TestCase):
         self.assertEqual(data["attachment[account_id]"], "101")
         self.assertEqual(data["attachment[cost_center_id]"], "77")
         self.assertEqual(data["attachment[vendor]"], "Finnair")
-        # vat_lines skickas som JSON-sträng under attachment[vat_lines]
+        # vat_lines skickas som JSON-sträng under attachment[vat_lines].
+        # Bug 3: numeriska värden inuti vat_lines stringifieras också
+        # så Rails' strong-params-validator kan coerca dem säkert.
         self.assertIsInstance(data["attachment[vat_lines]"], str)
         self.assertEqual(
             json.loads(data["attachment[vat_lines]"]),
-            [{"amount": 503.0, "vat_code_id": 11}],
+            [{"amount": "503.0", "vat_code_id": "11"}],
         )
 
         # Filen skickas som top-level "file" (se FILE_FIELD_NAME).
@@ -768,6 +770,65 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 502)
         fake_bezala.upload_receipt.assert_not_called()
+
+    def test_missing_amount_returns_friendly_400(self):
+        """Bug 1a: 400-text ska peka användaren till Granska-vyn."""
+        mid = self._seed(amount=None)
+        resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+        self.assertEqual(resp.status_code, 400)
+        detail = resp.json()["detail"]
+        self.assertIn("belopp", detail.lower())
+        self.assertIn("Granska", detail)
+
+    def test_missing_date_returns_friendly_400(self):
+        mid = self._seed(receipt_date=None)
+        resp = self.client.post(f"/api/messages/{mid}/upload-to-bezala")
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("datum", resp.json()["detail"].lower())
+        self.assertIn("Granska", resp.json()["detail"])
+
+    def test_amount_override_via_payload(self):
+        """Bug 1b: UI kan skicka {amount: 123.45} → DB uppdateras +
+        uploaden fortsätter med nya värdet även om DB tidigare var None."""
+        mid = self._seed(amount=None)
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+        fake_bezala = MagicMock()
+        fake_bezala.list_accounts.return_value = [{"id": 67100, "name": "Matkaliput", "default_vat_id": 1355}]
+        fake_bezala.list_cost_centers.return_value = []
+        fake_bezala.list_vat_rates.return_value = []
+        fake_receipt = MagicMock()
+        fake_receipt.attachment_id = "r-99"
+        fake_bezala.upload_receipt.return_value = fake_receipt
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(
+                f"/api/messages/{mid}/upload-to-bezala",
+                json={"amount": 320.0, "receipt_date": "2026-04-21"},
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        fake_bezala.upload_receipt.assert_called_once()
+        kwargs = fake_bezala.upload_receipt.call_args.kwargs
+        self.assertEqual(kwargs["amount"], 320.0)
+        self.assertEqual(kwargs["date"], "2026-04-21")
+        # DB ska ha uppdaterats med överstyrda värden
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(id=mid).first()
+            self.assertEqual(row.amount, 320.0)
+            self.assertEqual(row.receipt_date, "2026-04-21")
+
+    def test_amount_override_zero_still_blocks(self):
+        """Användaren skickar 0 → samma 400, lika bra som None."""
+        mid = self._seed(amount=None)
+        resp = self.client.post(
+            f"/api/messages/{mid}/upload-to-bezala",
+            json={"amount": 0},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("belopp", resp.json()["detail"].lower())
 
     def test_bezala_422_preserves_body_in_error(self):
         """Bezala kastar 422 → raden sparas med body i error_message."""

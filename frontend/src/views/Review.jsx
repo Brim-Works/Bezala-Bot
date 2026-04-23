@@ -81,7 +81,7 @@ export default function Review() {
   }, [currentIndex, queue]);
 
   const onApprove = useCallback(
-    async (msg) => {
+    async (msg, overrides) => {
       if (!msg || uploadingId === msg.id) return;
       setUploadingId(msg.id);
       setOptimisticallyRemoved((s) => {
@@ -90,7 +90,7 @@ export default function Review() {
         return next;
       });
       try {
-        await api.uploadToBezala(msg.id);
+        await api.uploadToBezala(msg.id, overrides);
         toast.show({ kind: 'ok', message: t.review.toast.uploaded });
         // Stäng drawern om den var öppen för den godkända raden.
         closeIfFor(msg.id);
