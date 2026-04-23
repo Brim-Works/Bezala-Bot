@@ -967,8 +967,12 @@ def match_message_to_bezala(
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
-    """Koppla en ProcessedMessage till en befintlig missing-receipt i Bezala
-    genom att bifoga PDF:en till transaktionen + uppdatera vår DB-rad."""
+    """Koppla en ProcessedMessage till en befintlig missing-receipt i Bezala.
+    Two-step (samma som upload_receipt):
+      1. PUT /transactions/{missing_receipt_id} med metadata
+      2. POST /attachments med file + transaction_id
+    Bezala kräver metadata även på befintliga draft-transaktioner innan
+    fil kan bifogas — annars 422 'description/date/vat_lines tomma'."""
     row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Meddelandet finns inte")
@@ -976,6 +980,22 @@ def match_message_to_bezala(
         raise HTTPException(
             status_code=400,
             detail="Meddelandet saknar Drive-fil — kan inte koppla till Bezala",
+        )
+    if not row.receipt_date:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Kvittot saknar datum. Fyll i datumet i Granska-vyn innan "
+                "du kopplar till Bezala."
+            ),
+        )
+    if row.amount is None or row.amount == 0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Kvittot saknar belopp. Fyll i beloppet i Granska-vyn innan "
+                "du kopplar till Bezala."
+            ),
         )
 
     tx_id = str(payload.missing_receipt_id)
@@ -993,18 +1013,52 @@ def match_message_to_bezala(
 
     try:
         pdf_bytes = drive.download_pdf(row.drive_file_id)
+        logger.info(
+            "Match-to-bezala: msg_id=%s tx_id=%s drive_file_id=%s pdf_bytes=%d",
+            msg_id, tx_id, row.drive_file_id,
+            len(pdf_bytes) if pdf_bytes else 0,
+        )
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
             raise HTTPException(
                 status_code=502,
                 detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
             )
+
+        # Bygg metadata-payload via samma mapper som upload_receipt
+        metadata = fetch_bezala_metadata(bezala)
+        params = build_receipt_params(
+            file_name=row.file_name,
+            sender=row.sender,
+            vendor=row.vendor,
+            category=row.category,
+            amount=row.amount,
+            currency=row.currency,
+            receipt_date=row.receipt_date,
+            subject=row.subject,
+            accounts=metadata["accounts"],
+            cost_centers=metadata["cost_centers"],
+            vat_rates=metadata["vat_rates"],
+        )
+
+        # Steg 1: PUT /transactions/{tx_id} med metadata
+        bezala.update_transaction(
+            tx_id,
+            description=params["description"],
+            date=params["date"],
+            credit_account_id=params.get("credit_account_id"),
+            vat_lines_attributes=params.get("vat_lines_attributes", []),
+        )
+
+        # Steg 2: POST /attachments med fil + transaction_id
         bezala.attach_file(tx_id, row.file_name, pdf_bytes)
+
         row.bezala_transaction_id = tx_id
         row.bezala_upload_status = "success"
         row.bezala_error_message = None
         db.commit()
         logger.info(
-            "Kortmatchning klar: msg_id=%s → tx_id=%s", msg_id, tx_id,
+            "Kortmatchning klar (two-step): msg_id=%s → tx_id=%s",
+            msg_id, tx_id,
         )
         return _serialize_message(row)
     except BezalaError as exc:
