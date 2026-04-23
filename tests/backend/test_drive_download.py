@@ -72,5 +72,60 @@ class DownloadPdfHardeningTest(unittest.TestCase):
             client.download_pdf(None)
 
 
+class UploadPdfPermissionGrantTest(unittest.TestCase):
+    """Bug 2: Drive-filer får public 'anyone with link reader'-permission
+    så användare i webbläsaren (annat Google-konto) kan se previewan."""
+
+    def _setup_create(self, client, file_id: str = "new-file-1"):
+        create_call = MagicMock()
+        create_call.execute.return_value = {
+            "id": file_id,
+            "name": "kvitto.pdf",
+            "webViewLink": f"https://drive/{file_id}",
+        }
+        files_ep = MagicMock()
+        files_ep.create.return_value = create_call
+
+        permissions_ep = MagicMock()
+        perm_call = MagicMock()
+        perm_call.execute.return_value = {"id": "perm-1"}
+        permissions_ep.create.return_value = perm_call
+
+        client._service.files.return_value = files_ep
+        client._service.permissions.return_value = permissions_ep
+        return files_ep, permissions_ep
+
+    def test_upload_grants_anyone_reader(self):
+        client = _make_drive_client()
+        _, perms = self._setup_create(client)
+
+        result = client.upload_pdf("kvitto.pdf", b"%PDF-1.4\nx")
+
+        self.assertEqual(result.file_id, "new-file-1")
+        perms.create.assert_called_once()
+        kwargs = perms.create.call_args.kwargs
+        self.assertEqual(kwargs["fileId"], "new-file-1")
+        self.assertEqual(kwargs["body"], {"role": "reader", "type": "anyone"})
+
+    def test_upload_continues_even_if_permission_grant_fails(self):
+        """Permission-grant best-effort — Workspace-policy kan blockera,
+        filen finns ändå kvar."""
+        from googleapiclient.errors import HttpError
+
+        client = _make_drive_client()
+        _, perms = self._setup_create(client)
+        http_response = MagicMock()
+        http_response.status = 403
+        http_response.reason = "Forbidden"
+        perms.create.return_value.execute.side_effect = HttpError(
+            resp=http_response,
+            content=b'{"error": "forbidden"}',
+        )
+
+        # Ska INTE kasta — filen är ändå upploadad
+        result = client.upload_pdf("kvitto.pdf", b"%PDF-1.4\nx")
+        self.assertEqual(result.file_id, "new-file-1")
+
+
 if __name__ == "__main__":
     unittest.main()

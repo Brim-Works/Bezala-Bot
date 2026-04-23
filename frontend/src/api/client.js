@@ -78,7 +78,11 @@ export const api = {
   settings: () => request('/api/settings'),
   updateSettings: (payload) => request('/api/settings', { method: 'PUT', body: payload }),
   scan: () => request('/api/scan', { method: 'POST' }),
-  uploadToBezala: (id) => request(`/api/messages/${id}/upload-to-bezala`, { method: 'POST' }),
+  uploadToBezala: (id, overrides) =>
+    request(`/api/messages/${id}/upload-to-bezala`, {
+      method: 'POST',
+      body: overrides || {},
+    }),
   deleteErrors: () => request('/api/messages/errors', { method: 'DELETE' }),
   trashList: (limit = 200) => request(`/api/messages/trash?limit=${limit}`),
   trashCount: () => request('/api/messages/trash/count'),

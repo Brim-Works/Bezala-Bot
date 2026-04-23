@@ -1457,6 +1457,20 @@ html[data-theme='B'] .fld textarea {
   box-shadow: 0 0 0 3px color-mix(in oklch, var(--warn) 20%, transparent);
 }
 
+/* Bug 1: röd ram när obligatoriskt fält (t.ex. amount) saknas.
+ * Använder --err-token så båda teman renderar rätt. */
+.fld--invalid input,
+.fld--invalid select,
+.fld--invalid textarea {
+  border-color: var(--err);
+  box-shadow: 0 0 0 3px color-mix(in oklch, var(--err) 20%, transparent);
+}
+
+.fld__required {
+  color: var(--err);
+  margin-left: 2px;
+}
+
 .fld__hint {
   font-size: 11px;
   color: var(--muted);
@@ -1464,6 +1478,10 @@ html[data-theme='B'] .fld textarea {
   align-items: center;
   gap: 5px;
   margin-top: 1px;
+}
+
+.fld__hint--error {
+  color: var(--err);
 }
 
 .fld-row {

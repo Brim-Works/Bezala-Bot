@@ -14,16 +14,26 @@ from __future__ import annotations
 
 import io
 import logging
+import os
 from dataclasses import dataclass
 
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
+
+# Drive-kontot är ett annat än användarens inloggade Google-konto (se
+# dokstring). Default: vi lägger till "anyone with link"-läsrätt på varje
+# uppladdad fil så webbläsar-iframen (/preview) kan rendera den utan att
+# användaren får "You need access". Kan stängas av via env om policy kräver.
+PUBLIC_READ_ON_UPLOAD = os.environ.get(
+    "BEZALA_DRIVE_PUBLIC_READ", "true"
+).lower() in ("1", "true", "yes", "on")
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive.file",
@@ -80,12 +90,41 @@ class DriveClient:
             )
             .execute()
         )
-        logger.info("Laddade upp %s till Drive (id=%s)", filename, created["id"])
+        file_id = created["id"]
+        logger.info("Laddade upp %s till Drive (id=%s)", filename, file_id)
+
+        # Lägg till "anyone with link"-läsrätt best-effort. Misslyckas det
+        # (t.ex. Workspace-policy blockar) — fortsätt ändå, filen finns kvar
+        # och web_view_link funkar för kontots ägare.
+        if PUBLIC_READ_ON_UPLOAD:
+            self._grant_anyone_reader_safe(file_id, filename)
+
         return DriveUploadResult(
-            file_id=created["id"],
+            file_id=file_id,
             web_view_link=created.get("webViewLink", ""),
             name=created.get("name", filename),
         )
+
+    def _grant_anyone_reader_safe(self, file_id: str, filename: str) -> None:
+        try:
+            self._service.permissions().create(
+                fileId=file_id,
+                body={"role": "reader", "type": "anyone"},
+                fields="id",
+                supportsAllDrives=True,
+                sendNotificationEmail=False,
+            ).execute()
+            logger.info("Drive: gav anyone-reader på %s (id=%s)", filename, file_id)
+        except HttpError as exc:
+            logger.warning(
+                "Drive: kunde inte sätta anyone-reader på %s (id=%s): %s",
+                filename, file_id, exc,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "Drive: permission-grant misslyckades oväntat för %s (id=%s)",
+                filename, file_id,
+            )
 
     def download_pdf(self, file_id: str) -> bytes:
         """Hämta PDF-bytes från Drive.

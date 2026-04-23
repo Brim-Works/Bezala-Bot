@@ -482,8 +482,15 @@ class BezalaClient:
         if cost_center_id is not None:
             form["attachment[cost_center_id]"] = str(cost_center_id)
         if vat_lines:
-            # JSON-sträng under nested-nyckeln — Bezala parser den.
-            form["attachment[vat_lines]"] = json.dumps(vat_lines, ensure_ascii=False)
+            # JSON-sträng under nested-nyckeln — Bezalas serializer parsar.
+            # Stringifierar numeriska värden (amount, vat_code_id) så Rails'
+            # strong params INTE tolkar 503.0 som Float (känsligt) utan som
+            # sträng som sedan coercas till decimal via validators.
+            stringified = [
+                {k: (str(v) if isinstance(v, (int, float)) else v) for k, v in line.items()}
+                for line in vat_lines
+            ]
+            form["attachment[vat_lines]"] = json.dumps(stringified, ensure_ascii=False)
         if extra_fields:
             for k, v in extra_fields.items():
                 if v is None:

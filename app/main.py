@@ -876,9 +876,21 @@ def _safe_bezala_list(fn, label: str) -> dict:
         return {"count": 0, "rows": [], "error": f"{exc.status_code}: {exc.body or str(exc)}"}
 
 
+class UploadToBezalaPayload(BaseModel):
+    """Valfri override för Bezala-upload. Granska-vyn skickar redigerade
+    värden här så användaren kan fylla i saknat belopp/datum/etc utan
+    att behöva ändra DB-raden separat."""
+    amount: float | None = None
+    vendor: str | None = None
+    receipt_date: str | None = None  # 'YYYY-MM-DD'
+    currency: str | None = None
+    category: str | None = None
+
+
 @app.post("/api/messages/{msg_id}/upload-to-bezala")
 def upload_message_to_bezala(
     msg_id: int,
+    payload: UploadToBezalaPayload | None = None,
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
@@ -890,15 +902,40 @@ def upload_message_to_bezala(
             status_code=400,
             detail="Meddelandet saknar Drive-fil — kan inte ladda upp till Bezala",
         )
+
+    # Redigerade värden från Granska-vyn överstyr DB. Vi commit:ar dem
+    # INNAN uppladdningen så DB alltid speglar vad som skickats — om
+    # Bezala 422:ar kan användaren läsa det från bezala_error_message.
+    if payload:
+        if payload.amount is not None:
+            row.amount = payload.amount
+        if payload.vendor is not None:
+            row.vendor = payload.vendor
+        if payload.receipt_date is not None:
+            row.receipt_date = payload.receipt_date
+        if payload.currency is not None:
+            row.currency = payload.currency
+        if payload.category is not None:
+            row.category = payload.category
+        db.commit()
+        db.refresh(row)
+
+    # Efter eventuell override: kontroll för fält Bezala kräver
     if not row.receipt_date:
         raise HTTPException(
             status_code=400,
-            detail="Meddelandet saknar datum — Bezala kräver 'date'",
+            detail=(
+                "Kvittot saknar datum. Fyll i datumet manuellt i Granska-vyn "
+                "innan överföring till Bezala."
+            ),
         )
-    if row.amount is None:
+    if row.amount is None or row.amount == 0:
         raise HTTPException(
             status_code=400,
-            detail="Meddelandet saknar belopp — Bezala kräver 'amount' för vat_lines",
+            detail=(
+                "Kvittot saknar belopp. Fyll i beloppet manuellt i Granska-vyn "
+                "innan överföring till Bezala."
+            ),
         )
 
     try:

@@ -303,6 +303,7 @@ export default {
       vendor: 'Leverantör',
       date: 'Datum',
       amount: 'Belopp',
+      amountRequired: 'Fyll i belopp innan överföring till Bezala',
       currency: 'Valuta',
       vatRate: 'Moms',
       category: 'Kategori',

@@ -69,14 +69,38 @@ export default function ReviewForm({
 
   const editedCount = editedKeys.size;
 
-  const fieldClass = (key) => `fld ${editedKeys.has(key) ? 'fld--edited' : ''}`;
+  // Bug 1: markera amount som obligatoriskt med röd ram + hjälptext
+  // när det är tomt. Blockar också submit — Bezala 400:ar annars.
+  const amountText = (form.amount || '').trim();
+  const amountNumber = parseFloat(amountText.replace(',', '.'));
+  const amountMissing =
+    amountText === '' || !Number.isFinite(amountNumber) || amountNumber === 0;
+
+  const fieldClass = (key) => {
+    const edited = editedKeys.has(key) ? 'fld--edited' : '';
+    const invalid = key === 'amount' && amountMissing ? 'fld--invalid' : '';
+    return `fld ${edited} ${invalid}`.trim();
+  };
+
+  const buildOverrides = () => {
+    const out = {};
+    if (editedKeys.has('amount') && Number.isFinite(amountNumber)) {
+      out.amount = amountNumber;
+    }
+    if (editedKeys.has('vendor') && form.vendor) out.vendor = form.vendor;
+    if (editedKeys.has('date') && form.date) out.receipt_date = form.date;
+    if (editedKeys.has('currency') && form.currency) out.currency = form.currency;
+    if (editedKeys.has('category') && form.category) out.category = form.category;
+    return out;
+  };
 
   return (
     <form
       className="form-pane"
       onSubmit={(e) => {
         e.preventDefault();
-        onApprove(message);
+        if (amountMissing) return;
+        onApprove(message, buildOverrides());
       }}
       data-testid="review-form"
     >
@@ -114,14 +138,27 @@ export default function ReviewForm({
 
         <div className="fld-row fld-row--3">
           <label className={fieldClass('amount')}>
-            <span className="fld__label">{t.review.form.amount}</span>
+            <span className="fld__label">
+              {t.review.form.amount}
+              {amountMissing ? (
+                <span className="fld__required" aria-hidden="true"> *</span>
+              ) : null}
+            </span>
             <input
               type="text"
               inputMode="decimal"
               className="mono"
               value={form.amount}
               onChange={(e) => update('amount', e.target.value)}
+              aria-invalid={amountMissing}
+              aria-describedby={amountMissing ? 'amount-hint' : undefined}
+              data-testid="review-amount-input"
             />
+            {amountMissing ? (
+              <span id="amount-hint" className="fld__hint fld__hint--error">
+                {t.review.form.amountRequired}
+              </span>
+            ) : null}
           </label>
           <label className={fieldClass('currency')}>
             <span className="fld__label">{t.review.form.currency}</span>
@@ -237,8 +274,9 @@ export default function ReviewForm({
         <button
           type="submit"
           className="btn primary"
-          disabled={isUploading}
+          disabled={isUploading || amountMissing}
           data-testid="approve-button"
+          title={amountMissing ? t.review.form.amountRequired : undefined}
         >
           {isUploading ? t.review.approving : t.review.approve}
         </button>
