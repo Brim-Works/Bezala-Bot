@@ -967,12 +967,12 @@ def match_message_to_bezala(
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
-    """Koppla en ProcessedMessage till en befintlig missing-receipt i Bezala.
-    Two-step (samma som upload_receipt):
-      1. PUT /transactions/{missing_receipt_id} med metadata
-      2. POST /attachments med file + transaction_id
-    Bezala kräver metadata även på befintliga draft-transaktioner innan
-    fil kan bifogas — annars 422 'description/date/vat_lines tomma'."""
+    """Bifoga en PDF till en befintlig Bezala-kortransaktion.
+
+    OBS: Kortransaktioner ägs av finanssystemet — PUT /transactions/{id}
+    ger 403. Bezala har redan metadata (belopp, datum, beskrivning) från
+    kortsystemet, så vi ska INTE försöka uppdatera dem. Bara bifoga
+    PDF:en via POST /attachments med transaction_id (utan draft=1)."""
     row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Meddelandet finns inte")
@@ -980,22 +980,6 @@ def match_message_to_bezala(
         raise HTTPException(
             status_code=400,
             detail="Meddelandet saknar Drive-fil — kan inte koppla till Bezala",
-        )
-    if not row.receipt_date:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Kvittot saknar datum. Fyll i datumet i Granska-vyn innan "
-                "du kopplar till Bezala."
-            ),
-        )
-    if row.amount is None or row.amount == 0:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Kvittot saknar belopp. Fyll i beloppet i Granska-vyn innan "
-                "du kopplar till Bezala."
-            ),
         )
 
     tx_id = str(payload.missing_receipt_id)
@@ -1024,32 +1008,8 @@ def match_message_to_bezala(
                 detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
             )
 
-        # Bygg metadata-payload via samma mapper som upload_receipt
-        metadata = fetch_bezala_metadata(bezala)
-        params = build_receipt_params(
-            file_name=row.file_name,
-            sender=row.sender,
-            vendor=row.vendor,
-            category=row.category,
-            amount=row.amount,
-            currency=row.currency,
-            receipt_date=row.receipt_date,
-            subject=row.subject,
-            accounts=metadata["accounts"],
-            cost_centers=metadata["cost_centers"],
-            vat_rates=metadata["vat_rates"],
-        )
-
-        # Steg 1: PUT /transactions/{tx_id} med metadata
-        bezala.update_transaction(
-            tx_id,
-            description=params["description"],
-            date=params["date"],
-            credit_account_id=params.get("credit_account_id"),
-            vat_lines_attributes=params.get("vat_lines_attributes", []),
-        )
-
-        # Steg 2: POST /attachments med fil + transaction_id
+        # Bifoga PDF direkt — ingen PUT, ingen metadata (Bezala äger
+        # kortransaktionens metadata från finanssystemet).
         bezala.attach_file(tx_id, row.file_name, pdf_bytes)
 
         row.bezala_transaction_id = tx_id
