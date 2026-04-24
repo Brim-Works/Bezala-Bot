@@ -540,7 +540,7 @@ def _process_one_message(
                 logger.exception("Claude-analys misslyckades för %s: %s", message_id, exc)
                 result.errors += 1
                 result.notes.append(f"{message_id}: AI-analys: {exc}")
-                _log_error(message_id, f"AI-analys: {exc}")
+                _log_error(message_id, f"AI-analys: {exc}", msg=msg)
                 return
 
             logger.info(
@@ -738,7 +738,16 @@ def _extract_preliminary_fields(
     }
 
 
-def _log_error(message_id: str, error: str) -> None:
+def _log_error(
+    message_id: str,
+    error: str,
+    *,
+    msg: "GmailMessage | None" = None,
+) -> None:
+    """Skapa eller uppdatera en error-rad för message_id. När msg ges
+    populeras sender/subject/received_at/thread_id också — annars
+    visas raden utan kontext i Översikt (och vendor-fallback kan inte
+    härleda något från tom sender)."""
     try:
         with session_scope() as db:
             existing = (
@@ -749,10 +758,25 @@ def _log_error(message_id: str, error: str) -> None:
             if existing:
                 existing.status = "error"
                 existing.error_message = error[:2000]
+                if msg is not None:
+                    # Fyll BARA tomma fält — skriv inte över tidigare
+                    # lyckade extraheringar om raden reprocessas.
+                    if not existing.sender and msg.sender:
+                        existing.sender = msg.sender
+                    if not existing.subject and msg.subject:
+                        existing.subject = msg.subject
+                    if not existing.received_at and msg.received_at:
+                        existing.received_at = msg.received_at
+                    if not existing.thread_id and msg.thread_id:
+                        existing.thread_id = msg.thread_id
             else:
                 db.add(
                     ProcessedMessage(
                         message_id=message_id,
+                        sender=(msg.sender if msg else None),
+                        subject=(msg.subject if msg else None),
+                        received_at=(msg.received_at if msg else None),
+                        thread_id=(msg.thread_id if msg else None),
                         status="error",
                         error_message=error[:2000],
                     )

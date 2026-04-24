@@ -353,5 +353,104 @@ class HtmlToPdfEnabledCoercionTest(unittest.TestCase):
         self.assertIs(coerce(0), False)
 
 
+class LogErrorPopulatesContextTest(unittest.TestCase):
+    """Regression: när AI-analysen kraschar på en HTML→PDF-konverterad
+    mail ska error-raden behålla sender/subject/received_at så Översikt
+    visar kontext och vendor-fallback kan härleda namn från domänen."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app.services import pipeline as pipeline_module
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        pipeline_module.session_scope = session_scope
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = models.ProcessedMessage
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _build_msg(self):
+        from app.services.gmail_client import GmailMessage
+        return GmailMessage(
+            message_id="sk-1",
+            thread_id="tx",
+            sender="Skånetrafiken <noreply@skanetrafiken.se>",
+            subject="Din biljett 14 april",
+            received_at=datetime(2026, 4, 14, tzinfo=timezone.utc),
+            snippet="Biljettnr 12345",
+            attachments=[],
+            body_html="<p>hej</p>",
+        )
+
+    def test_error_row_includes_msg_context(self):
+        from app.services.pipeline import _log_error
+        _log_error("sk-1", "AI-analys: Claude API-fel", msg=self._build_msg())
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(message_id="sk-1").first()
+        self.assertIsNotNone(row)
+        self.assertEqual(row.status, "error")
+        self.assertIn("Claude API-fel", row.error_message)
+        # Kontext ska finnas så vendor-fallback kan härleda Skånetrafiken
+        self.assertIn("skanetrafiken.se", row.sender)
+        self.assertEqual(row.subject, "Din biljett 14 april")
+        self.assertIsNotNone(row.received_at)
+        self.assertEqual(row.thread_id, "tx")
+
+    def test_error_row_without_msg_stays_minimal(self):
+        from app.services.pipeline import _log_error
+        _log_error("min-1", "Outer crash")
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(message_id="min-1").first()
+        self.assertIsNotNone(row)
+        self.assertEqual(row.status, "error")
+        self.assertEqual(row.error_message, "Outer crash")
+        self.assertIsNone(row.sender)
+        self.assertIsNone(row.subject)
+
+    def test_existing_row_keeps_populated_fields(self):
+        """Om en tidigare lyckad rad reprocessas och sedan kraschar —
+        skriv INTE över sender/subject som redan var satta."""
+        from app.services.pipeline import _log_error
+        with self.SessionLocal() as db:
+            db.add(self.ProcessedMessage(
+                message_id="ex-1",
+                sender="Existing <x@example.com>",
+                subject="Ursprunglig",
+                status="saved",
+            ))
+            db.commit()
+        _log_error("ex-1", "AI-analys: krasch", msg=self._build_msg())
+        with self.SessionLocal() as db:
+            row = db.query(self.ProcessedMessage).filter_by(message_id="ex-1").first()
+        self.assertEqual(row.status, "error")
+        self.assertIn("krasch", row.error_message)
+        # Ursprunglig sender/subject kvar — inte överskriven
+        self.assertEqual(row.sender, "Existing <x@example.com>")
+        self.assertEqual(row.subject, "Ursprunglig")
+
+
 if __name__ == "__main__":
     unittest.main()
