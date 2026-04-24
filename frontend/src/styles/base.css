@@ -614,6 +614,20 @@ html[data-theme='B'] .stat__value {
   color: var(--muted);
 }
 
+.fbar__segmented {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.fbar__segmented .fbar__tab {
+  padding: 4px 10px;
+}
+
 /* ========== Card / table ========== */
 .card {
   background: var(--surface);
@@ -1630,6 +1644,69 @@ html[data-theme='B'] .fld textarea {
   max-height: calc(100vh - 340px);
   min-height: 420px;
   overflow: hidden;
+}
+
+.log-list--full {
+  max-height: calc(100vh - 300px);
+}
+
+.log-hit {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 11px 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  width: 100%;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+}
+
+.log-hit:hover:not(.log-hit--static) {
+  background: var(--surface-2);
+}
+
+.log-hit--static {
+  cursor: default;
+  opacity: 0.75;
+}
+
+.log-hit__body {
+  min-width: 0;
+  flex: 1;
+}
+
+.log-hit__sender {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-hit__subject {
+  font-size: 12px;
+  color: var(--text-2);
+  margin-top: 1px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-hit__meta {
+  font-size: 10.5px;
+  margin-top: 3px;
+}
+
+.log-hit__date {
+  font-size: 11px;
+  color: var(--muted);
+  flex-shrink: 0;
+  margin-left: auto;
 }
 
 .log-list__head {

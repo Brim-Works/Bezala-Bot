@@ -404,6 +404,17 @@ export default {
       },
       noMatch: 'No runs match the filter.',
       noMessageMatch: 'No messages match the search.',
+      mode: {
+        runs: 'Run',
+        all: 'All matches',
+      },
+    },
+    allHits: {
+      title: 'All matches',
+      emptyPrompt: 'Type a search to see matches across all runs.',
+      noMatch: 'No messages match the search.',
+      runLabel: 'Run',
+      hitCount: 'hits',
     },
   },
   trash: {

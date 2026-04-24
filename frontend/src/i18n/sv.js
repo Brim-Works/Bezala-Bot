@@ -405,6 +405,17 @@ export default {
       },
       noMatch: 'Inga körningar matchar filtret.',
       noMessageMatch: 'Inga meddelanden matchar sökningen.',
+      mode: {
+        runs: 'Körning',
+        all: 'Alla träffar',
+      },
+    },
+    allHits: {
+      title: 'Alla träffar',
+      emptyPrompt: 'Skriv en söktext för att se träffar från alla körningar.',
+      noMatch: 'Inga meddelanden matchar sökningen.',
+      runLabel: 'Körning',
+      hitCount: 'träffar',
     },
   },
   trash: {
