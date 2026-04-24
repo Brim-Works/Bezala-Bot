@@ -171,7 +171,8 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
 
     def test_attach_file_sends_bill_line_id_and_draft(self):
         """attach_file replikerar UI:s 'Koppla till existerande':
-        POST /attachments med file + draft=1 + bill_line_id (inga metadata)."""
+        POST /attachments med file + draft=1 + bill_line_id (+ optional
+        description)."""
         client = _make_client()
         captured = {}
         resp = MagicMock()
@@ -197,6 +198,31 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
             "bill_line_id": "2163467",
         })
         self.assertIn("file", captured["files"])
+
+    def test_attach_file_includes_description_when_given(self):
+        """När description skickas med bifogas den i multipart-formen."""
+        client = _make_client()
+        captured = {}
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 5}'
+        resp.json = MagicMock(return_value={"id": 5})
+
+        def fake_request(method, url, **kwargs):
+            captured["data"] = kwargs.get("data")
+            return resp
+        client._client.request = fake_request
+
+        client.attach_file(
+            2163467, "kvitto.pdf", PDF_BYTES,
+            description="20260414 Anthropic API",
+        )
+        self.assertEqual(captured["data"], {
+            "draft": "1",
+            "bill_line_id": "2163467",
+            "description": "20260414 Anthropic API",
+        })
 
     def test_attach_file_rejects_invalid_pdf(self):
         from app.services.bezala_client import BezalaError
@@ -379,9 +405,11 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         fake_bezala.list_cost_centers.assert_not_called()
         fake_bezala.list_vat_rates.assert_not_called()
 
-        # attach_file anropas med (bill_line_id, filename, pdf) — inga kwargs
+        # attach_file anropas med bill_line_id + filename + pdf +
+        # description (filnamn utan .pdf) — inga andra metadata
         fake_bezala.attach_file.assert_called_once_with(
             "2163467", "20260414 Anthropic API.pdf", PDF_BYTES,
+            description="20260414 Anthropic API",
         )
 
     def test_match_to_bezala_404_for_missing_message(self):

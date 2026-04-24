@@ -1012,7 +1012,13 @@ def match_message_to_bezala(
                 detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
             )
 
-        bezala.attach_file(bill_line_id, row.file_name, pdf_bytes)
+        description = row.file_name
+        if description.lower().endswith(".pdf"):
+            description = description[:-4]
+        bezala.attach_file(
+            bill_line_id, row.file_name, pdf_bytes,
+            description=description,
+        )
 
         row.bezala_transaction_id = bill_line_id
         row.bezala_upload_status = "success"

@@ -487,13 +487,17 @@ class BezalaClient:
         bill_line_id: str | int,
         filename: str,
         pdf_bytes: bytes,
+        *,
+        description: str | None = None,
     ) -> BezalaAttachment:
         """Koppla PDF till befintlig kortrad i Bezala.
 
         Replikerar UI:s "Koppla till existerande"-flöde:
             POST /api/attachments
             multipart: file=<pdf>, draft=1, bill_line_id=<id>
-        Inga metadata-fält — bill_line äger redan description/date/vat."""
+                       [, description=<text>]
+        Bill_line äger amount/date/vat — vi skriver bara description
+        (annars står fältet tomt i Bezala)."""
         if not bill_line_id:
             raise BezalaError("attach_file: bill_line_id saknas")
         if not filename:
@@ -505,10 +509,13 @@ class BezalaClient:
             "draft": "1",
             "bill_line_id": str(bill_line_id),
         }
+        if description:
+            form["description"] = description
 
         logger.info(
-            "attach_file: POST /attachments bill_line_id=%s filename=%r bytes=%d",
-            bill_line_id, filename, len(pdf_bytes),
+            "attach_file: POST /attachments bill_line_id=%s filename=%r "
+            "bytes=%d form_keys=%s",
+            bill_line_id, filename, len(pdf_bytes), sorted(form.keys()),
         )
         resp = self._request(
             "POST",
