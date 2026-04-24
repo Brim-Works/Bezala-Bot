@@ -11,6 +11,7 @@ import KpiStrip from '../components/log/KpiStrip.jsx';
 import RunList from '../components/log/RunList.jsx';
 import RunDetail from '../components/log/RunDetail.jsx';
 import LogSearch from '../components/log/LogSearch.jsx';
+import AllHitsList from '../components/log/AllHitsList.jsx';
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -45,6 +46,7 @@ export default function Log() {
   const [searchText, setSearchText] = useState('');
   const [dateFilter, setDateFilter] = useState('all');
   const [statusFilter, setStatusFilter] = useState('all');
+  const [listMode, setListMode] = useState('runs');
 
   const loader = useCallback(async () => {
     const [runs, rawMessages] = await Promise.all([
@@ -186,6 +188,50 @@ export default function Log() {
     return entries.filter((e) => matchesSearch(e.sender, e.subject));
   }, [selectedRun, matchesSearch]);
 
+  // "Alla träffar"-läge: platta ut meddelanden över alla körningar och
+  // behåll körnings-metadata per rad. Tomt när söktexten är tom.
+  const allHits = useMemo(() => {
+    if (listMode !== 'all' || !searchLower) return [];
+    const items = [];
+    for (const run of runs) {
+      const runMsgs = messagesForRun(run, messages);
+      for (const m of runMsgs) {
+        if (!matchesSearch(m.sender, m.subject)) continue;
+        items.push({
+          key: `p-${run.id}-${m.id}`,
+          kind: 'processed',
+          id: m.id,
+          messageId: m.message_id,
+          sender: m.sender,
+          subject: m.subject,
+          date: m.processed_at || m.received_at,
+          runId: run.id,
+          runStartedAt: run.started_at,
+        });
+      }
+      for (const f of run.filtered_messages || []) {
+        if (!matchesSearch(f.sender, f.subject)) continue;
+        items.push({
+          key: `f-${run.id}-${f.message_id || items.length}`,
+          kind: 'filtered',
+          messageId: f.message_id,
+          sender: f.sender || '',
+          subject: f.subject || '',
+          date: f.received_at,
+          reason: f.reason,
+          runId: run.id,
+          runStartedAt: run.started_at,
+        });
+      }
+    }
+    items.sort((a, b) => {
+      const da = a.date ? new Date(a.date).getTime() : 0;
+      const db = b.date ? new Date(b.date).getTime() : 0;
+      return db - da;
+    });
+    return items;
+  }, [listMode, searchLower, runs, messages, matchesSearch]);
+
   const clearErrors = useCallback(async () => {
     const confirmed =
       typeof window !== 'undefined'
@@ -242,24 +288,34 @@ export default function Log() {
         onDateFilter={setDateFilter}
         statusFilter={statusFilter}
         onStatusFilter={setStatusFilter}
+        listMode={listMode}
+        onListMode={setListMode}
       />
 
-      <div className="log-split">
-        <RunList
-          runs={filteredRuns}
-          selectedId={selectedRun?.id ?? null}
-          onSelect={setSelectedRunId}
-          onClearErrors={clearErrors}
-          clearingErrors={clearingErrors}
-        />
-        <RunDetail
-          run={selectedRun}
-          messages={visibleMessages}
-          filteredEntries={visibleFiltered}
+      {listMode === 'all' ? (
+        <AllHitsList
+          hits={allHits}
+          searchText={searchText}
           onOpenMessage={onOpenMessage}
-          onReprocessed={onReprocessed}
         />
-      </div>
+      ) : (
+        <div className="log-split">
+          <RunList
+            runs={filteredRuns}
+            selectedId={selectedRun?.id ?? null}
+            onSelect={setSelectedRunId}
+            onClearErrors={clearErrors}
+            clearingErrors={clearingErrors}
+          />
+          <RunDetail
+            run={selectedRun}
+            messages={visibleMessages}
+            filteredEntries={visibleFiltered}
+            onOpenMessage={onOpenMessage}
+            onReprocessed={onReprocessed}
+          />
+        </div>
+      )}
     </>
   );
 }
