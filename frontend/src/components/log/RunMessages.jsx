@@ -5,6 +5,7 @@ import Pill from '../Pill.jsx';
 import { IconRefresh } from '../../icons/index.jsx';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount } from '../../lib/format.js';
+import { displayVendor } from '../../lib/vendorFromSender.js';
 import { api } from '../../api/client.js';
 import { useToast } from '../../lib/toast.jsx';
 
@@ -96,8 +97,8 @@ export default function RunMessages({
                   </td>
                   <td style={{ width: 200 }}>
                     <span className="vchip">
-                      <VendorLogo name={m.vendor} />
-                      <span>{m.vendor || <span className="muted">—</span>}</span>
+                      <VendorLogo name={displayVendor(m)} />
+                      <span>{displayVendor(m) || <span className="muted">—</span>}</span>
                     </span>
                   </td>
                   <td className="tbl__subject">
