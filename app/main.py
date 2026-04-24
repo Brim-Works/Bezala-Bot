@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, or_
 from sqlalchemy.orm import Session
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -666,6 +666,77 @@ def reprocess_message(
         "status": "reprocessing",
         "id": msg_id,
         "prior_status": prior_status,
+    }
+
+
+class ReprocessSkippedPayload(BaseModel):
+    senders: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/messages/reprocess-skipped")
+def reprocess_skipped_by_sender(
+    payload: ReprocessSkippedPayload,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Bulk-reprocess: hoppade (status='skipped:*') rader som matchar en
+    avsändare-substring tas bort så de scannas om.
+
+    Body: {"senders": ["skanetrafiken", "moovy"]} — matchas case-
+    insensitive som substring mot sender-kolumnen. För varje träff:
+      1. Ta bort Bezala-Klar-etiketten i Gmail (best-effort)
+      2. Radera DB-raden
+      3. Efter loop: trigga bakgrundsscan (max_results=50)
+    """
+    senders = [s.strip().lower() for s in (payload.senders or []) if s and s.strip()]
+    if not senders:
+        raise HTTPException(status_code=400, detail="senders saknas")
+
+    like_filters = [
+        func.lower(ProcessedMessage.sender).like(f"%{s}%") for s in senders
+    ]
+    rows = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.status.like("skipped:%"))
+        .filter(or_(*like_filters))
+        .all()
+    )
+
+    if not rows:
+        return {
+            "deleted": 0,
+            "labels_removed": 0,
+            "senders": senders,
+            "triggered_scan": False,
+        }
+
+    gmail = _get_gmail_client_safe()
+    labels_removed = 0
+    for row in rows:
+        if gmail and row.message_id:
+            try:
+                gmail.remove_done(row.message_id)
+                labels_removed += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "reprocess-skipped: kunde inte ta bort Bezala-Klar för %s",
+                    row.message_id,
+                )
+        db.delete(row)
+    db.commit()
+
+    background.add_task(run_scan, max_results=50)
+
+    logger.info(
+        "reprocess-skipped: senders=%s deleted=%d labels_removed=%d — scan triggad",
+        senders, len(rows), labels_removed,
+    )
+    return {
+        "deleted": len(rows),
+        "labels_removed": labels_removed,
+        "senders": senders,
+        "triggered_scan": True,
     }
 
 
