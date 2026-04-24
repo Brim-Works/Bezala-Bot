@@ -2,6 +2,7 @@ import VendorLogo from '../VendorLogo.jsx';
 import Confidence from '../Confidence.jsx';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount, fmtRelative } from '../../lib/format.js';
+import { displayVendor } from '../../lib/vendorFromSender.js';
 
 /* Vänsterkolumn: scrollbar lista över pending-rader. Vald rad får accent
  * vänsterkant enligt design/src/components.jsx (.q-item.active). */
@@ -20,6 +21,7 @@ export default function ReviewQueue({ queue, activeId, onSelect }) {
       <div className="queue-list" data-testid="review-queue">
         {queue.map((m) => {
           const isActive = m.id === activeId;
+          const vendor = displayVendor(m);
           return (
             <button
               key={m.id}
@@ -29,10 +31,10 @@ export default function ReviewQueue({ queue, activeId, onSelect }) {
               aria-pressed={isActive}
               data-testid={`queue-item-${m.id}`}
             >
-              <VendorLogo name={m.vendor} size={26} />
+              <VendorLogo name={vendor} size={26} />
               <div className="q-item__body">
                 <div className="q-item__vendor">
-                  {m.vendor || <span className="muted">{t.review.unknownVendor}</span>}
+                  {vendor || <span className="muted">{t.review.unknownVendor}</span>}
                 </div>
                 <div className="q-item__meta">
                   <span className="mono">{fmtRelative(m.processed_at, lang)}</span>

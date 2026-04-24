@@ -5,6 +5,7 @@ import { useApiData } from '../hooks/useApiData.js';
 import { useSelection } from '../hooks/useSelection.js';
 import { useToast } from '../lib/toast.jsx';
 import { fmtAmount, fmtDate } from '../lib/format.js';
+import { displayVendor } from '../lib/vendorFromSender.js';
 
 import VendorLogo from '../components/VendorLogo.jsx';
 import Pill from '../components/Pill.jsx';
@@ -247,14 +248,14 @@ export default function Trash() {
                       onRangeSelect={() =>
                         selection.selectRange(rows.map((r) => r.id), m.id)
                       }
-                      ariaLabel={`${t.trash.cols.select} ${m.vendor || m.subject || m.id}`}
+                      ariaLabel={`${t.trash.cols.select} ${displayVendor(m) || m.subject || m.id}`}
                     />
                   </td>
                   <td className="mono">{fmtDate(m.deleted_at, lang)}</td>
                   <td>
                     <span className="vchip">
-                      <VendorLogo name={m.vendor} />
-                      <span>{m.vendor || <span className="muted">—</span>}</span>
+                      <VendorLogo name={displayVendor(m)} />
+                      <span>{displayVendor(m) || <span className="muted">—</span>}</span>
                     </span>
                   </td>
                   <td className="tbl__subject">

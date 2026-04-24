@@ -1375,63 +1375,89 @@ def debug_html_to_pdf(
 
     Används för att felsöka varför HTML→PDF misslyckas (Skånetrafiken,
     Moovy) utan att behöva trigga en hel scan.
+
+    Alla fel serialiseras till JSON (aldrig 500 HTML-sida) så browsern
+    kan visa dem direkt.
     """
     import traceback
+    from app.services.html_pdf_converter import _html_diagnostics
 
     mid = (message_id or "").strip()
     if not mid:
-        raise HTTPException(status_code=400, detail="message_id saknas")
+        return {"ok": False, "stage": "input", "error": "message_id saknas"}
 
     try:
         gmail = GmailClient()
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("debug/html-to-pdf: Gmail-init misslyckades")
-        raise HTTPException(status_code=500, detail=f"Gmail-init: {exc}") from exc
+        return {
+            "ok": False,
+            "stage": "gmail_init",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        }
 
     try:
         msg = gmail.fetch_message(mid)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
         logger.exception("debug/html-to-pdf: fetch_message misslyckades för %s", mid)
-        raise HTTPException(status_code=502, detail=f"Gmail fetch: {exc}") from exc
-
-    from app.services.html_pdf_converter import _html_diagnostics
+        return {
+            "ok": False,
+            "stage": "gmail_fetch",
+            "message_id": mid,
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        }
 
     source = (msg.body_html or "").strip()
-    diag = _html_diagnostics(source) if source else {
-        "len": 0, "head": "", "link_rel_stylesheet": 0, "style_tags": 0,
-        "img_tags": 0, "external_img_https": 0, "external_img_http": 0,
-        "script_tags": 0, "svg_tags": 0, "has_doctype": False,
+    try:
+        diag = _html_diagnostics(source) if source else {
+            "len": 0, "head": "", "link_rel_stylesheet": 0, "style_tags": 0,
+            "img_tags": 0, "external_img_https": 0, "external_img_http": 0,
+            "script_tags": 0, "svg_tags": 0, "has_doctype": False,
+        }
+    except Exception as exc:  # noqa: BLE001
+        diag = {"error": f"diagnostics failed: {exc}"}
+
+    base = {
+        "message_id": mid,
+        "sender": msg.sender,
+        "subject": msg.subject,
+        "has_html": bool(source),
+        "has_text": bool(msg.body_text),
+        "body_text_len": len(msg.body_text or ""),
+        "diagnostics": diag,
     }
 
     try:
         pdf = html_to_pdf(msg.body_html or None, plain_text_fallback=msg.body_text or None)
         return {
+            **base,
             "ok": True,
-            "message_id": mid,
-            "sender": msg.sender,
-            "subject": msg.subject,
-            "diagnostics": diag,
             "pdf_bytes": len(pdf),
             "pdf_starts_with": pdf[:8].decode("latin-1", errors="replace"),
         }
     except HtmlToPdfError as exc:
-        # Den underliggande exceptionen loggades redan med stack trace
-        # i html_pdf_converter.py. Returnera också en kopia så vi ser
-        # den i browser-svaret utan att behöva Railway-loggen.
-        tb = traceback.format_exc()
-        logger.warning(
-            "debug/html-to-pdf misslyckades för %s: %s",
-            mid, exc,
-        )
+        logger.warning("debug/html-to-pdf misslyckades för %s: %s", mid, exc)
         return {
+            **base,
             "ok": False,
-            "message_id": mid,
-            "sender": msg.sender,
-            "subject": msg.subject,
-            "diagnostics": diag,
+            "stage": "html_to_pdf",
             "error": str(exc),
             "error_type": type(exc).__name__,
-            "traceback": tb,
+            "traceback": traceback.format_exc(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("debug/html-to-pdf: oväntat fel för %s", mid)
+        return {
+            **base,
+            "ok": False,
+            "stage": "unexpected",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
         }
 
 
