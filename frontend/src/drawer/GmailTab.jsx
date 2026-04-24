@@ -33,7 +33,7 @@ function MailPreview({ body, onFetchUrl, fetchingUrl, canFetch }) {
         <iframe
           title={t.drawer.gmail.previewTitle}
           className="mail-preview__frame"
-          sandbox=""
+          sandbox="allow-same-origin"
           srcDoc={html}
           data-testid="mail-preview-frame"
         />

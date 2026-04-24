@@ -25,9 +25,14 @@ _STYLE_RE = re.compile(r"<style\b[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL)
 _EVENT_ATTR_RE = re.compile(r"""\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|\S+)""", re.IGNORECASE)
 # javascript:-URL:er i href/src
 _JS_URL_RE = re.compile(r"""(href|src)\s*=\s*(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*')""", re.IGNORECASE)
-# Externa img src → placeholder (så vi inte exponerar user's IP-adress
-# till tracking-pixlar när mailet öppnas)
+# Externa img src → 1x1 transparent PNG (så vi inte exponerar user:s
+# IP-adress till tracking-pixlar när mailet öppnas). En valid data-URI
+# krävs — tom "data:" ger ERR_INVALID_URL i browser-konsolen.
 _IMG_SRC_EXTERNAL_RE = re.compile(r"""(<img\b[^>]*?\bsrc=)(["'])(?:https?://[^"']*)\2""", re.IGNORECASE)
+_TRANSPARENT_PNG = (
+    "data:image/png;base64,"
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+)
 # Extrahera alla <a href="..."> ur (helst saniterade) HTML
 _A_HREF_RE = re.compile(r"""<a\b[^>]*?\bhref=(["'])([^"']+)\1[^>]*>(.*?)</a>""", re.IGNORECASE | re.DOTALL)
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")
@@ -43,7 +48,10 @@ def sanitize_html(raw: str) -> str:
     clean = _STYLE_RE.sub("", clean)
     clean = _EVENT_ATTR_RE.sub("", clean)
     clean = _JS_URL_RE.sub(r'\1="#blocked"', clean)
-    clean = _IMG_SRC_EXTERNAL_RE.sub(r'\1\2data:\2', clean)
+    clean = _IMG_SRC_EXTERNAL_RE.sub(
+        lambda m: f"{m.group(1)}{m.group(2)}{_TRANSPARENT_PNG}{m.group(2)}",
+        clean,
+    )
     return clean
 
 
