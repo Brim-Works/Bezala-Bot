@@ -78,18 +78,24 @@ def _sanitize_filename(name: str) -> str:
     return name
 
 
-def _extract_json(raw: str) -> dict:
-    """Claude kan ibland packa JSON i codefences trots instruktioner."""
-    raw = (raw or "").strip()
-    if raw.startswith("```"):
-        # ta bort första och sista fence-raden
-        parts = raw.split("```")
-        for part in parts:
-            part = part.strip()
-            if part.startswith("{"):
-                raw = part
-                break
-    return json.loads(raw)
+def _extract_json(raw: str) -> str:
+    """Strippa markdown-codefences som Claude ibland packar JSON i
+    trots schema-instruktionen. Returnerar en ren sträng; callern
+    kör json.loads. Hanterar alla varianter:
+
+      - ``` {"a": 1} ```
+      - ```json {"a": 1} ```  (språktagg)
+      - {"a": 1}              (rå JSON, endast whitespace runt)
+      - ```json {"a": 1}       (saknad stängande fence)
+      - {"a": 1} ```           (saknad öppnande fence)
+    """
+    s = (raw or "").strip()
+    if s.startswith("```"):
+        # Ta bort öppnande fence + valfri språktagg (```json, ```JSON, ```)
+        s = s.split("\n", 1)[1] if "\n" in s else s[3:]
+    if s.endswith("```"):
+        s = s.rsplit("```", 1)[0]
+    return s.strip()
 
 
 def _fallback_filename(
@@ -179,7 +185,7 @@ class ReceiptAnalyzer:
             block.text for block in resp.content if getattr(block, "type", "") == "text"
         )
         try:
-            payload = _extract_json(raw_text)
+            payload = json.loads(_extract_json(raw_text))
         except json.JSONDecodeError as exc:
             raise AnalyzerError(
                 f"Kunde inte parsa Claude-JSON: {exc} (raw: {raw_text[:500]!r})"
