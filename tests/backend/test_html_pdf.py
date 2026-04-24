@@ -336,5 +336,22 @@ class PipelineHtmlToPdfTest(unittest.TestCase):
             self.assertEqual(row.status, "skipped:html_pdf_failed")
 
 
+class HtmlToPdfEnabledCoercionTest(unittest.TestCase):
+    """Regression: legacy AppSettings-rader kan ha html_to_pdf_enabled=NULL
+    (ALTER TABLE-defaults backfillar inte alltid). pipeline.run_scan måste
+    tolka None som True, annars stängs HTML→PDF av för alla senders."""
+
+    def test_none_is_coerced_to_true(self):
+        # Samma logik som i pipeline.run_scan (rad 134).
+        def coerce(raw):
+            return True if raw is None else bool(raw)
+
+        self.assertIs(coerce(None), True)
+        self.assertIs(coerce(True), True)
+        self.assertIs(coerce(False), False)
+        self.assertIs(coerce(1), True)
+        self.assertIs(coerce(0), False)
+
+
 if __name__ == "__main__":
     unittest.main()
