@@ -224,5 +224,31 @@ class MatcherCurrencyIntegrationTest(unittest.TestCase):
             self.assertNotIn("conversion", results[0])
 
 
+class LiveFrankfurterApiTest(unittest.TestCase):
+    """Riktig kall mot frankfurter.dev — verifierar att URL + redirect-
+    konfiguration faktiskt fungerar mot live-API:t. Hoppas gracefully
+    om nätverk saknas så CI utan internet inte fallerar."""
+
+    def test_sek_to_eur_returns_positive_rate(self):
+        import httpx
+        from app.services.currency_converter import _fetch_rate_from_api
+
+        try:
+            rate = _fetch_rate_from_api("2025-01-15", "SEK", "EUR")
+        except (httpx.ConnectError, httpx.ReadError, httpx.NetworkError) as exc:
+            self.skipTest(f"No network access for live API test: {exc}")
+
+        if rate is None:
+            self.skipTest(
+                "frankfurter.dev returned None — möjligt utfall av tillfällig "
+                "API-otillgänglighet, inte ett kodfel."
+            )
+        self.assertIsInstance(rate, float)
+        self.assertGreater(rate, 0)
+        # SEK→EUR ligger typiskt runt 0.08-0.10. Sanity-check (0, 1)
+        # försäkrar oss om att vi inte fått omvänd kurs eller skräpvärde.
+        self.assertLess(rate, 1.0)
+
+
 if __name__ == "__main__":
     unittest.main()

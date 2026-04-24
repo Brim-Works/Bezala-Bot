@@ -1,11 +1,11 @@
-"""Växelkurser från frankfurter.app (ECB-data) med DB-cache.
+"""Växelkurser från frankfurter.dev (ECB-data) med DB-cache.
 
 Används av kortmatchningen för att jämföra kvitto-belopp (SEK) mot
 Bezala-kortdebitering (EUR). Historiska kurser ändras inte → vi cachar
-för alltid i currency_rates-tabellen. frankfurter.app är öppen och
+för alltid i currency_rates-tabellen. frankfurter.dev är öppen och
 gratis, ingen API-nyckel behövs.
 
-Docs: https://www.frankfurter.app/docs/
+Docs: https://frankfurter.dev/
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from app.models import CurrencyRate
 
 logger = logging.getLogger(__name__)
 
-FRANKFURTER_URL = "https://api.frankfurter.app"
+FRANKFURTER_URL = "https://api.frankfurter.dev"
 FETCH_TIMEOUT_SECONDS = 5.0
 
 
@@ -39,10 +39,13 @@ def _normalize_currency(c: str | None) -> str:
 def _fetch_rate_from_api(
     date_str: str, from_currency: str, to_currency: str,
 ) -> float | None:
-    """Hämtar kurs från frankfurter.app. Returnerar None vid nätverksfel,
-    okänd valuta, eller datum i framtiden."""
+    """Hämtar kurs från frankfurter.dev. Returnerar None vid nätverksfel,
+    okänd valuta, eller datum i framtiden. follow_redirects=True så att
+    eventuella URL-flyttar inte tystar oss med 301."""
     try:
-        with httpx.Client(timeout=FETCH_TIMEOUT_SECONDS) as client:
+        with httpx.Client(
+            timeout=FETCH_TIMEOUT_SECONDS, follow_redirects=True,
+        ) as client:
             resp = client.get(
                 f"{FRANKFURTER_URL}/{date_str}",
                 params={"from": from_currency, "to": to_currency},
