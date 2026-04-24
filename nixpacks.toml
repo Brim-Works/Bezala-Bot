@@ -27,4 +27,7 @@ cmds = [
 ]
 
 [start]
-cmd = "/opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT"
+# sh -c krävs för $PORT-expansion — nixpacks kör annars cmd:en direkt
+# utan shell → uvicorn tar emot bokstavlig "$PORT"-sträng och kraschar
+# med "Invalid value for '--port': '$PORT' is not a valid integer".
+cmd = "sh -c '/opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT'"
