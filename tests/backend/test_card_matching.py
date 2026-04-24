@@ -199,6 +199,45 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         with self.assertRaises(BezalaError):
             client.attach_file("tx-77", "x.pdf", b"not a pdf")
 
+    def test_attach_file_sends_metadata_form_fields(self):
+        """attach_file inkluderar description/date/vat_lines (JSON-sträng)
+        tillsammans med file + transaction_id i multipart-requesten."""
+        import json as _json
+        client = _make_client()
+        captured = {}
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 5}'
+        resp.json = MagicMock(return_value={"id": 5})
+
+        def fake_request(method, url, **kwargs):
+            captured["data"] = kwargs.get("data")
+            return resp
+        client._client.request = fake_request
+
+        vat_lines = [{
+            "taxable": "100.00",
+            "tax_percentage": "0.255",
+            "currency": "EUR",
+            "expense_account_id": 67100,
+            "cost_center_ids": [927151],
+            "vat_code_id": 1355,
+        }]
+        client.attach_file(
+            "tx-99", "kvitto.pdf", PDF_BYTES,
+            description="20260414 Finnair HEL-CPH",
+            date="2026-04-14",
+            vat_lines=vat_lines,
+        )
+
+        data = captured["data"]
+        self.assertEqual(data["transaction_id"], "tx-99")
+        self.assertEqual(data["description"], "20260414 Finnair HEL-CPH")
+        self.assertEqual(data["date"], "2026-04-14")
+        # vat_lines JSON-stringifierad
+        self.assertEqual(_json.loads(data["vat_lines"]), vat_lines)
+
 
 # ---------- Endpoint-tester ----------
 
@@ -336,16 +375,23 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(len(entry["suggestions"]), 1)
         self.assertGreaterEqual(entry["suggestions"][0]["score"], 80)
 
-    def test_match_to_bezala_only_attaches_no_put(self):
-        """Kortransaktioner ägs av finanssystemet — PUT /transactions/{id}
-        ger 403. Match-flödet bifogar ENDAST filen via attach_file, ingen
-        update_transaction."""
+    def test_match_to_bezala_attaches_with_metadata_no_put(self):
+        """Kortransaktioner är read-only (PUT ger 403), så vi kallar INTE
+        update_transaction. Men /attachments kräver ändå metadata
+        (description/date/vat_lines) tillsammans med transaction_id —
+        de skickas som form-fält i attach_file-anropet."""
         mid = self._seed_processed()
 
         fake_drive = MagicMock()
         fake_drive.download_pdf.return_value = PDF_BYTES
 
         fake_bezala = MagicMock()
+        # Metadata-lookup behövs för vat_lines-mappning
+        fake_bezala.list_accounts.return_value = [
+            {"id": 166648, "name": "AI työkalut", "default_vat_id": 1355},
+        ]
+        fake_bezala.list_cost_centers.return_value = [{"id": 927151, "name": "VIS128"}]
+        fake_bezala.list_vat_rates.return_value = []
         fake_attachment = MagicMock()
         fake_attachment.attachment_id = "att-1"
         fake_bezala.attach_file.return_value = fake_attachment
@@ -362,43 +408,40 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(body["bezala_upload_status"], "success")
         self.assertEqual(body["bezala_transaction_id"], "12345")
 
-        # update_transaction får INTE kallas (403-risk på kortransaktioner)
+        # update_transaction får INTE kallas (kortransaktioner är 403)
         fake_bezala.update_transaction.assert_not_called()
-        # Ingen metadata-lookup behövs heller
-        fake_bezala.list_accounts.assert_not_called()
-        fake_bezala.list_cost_centers.assert_not_called()
-        fake_bezala.list_vat_rates.assert_not_called()
 
-        # attach_file anropas med tx_id + filename + PDF-bytes
+        # attach_file anropas med tx_id + filename + PDF + metadata-kwargs
         fake_bezala.attach_file.assert_called_once()
-        attach_args = fake_bezala.attach_file.call_args.args
-        self.assertEqual(attach_args[0], "12345")
-        self.assertEqual(attach_args[1], "20260414 Anthropic API.pdf")
-        self.assertEqual(attach_args[2], PDF_BYTES)
+        call = fake_bezala.attach_file.call_args
+        self.assertEqual(call.args[0], "12345")
+        self.assertEqual(call.args[1], "20260414 Anthropic API.pdf")
+        self.assertEqual(call.args[2], PDF_BYTES)
+        self.assertEqual(call.kwargs["description"], "20260414 Anthropic API")
+        self.assertEqual(call.kwargs["date"], "2026-04-14")
+        self.assertEqual(len(call.kwargs["vat_lines"]), 1)
+        vat = call.kwargs["vat_lines"][0]
+        self.assertEqual(vat["taxable"], "112.95")
+        self.assertEqual(vat["tax_percentage"], "0.255")
+        self.assertEqual(vat["vat_code_id"], 1355)
 
-    def test_match_to_bezala_no_metadata_guards(self):
-        """Match-flödet behöver INTE receipt_date/amount — Bezala äger
-        kortransaktionens metadata och vi ska bara bifoga filen."""
-        mid = self._seed_processed(receipt_date=None, amount=None)
+    def test_match_to_bezala_400_when_missing_date(self):
+        mid = self._seed_processed(receipt_date=None)
+        resp = self.client.post(
+            f"/api/messages/{mid}/match-to-bezala",
+            json={"missing_receipt_id": 1},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("datum", resp.json()["detail"].lower())
 
-        fake_drive = MagicMock()
-        fake_drive.download_pdf.return_value = PDF_BYTES
-
-        fake_bezala = MagicMock()
-        fake_attachment = MagicMock()
-        fake_attachment.attachment_id = "att-1"
-        fake_bezala.attach_file.return_value = fake_attachment
-
-        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
-             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
-            resp = self.client.post(
-                f"/api/messages/{mid}/match-to-bezala",
-                json={"missing_receipt_id": 12345},
-            )
-
-        # Ingen 400 även utan date/amount — attach_file ska lyckas ändå
-        self.assertEqual(resp.status_code, 200, resp.text)
-        fake_bezala.attach_file.assert_called_once()
+    def test_match_to_bezala_400_when_missing_amount(self):
+        mid = self._seed_processed(amount=None)
+        resp = self.client.post(
+            f"/api/messages/{mid}/match-to-bezala",
+            json={"missing_receipt_id": 1},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("belopp", resp.json()["detail"].lower())
 
     def test_match_to_bezala_404_for_missing_message(self):
         resp = self.client.post(

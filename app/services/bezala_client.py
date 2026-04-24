@@ -470,10 +470,19 @@ class BezalaClient:
         transaction_id: str,
         filename: str,
         pdf_bytes: bytes,
+        *,
+        description: str | None = None,
+        date: str | None = None,
+        vat_lines: list[dict] | None = None,
     ) -> BezalaAttachment:
-        """Bifoga en PDF till en BEFINTLIG transaktion (utan draft=1).
-        Används av match-flödet när Bezala redan skapat transaktionen
-        och vi bara fyller i filen."""
+        """Bifoga en PDF till en BEFINTLIG transaktion.
+
+        Bezala /attachments kräver alltid description/date/vat_lines i
+        samma request — även när transaction_id skickas för att koppla
+        till en befintlig kortransaktion. Utan metadata → 422.
+
+        vat_lines JSON-serialiseras automatiskt till en sträng i
+        multipart-form (Bezala parser den som nested attributes)."""
         if not transaction_id:
             raise BezalaError("attach_file: transaction_id saknas")
         if not filename:
@@ -481,15 +490,24 @@ class BezalaClient:
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
             raise BezalaError("attach_file: pdf_bytes är inte en giltig PDF")
 
+        form: dict[str, Any] = {"transaction_id": str(transaction_id)}
+        if description:
+            form["description"] = description
+        if date:
+            form["date"] = date
+        if vat_lines:
+            form["vat_lines"] = json.dumps(vat_lines, ensure_ascii=False)
+
         logger.info(
-            "attach_file: POST /attachments transaction_id=%s filename=%r bytes=%d",
-            transaction_id, filename, len(pdf_bytes),
+            "attach_file: POST /attachments transaction_id=%s filename=%r "
+            "bytes=%d form_keys=%s",
+            transaction_id, filename, len(pdf_bytes), sorted(form.keys()),
         )
         resp = self._request(
             "POST",
             "/attachments",
             files={FILE_FIELD_NAME: (filename, pdf_bytes, "application/pdf")},
-            data={"transaction_id": str(transaction_id)},
+            data=form,
         )
         if resp.status_code >= 400:
             raise BezalaError(
