@@ -1461,6 +1461,57 @@ def debug_html_to_pdf(
         }
 
 
+@app.get("/api/debug/sanitized-body")
+def debug_sanitized_body(
+    msg_id: int,
+    _: None = Depends(require_auth),
+    db: Session = Depends(get_db),
+):
+    """Debug: returnerar både raw body_html och saniterad output för en
+    ProcessedMessage-rad. Används för att verifiera att sanitize_html
+    gör rätt (ingen tom data:, inga cid:-URLs, inga <link>-fetches)."""
+    import traceback
+
+    try:
+        row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+        if row is None:
+            return {"ok": False, "stage": "db", "error": f"msg_id {msg_id} saknas"}
+        if not row.message_id:
+            return {"ok": False, "stage": "db", "error": "raden saknar Gmail message_id"}
+
+        gmail = GmailClient()
+        msg = gmail.fetch_message(row.message_id)
+        raw_html = msg.body_html or ""
+        raw_text = msg.body_text or ""
+        sanitized = sanitize_html(raw_html)
+        links = extract_links(raw_html)
+
+        return {
+            "ok": True,
+            "msg_id": msg_id,
+            "gmail_message_id": row.message_id,
+            "sender": msg.sender,
+            "subject": msg.subject,
+            "raw_html_len": len(raw_html),
+            "raw_html_head": raw_html[:1000],
+            "raw_text_len": len(raw_text),
+            "sanitized_len": len(sanitized),
+            "sanitized_head": sanitized[:2000],
+            "sanitized_full": sanitized if len(sanitized) <= 20000 else None,
+            "links_count": len(links),
+            "links": links[:20],
+        }
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("debug/sanitized-body misslyckades för msg_id=%s", msg_id)
+        return {
+            "ok": False,
+            "stage": "unexpected",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        }
+
+
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
 # /api/*, /health) matchas före. Returnerar index.html för alla client-side
 # routes (/review, /log m.fl.) så browser-reload och deep-linking fungerar.

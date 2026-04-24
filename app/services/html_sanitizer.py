@@ -25,10 +25,20 @@ _STYLE_RE = re.compile(r"<style\b[^>]*>.*?</style>", re.IGNORECASE | re.DOTALL)
 _EVENT_ATTR_RE = re.compile(r"""\s+on\w+\s*=\s*(?:"[^"]*"|'[^']*'|\S+)""", re.IGNORECASE)
 # javascript:-URL:er i href/src
 _JS_URL_RE = re.compile(r"""(href|src)\s*=\s*(?:"\s*javascript:[^"]*"|'\s*javascript:[^']*')""", re.IGNORECASE)
-# Externa img src → 1x1 transparent PNG (så vi inte exponerar user:s
-# IP-adress till tracking-pixlar när mailet öppnas). En valid data-URI
-# krävs — tom "data:" ger ERR_INVALID_URL i browser-konsolen.
-_IMG_SRC_EXTERNAL_RE = re.compile(r"""(<img\b[^>]*?\bsrc=)(["'])(?:https?://[^"']*)\2""", re.IGNORECASE)
+# Img src → 1x1 transparent PNG om källan är extern (http/https),
+# cid: (mail-inline), tom, eller ogiltig data-URI. Tidigare sparades
+# ERR_INVALID_URL-rops från iframe när Skånetrafiken-mail hade
+# src="cid:logo" eller src="" som browsern inte kunde upplösa.
+_IMG_SRC_ANY_RE = re.compile(
+    r"""(<img\b[^>]*?\bsrc=)(["'])(.*?)\2""",
+    re.IGNORECASE | re.DOTALL,
+)
+# Strippa externa stylesheets — weasyprint/browser försöker fetcha
+# och kan hänga / misslyckas inuti iframe srcdoc. Inline <style>
+# strippas separat av _STYLE_RE.
+_LINK_STYLESHEET_RE = re.compile(
+    r"""<link\b[^>]*?>""", re.IGNORECASE,
+)
 _TRANSPARENT_PNG = (
     "data:image/png;base64,"
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
@@ -38,20 +48,28 @@ _A_HREF_RE = re.compile(r"""<a\b[^>]*?\bhref=(["'])([^"']+)\1[^>]*>(.*?)</a>""",
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")
 
 
+def _replace_img_src(match: re.Match) -> str:
+    prefix, quote, src = match.group(1), match.group(2), match.group(3).strip()
+    # Bevara välformade inline data-URIs med mime-typ
+    if src.startswith("data:") and ";base64," in src and len(src) > 32:
+        return match.group(0)
+    return f"{prefix}{quote}{_TRANSPARENT_PNG}{quote}"
+
+
 def sanitize_html(raw: str) -> str:
-    """Ta bort scripts/styles/event-handlers. Ersätt externa bilder med
-    placeholder. Neutralisera javascript:-URL:er."""
+    """Ta bort scripts/styles/event-handlers + stylesheets. Ersätt
+    alla img-källor som inte är välformade data-URIs med placeholder
+    (skyddar mot tracking-pixlar OCH ERR_INVALID_URL från cid:/tomma
+    src i iframe srcdoc). Neutralisera javascript:-URL:er."""
     if not raw:
         return ""
     clean = raw
     clean = _SCRIPT_RE.sub("", clean)
     clean = _STYLE_RE.sub("", clean)
+    clean = _LINK_STYLESHEET_RE.sub("", clean)
     clean = _EVENT_ATTR_RE.sub("", clean)
     clean = _JS_URL_RE.sub(r'\1="#blocked"', clean)
-    clean = _IMG_SRC_EXTERNAL_RE.sub(
-        lambda m: f"{m.group(1)}{m.group(2)}{_TRANSPARENT_PNG}{m.group(2)}",
-        clean,
-    )
+    clean = _IMG_SRC_ANY_RE.sub(_replace_img_src, clean)
     return clean
 
 
