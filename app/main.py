@@ -1241,6 +1241,57 @@ def stats(db: Session = Depends(get_db), _: None = Depends(require_auth)):
     }
 
 
+@app.get("/api/debug/scan-sender")
+def debug_scan_sender(
+    sender: str,
+    limit: int = 20,
+    _: None = Depends(require_auth),
+):
+    """Debug-endpoint: bygger en Gmail-query med BARA from:<sender>
+    (inga exclusion-filter, ingen done-label, inga category-exkluderingar)
+    och returnerar metadata för matchande mail. Används för att
+    felsöka varför en avsändare inte plockas upp av ordinarie scan."""
+    sender_clean = (sender or "").strip()
+    if not sender_clean:
+        raise HTTPException(status_code=400, detail="sender saknas")
+    limit = max(1, min(int(limit or 20), 100))
+
+    query = f"from:{sender_clean}"
+    try:
+        gmail = GmailClient()
+    except Exception as exc:
+        logger.exception("debug/scan-sender: Gmail-init misslyckades")
+        raise HTTPException(status_code=500, detail=f"Gmail-init: {exc}") from exc
+
+    try:
+        ids = gmail.list_candidate_message_ids(query=query, max_results=limit)
+        messages: list[dict] = []
+        for mid in ids:
+            try:
+                meta = gmail.fetch_message_metadata(mid)
+            except Exception as exc:
+                logger.warning("debug/scan-sender: metadata %s misslyckades: %s", mid, exc)
+                continue
+            labels = meta.get("labels") or []
+            messages.append({
+                "message_id": meta["message_id"],
+                "sender": meta["sender"],
+                "subject": meta["subject"],
+                "date": meta["date"],
+                "labels": labels,
+                "categories": [l for l in labels if l.startswith("CATEGORY_")],
+                "snippet": meta["snippet"],
+            })
+        logger.info(
+            "debug/scan-sender: sender=%r query=%r returned=%d",
+            sender_clean, query, len(messages),
+        )
+        return {"query": query, "count": len(messages), "messages": messages}
+    except Exception as exc:
+        logger.exception("debug/scan-sender misslyckades")
+        raise HTTPException(status_code=502, detail=f"Gmail debug: {exc}") from exc
+
+
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
 # /api/*, /health) matchas före. Returnerar index.html för alla client-side
 # routes (/review, /log m.fl.) så browser-reload och deep-linking fungerar.

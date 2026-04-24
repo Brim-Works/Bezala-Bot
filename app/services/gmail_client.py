@@ -152,6 +152,34 @@ class GmailClient:
             if not page_token:
                 return ids
 
+    def fetch_message_metadata(self, message_id: str) -> dict:
+        """Billig metadata-hämtning: bara headers + labels + snippet.
+        Används av debug-endpoints där vi inte vill ladda ner bilagor."""
+        raw = (
+            self._service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=message_id,
+                format="metadata",
+                metadataHeaders=["From", "Subject", "Date"],
+            )
+            .execute()
+        )
+        headers = {
+            h["name"].lower(): h["value"]
+            for h in raw.get("payload", {}).get("headers", [])
+        }
+        return {
+            "message_id": raw.get("id", message_id),
+            "thread_id": raw.get("threadId", ""),
+            "sender": headers.get("from", ""),
+            "subject": headers.get("subject", ""),
+            "date": headers.get("date", ""),
+            "labels": list(raw.get("labelIds") or []),
+            "snippet": raw.get("snippet", ""),
+        }
+
     # ---------- Fetching ----------
 
     def fetch_messages(self, message_ids: Iterable[str]) -> Iterator[GmailMessage]:
