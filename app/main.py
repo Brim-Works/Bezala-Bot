@@ -1026,23 +1026,56 @@ def _safe_bezala_list(fn, label: str) -> dict:
         return {"count": 0, "rows": [], "error": f"{exc.status_code}: {exc.body or str(exc)}"}
 
 
+_MISSING_AMOUNT_RE = __import__("re").compile(
+    r"(\d+[.,]\d{2})\s+([A-Z]{3})\s*$"
+)
+
+
+def _parse_amount_from_description(desc: str | None) -> tuple[float | None, str | None]:
+    """Bezala bill_lines returnerar description som fri text i formatet
+    "NAMN: VENDOR, PLATS, LAND 28.54 EUR". Plocka belopp + valuta från
+    slutet av strängen när det strukturerade amount-fältet saknas."""
+    if not desc:
+        return None, None
+    match = _MISSING_AMOUNT_RE.search(desc)
+    if not match:
+        return None, None
+    amount_str = match.group(1).replace(",", ".")
+    try:
+        return float(amount_str), match.group(2)
+    except ValueError:
+        return None, None
+
+
 def _normalize_missing_receipt(raw: dict) -> dict:
     """Normalisera Bezalas missing_receipt-format till vår UI-shape.
 
     `id` är det vi skickar tillbaka som `missing_receipt_id` i match-
     requesten. Bezala UI använder bill_line_id i sin POST /attachments,
-    så vi prefererar bill_line_id och faller tillbaka till id."""
+    så vi prefererar bill_line_id och faller tillbaka till id.
+
+    amount/currency: Bezala returnerar null för bill_lines — plocka från
+    description-strängen ("... 28.54 EUR") om strukturerat fält saknas."""
     bill_line_id = raw.get("bill_line_id") or raw.get("id")
+    description = (
+        raw.get("description")
+        or raw.get("merchant")
+        or raw.get("name")
+        or ""
+    )
+    amount = raw.get("amount") or raw.get("sum")
+    currency = raw.get("currency")
+    if amount is None or not currency:
+        parsed_amount, parsed_currency = _parse_amount_from_description(description)
+        if amount is None:
+            amount = parsed_amount
+        if not currency:
+            currency = parsed_currency
     return {
         "id": bill_line_id,
-        "description": (
-            raw.get("description")
-            or raw.get("merchant")
-            or raw.get("name")
-            or ""
-        ),
-        "amount": raw.get("amount") or raw.get("sum"),
-        "currency": raw.get("currency") or "EUR",
+        "description": description,
+        "amount": amount,
+        "currency": currency or "EUR",
         "date": (
             raw.get("date")
             or raw.get("transaction_date")
