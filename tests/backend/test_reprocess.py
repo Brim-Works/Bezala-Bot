@@ -352,5 +352,147 @@ class ReprocessSkippedBySenderTest(unittest.TestCase):
         mock_scan.assert_called_once()
 
 
+class ReprocessErrorsTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app import main as app_module
+        from app.models import ProcessedMessage
+        from fastapi.testclient import TestClient
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[app_module.require_auth] = fake_require_auth
+        cls.app_module = app_module
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = ProcessedMessage
+        cls.client = TestClient(app_module.app)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed(self, **kwargs):
+        with self.SessionLocal() as db:
+            db.add(self.ProcessedMessage(**kwargs))
+            db.commit()
+
+    def test_deletes_all_error_rows_by_default(self):
+        self._seed(message_id="gm-e1", status="error",
+                   error_message="libgobject...", sender=None)
+        self._seed(message_id="gm-e2", status="error",
+                   error_message="AI-analys: Kunde inte parsa", sender=None)
+        self._seed(message_id="gm-s1", status="saved",
+                   error_message=None, sender="x@y.se")  # inte error
+
+        with patch.object(self.app_module, "_get_gmail_client_safe",
+                          return_value=MagicMock()), \
+             patch.object(self.app_module, "run_scan") as mock_scan:
+            resp = self.client.post(
+                "/api/messages/reprocess-errors", json={},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["deleted"], 2)
+        self.assertTrue(body["triggered_scan"])
+        with self.SessionLocal() as db:
+            remaining = {r.message_id for r in db.query(self.ProcessedMessage).all()}
+        self.assertEqual(remaining, {"gm-s1"})
+        mock_scan.assert_called_once()
+
+    def test_error_contains_filter_matches_substring(self):
+        self._seed(message_id="gm-go", status="error",
+                   error_message="cannot load library 'libgobject-2.0-0'")
+        self._seed(message_id="gm-ai", status="error",
+                   error_message="AI-analys: JSON parse")
+
+        with patch.object(self.app_module, "_get_gmail_client_safe",
+                          return_value=MagicMock()), \
+             patch.object(self.app_module, "run_scan") as mock_scan:
+            resp = self.client.post(
+                "/api/messages/reprocess-errors",
+                json={"error_contains": "libgobject"},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["deleted"], 1)
+        with self.SessionLocal() as db:
+            remaining = {r.message_id for r in db.query(self.ProcessedMessage).all()}
+        self.assertEqual(remaining, {"gm-ai"})
+        mock_scan.assert_called_once()
+
+    def test_message_ids_filter_is_explicit(self):
+        self._seed(message_id="gm-1", status="error", error_message="x")
+        self._seed(message_id="gm-2", status="error", error_message="y")
+        self._seed(message_id="gm-3", status="error", error_message="z")
+
+        with patch.object(self.app_module, "_get_gmail_client_safe",
+                          return_value=MagicMock()), \
+             patch.object(self.app_module, "run_scan"):
+            resp = self.client.post(
+                "/api/messages/reprocess-errors",
+                json={"message_ids": ["gm-1", "gm-3"]},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json()["deleted"], 2)
+        with self.SessionLocal() as db:
+            remaining = {r.message_id for r in db.query(self.ProcessedMessage).all()}
+        self.assertEqual(remaining, {"gm-2"})
+
+    def test_no_matches_returns_zero_no_scan(self):
+        self._seed(message_id="gm-1", status="saved", sender="x@y.se")
+        with patch.object(self.app_module, "_get_gmail_client_safe",
+                          return_value=MagicMock()), \
+             patch.object(self.app_module, "run_scan") as mock_scan:
+            resp = self.client.post(
+                "/api/messages/reprocess-errors", json={},
+            )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["deleted"], 0)
+        mock_scan.assert_not_called()
+
+
 if __name__ == "__main__":
     unittest.main()

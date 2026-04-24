@@ -741,6 +741,82 @@ def reprocess_skipped_by_sender(
     }
 
 
+class ReprocessErrorsPayload(BaseModel):
+    """Filter för reprocess-errors. error_contains = substring i
+    error_message, message_ids = explicit Gmail-id-lista. Om båda är
+    tomma raderas ALLA error-rader (fortfarande max 500 som säkerhet)."""
+    error_contains: str | None = None
+    message_ids: list[str] = Field(default_factory=list)
+
+
+@app.post("/api/messages/reprocess-errors")
+def reprocess_errors(
+    payload: ReprocessErrorsPayload,
+    background: BackgroundTasks,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Bulk-reprocess för error-rader. Används när HTML→PDF-pipelinen
+    har sparat rader med status='error' + sender=NULL (tidigare
+    _log_error-beteende innan msg-param lades till) — då kan
+    reprocess-skipped inte matcha dem på sender-substring.
+
+    Body (alla valfria):
+      - error_contains: substring i error_message (case-insensitive)
+      - message_ids: explicit lista av Gmail-message_id
+    Om båda är tomma: matchar ALLA status='error' (max 500).
+    """
+    q = db.query(ProcessedMessage).filter(ProcessedMessage.status == "error")
+    needle = (payload.error_contains or "").strip().lower()
+    if needle:
+        q = q.filter(func.lower(ProcessedMessage.error_message).like(f"%{needle}%"))
+    ids = [m.strip() for m in (payload.message_ids or []) if m and m.strip()]
+    if ids:
+        q = q.filter(ProcessedMessage.message_id.in_(ids))
+
+    rows = q.limit(500).all()
+    if not rows:
+        return {
+            "deleted": 0,
+            "labels_removed": 0,
+            "triggered_scan": False,
+            "filter": {"error_contains": needle or None, "message_ids": ids},
+        }
+
+    gmail = _get_gmail_client_safe()
+    labels_removed = 0
+    deleted_ids: list[str] = []
+    for row in rows:
+        if gmail and row.message_id:
+            try:
+                gmail.remove_done(row.message_id)
+                labels_removed += 1
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "reprocess-errors: kunde inte ta bort Bezala-Klar för %s",
+                    row.message_id,
+                )
+        if row.message_id:
+            deleted_ids.append(row.message_id)
+        db.delete(row)
+    db.commit()
+
+    background.add_task(run_scan, max_results=50)
+
+    logger.info(
+        "reprocess-errors: deleted=%d labels_removed=%d filter=%s — scan triggad",
+        len(rows), labels_removed,
+        {"error_contains": needle or None, "message_ids": ids},
+    )
+    return {
+        "deleted": len(rows),
+        "labels_removed": labels_removed,
+        "deleted_message_ids": deleted_ids,
+        "triggered_scan": True,
+        "filter": {"error_contains": needle or None, "message_ids": ids},
+    }
+
+
 @app.post("/api/messages/{msg_id}/fetch-pdf")
 def fetch_pdf_for_message(
     msg_id: int,
