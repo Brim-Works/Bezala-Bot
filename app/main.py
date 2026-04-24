@@ -20,6 +20,7 @@ from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.bezala_field_mapper import build_receipt_params
 from app.services.drive_client import DriveClient
 from app.services.gmail_client import GmailClient
+from app.services.html_pdf_converter import HtmlToPdfError, html_to_pdf
 from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import fetch_bezala_metadata, run_scan
@@ -1361,6 +1362,77 @@ def debug_scan_sender(
     except Exception as exc:
         logger.exception("debug/scan-sender misslyckades")
         raise HTTPException(status_code=502, detail=f"Gmail debug: {exc}") from exc
+
+
+@app.get("/api/debug/html-to-pdf")
+def debug_html_to_pdf(
+    message_id: str,
+    _: None = Depends(require_auth),
+):
+    """Debug-endpoint: hämtar body_html från Gmail för ett givet
+    message_id och kör html_to_pdf på det. Returnerar diagnos + PDF-
+    storlek vid framgång, eller stack trace + HTML-struktur vid fel.
+
+    Används för att felsöka varför HTML→PDF misslyckas (Skånetrafiken,
+    Moovy) utan att behöva trigga en hel scan.
+    """
+    import traceback
+
+    mid = (message_id or "").strip()
+    if not mid:
+        raise HTTPException(status_code=400, detail="message_id saknas")
+
+    try:
+        gmail = GmailClient()
+    except Exception as exc:
+        logger.exception("debug/html-to-pdf: Gmail-init misslyckades")
+        raise HTTPException(status_code=500, detail=f"Gmail-init: {exc}") from exc
+
+    try:
+        msg = gmail.fetch_message(mid)
+    except Exception as exc:
+        logger.exception("debug/html-to-pdf: fetch_message misslyckades för %s", mid)
+        raise HTTPException(status_code=502, detail=f"Gmail fetch: {exc}") from exc
+
+    from app.services.html_pdf_converter import _html_diagnostics
+
+    source = (msg.body_html or "").strip()
+    diag = _html_diagnostics(source) if source else {
+        "len": 0, "head": "", "link_rel_stylesheet": 0, "style_tags": 0,
+        "img_tags": 0, "external_img_https": 0, "external_img_http": 0,
+        "script_tags": 0, "svg_tags": 0, "has_doctype": False,
+    }
+
+    try:
+        pdf = html_to_pdf(msg.body_html or None, plain_text_fallback=msg.body_text or None)
+        return {
+            "ok": True,
+            "message_id": mid,
+            "sender": msg.sender,
+            "subject": msg.subject,
+            "diagnostics": diag,
+            "pdf_bytes": len(pdf),
+            "pdf_starts_with": pdf[:8].decode("latin-1", errors="replace"),
+        }
+    except HtmlToPdfError as exc:
+        # Den underliggande exceptionen loggades redan med stack trace
+        # i html_pdf_converter.py. Returnera också en kopia så vi ser
+        # den i browser-svaret utan att behöva Railway-loggen.
+        tb = traceback.format_exc()
+        logger.warning(
+            "debug/html-to-pdf misslyckades för %s: %s",
+            mid, exc,
+        )
+        return {
+            "ok": False,
+            "message_id": mid,
+            "sender": msg.sender,
+            "subject": msg.subject,
+            "diagnostics": diag,
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": tb,
+        }
 
 
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
