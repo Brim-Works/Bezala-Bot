@@ -17,9 +17,10 @@ function Row({ label, children }) {
 /* Preview-panel för mail-bodyn.
  * Renderas i sandboxad iframe så scripts/styles/JS inte kan köras —
  * sanitizing sker även server-side som defence-in-depth. Detekterade
- * <a href>-länkar listas separat (extract_links på servern) så
- * användaren kan klicka en specifik länk som vi sedan hämtar PDF från. */
-function MailPreview({ body, onFetchUrl, fetchingUrl }) {
+ * <a href>-länkar listas separat (extract_links på servern). När
+ * canFetch=true (needs_download-rader) är länkarna klickbara knappar
+ * som triggar fetch-PDF; annars rendereras de som externa länkar. */
+function MailPreview({ body, onFetchUrl, fetchingUrl, canFetch }) {
   const { t } = useI18n();
   const html = body?.html || '';
   const text = body?.text || '';
@@ -52,21 +53,36 @@ function MailPreview({ body, onFetchUrl, fetchingUrl }) {
           <ul>
             {links.map((link) => {
               const busy = fetchingUrl === link.href;
+              if (canFetch) {
+                return (
+                  <li key={link.href}>
+                    <button
+                      type="button"
+                      className="btn primary mail-preview__link-btn"
+                      onClick={() => onFetchUrl(link)}
+                      disabled={Boolean(fetchingUrl)}
+                      data-testid={`mail-preview-link-${link.href}`}
+                      title={link.href}
+                    >
+                      <IconDownload className="icon sm" />
+                      <span className="mail-preview__link-text">
+                        {busy ? t.drawer.gmail.fetchingLink : link.text}
+                      </span>
+                    </button>
+                  </li>
+                );
+              }
               return (
                 <li key={link.href}>
-                  <button
-                    type="button"
-                    className="btn primary mail-preview__link-btn"
-                    onClick={() => onFetchUrl(link)}
-                    disabled={Boolean(fetchingUrl)}
-                    data-testid={`mail-preview-link-${link.href}`}
+                  <a
+                    href={link.href}
+                    target="_blank"
+                    rel="noreferrer noopener"
+                    className="mail-preview__link-ext"
                     title={link.href}
                   >
-                    <IconDownload className="icon sm" />
-                    <span className="mail-preview__link-text">
-                      {busy ? t.drawer.gmail.fetchingLink : link.text}
-                    </span>
-                  </button>
+                    {link.text}
+                  </a>
                 </li>
               );
             })}
@@ -163,32 +179,28 @@ export default function GmailTab({ message, onUpdated, onTabChange }) {
         </Row>
       </dl>
 
-      {/* Gate 5: preview-knapp för needs_download-rader */}
-      {needsDownload ? (
-        body ? (
-          <MailPreview
-            body={body}
-            onFetchUrl={onFetchUrl}
-            fetchingUrl={fetchingUrl}
-          />
-        ) : (
-          <button
-            type="button"
-            className="btn primary"
-            onClick={onLoadPreview}
-            disabled={loadingBody}
-            data-testid="show-mail-preview"
-          >
-            <IconMail className="icon sm" />
-            <span>
-              {loadingBody
-                ? t.drawer.gmail.previewLoading
-                : t.drawer.gmail.showPreview}
-            </span>
-          </button>
-        )
+      {body ? (
+        <MailPreview
+          body={body}
+          onFetchUrl={onFetchUrl}
+          fetchingUrl={fetchingUrl}
+          canFetch={needsDownload}
+        />
       ) : (
-        <p className="drawer-note muted">{t.drawer.gmail.note}</p>
+        <button
+          type="button"
+          className="btn primary"
+          onClick={onLoadPreview}
+          disabled={loadingBody}
+          data-testid="show-mail-preview"
+        >
+          <IconMail className="icon sm" />
+          <span>
+            {loadingBody
+              ? t.drawer.gmail.previewLoading
+              : t.drawer.gmail.showPreview}
+          </span>
+        </button>
       )}
 
       {gmailUrl ? (

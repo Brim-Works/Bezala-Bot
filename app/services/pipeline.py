@@ -383,6 +383,12 @@ def _process_one_message(
     ):
         link = extract_receipt_link(msg.body_text, msg.body_html)
         if link:
+            prelim = _extract_preliminary_fields(
+                msg,
+                analyzer=analyzer,
+                use_ai=use_ai,
+                html_to_pdf_enabled=html_to_pdf_enabled,
+            )
             try:
                 with session_scope() as db:
                     db.add(
@@ -394,12 +400,19 @@ def _process_one_message(
                             received_at=msg.received_at,
                             status="needs_manual_download",
                             pending_link=link,
+                            vendor=prelim.get("vendor"),
+                            amount=prelim.get("amount"),
+                            currency=prelim.get("currency"),
+                            receipt_date=prelim.get("receipt_date"),
+                            category=prelim.get("category"),
                         )
                     )
                 result.processed += 1
                 logger.info(
-                    "Link-fetch: sparade %s som needs_manual_download (%s)",
+                    "Link-fetch: sparade %s som needs_manual_download "
+                    "(%s) prelim=%s",
                     message_id, link,
+                    {k: v for k, v in prelim.items() if v is not None},
                 )
             except IntegrityError:
                 result.skipped += 1
@@ -666,6 +679,63 @@ def _log_skip(msg: GmailMessage, reason: str) -> None:
             )
     except IntegrityError:
         pass
+
+
+def _extract_preliminary_fields(
+    msg: "GmailMessage",
+    *,
+    analyzer: "ReceiptAnalyzer",
+    use_ai: bool,
+    html_to_pdf_enabled: bool,
+) -> dict:
+    """För link_fetch-mail: försök extrahera vendor/date/amount ur mail-
+    bodyn (via HTML→PDF + Claude) INNAN användaren hämtar själva kvittot.
+    Användaren ser då kontext i Översikt. När PDFen senare laddas ner
+    skriver fetch-endpointen över med exakta värden.
+
+    Returnerar alltid en dict — tom om AI avaktiverad, html_to_pdf
+    avstängd, body saknas, eller konverterings-/analysfel."""
+    empty: dict[str, object] = {
+        "vendor": None, "amount": None, "currency": None,
+        "receipt_date": None, "category": None,
+    }
+    if not (use_ai and analyzer.enabled and html_to_pdf_enabled):
+        return empty
+    if not (msg.body_html or msg.body_text):
+        return empty
+
+    try:
+        pdf_bytes = html_to_pdf(
+            msg.body_html or None,
+            plain_text_fallback=msg.body_text or None,
+        )
+    except HtmlToPdfError as exc:
+        logger.info("Link-fetch prelim HTML→PDF misslyckades för %s: %s",
+                    msg.message_id, exc)
+        return empty
+
+    try:
+        analysis = analyzer.analyze(
+            attachment_bytes=pdf_bytes,
+            mime_type="application/pdf",
+            original_filename=f"preliminary-{msg.message_id}.pdf",
+            sender=msg.sender,
+            subject=msg.subject,
+            snippet=msg.snippet,
+            received_at=msg.received_at,
+        )
+    except AnalyzerError as exc:
+        logger.info("Link-fetch prelim AI-analys misslyckades för %s: %s",
+                    msg.message_id, exc)
+        return empty
+
+    return {
+        "vendor": analysis.vendor,
+        "amount": analysis.amount,
+        "currency": analysis.currency,
+        "receipt_date": analysis.date,
+        "category": analysis.category,
+    }
 
 
 def _log_error(message_id: str, error: str) -> None:

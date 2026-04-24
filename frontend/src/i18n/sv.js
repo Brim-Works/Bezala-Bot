@@ -59,7 +59,6 @@ export default {
       attachments: 'Bilaga',
       noAttachments: 'Ingen bilaga',
       openInGmail: 'Öppna i Gmail',
-      note: 'Mailets brödtext visas inte här — hämta den direkt från Gmail.',
       showPreview: 'Visa kvittomail',
       previewTitle: 'Mail-preview',
       previewLoading: 'Hämtar mail…',

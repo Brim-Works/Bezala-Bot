@@ -59,7 +59,6 @@ export default {
       attachments: 'Attachment',
       noAttachments: 'No attachment',
       openInGmail: 'Open in Gmail',
-      note: 'Mail body is not shown here — fetch it directly from Gmail.',
       showPreview: 'Show receipt mail',
       previewTitle: 'Mail preview',
       previewLoading: 'Loading mail…',

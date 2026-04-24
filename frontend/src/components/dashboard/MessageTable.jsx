@@ -7,6 +7,7 @@ import { SkeletonRow } from '../Skeleton.jsx';
 import { IconDownload, IconTrash } from '../../icons/index.jsx';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount, fmtRelative } from '../../lib/format.js';
+import { displayVendor } from '../../lib/vendorFromSender.js';
 
 const SKELETON_ROWS = 6;
 
@@ -238,6 +239,7 @@ export default function MessageTable({
             const isSelected = selectedId === m.id;
             const isFocusable = isSelected || (selectedId == null && m === messages[0]);
             const isChecked = hasSelection && selection.has(m.id);
+            const vendor = displayVendor(m);
             return (
               <tr
                 key={m.id}
@@ -262,15 +264,15 @@ export default function MessageTable({
                           m.id,
                         )
                       }
-                      ariaLabel={`${t.trash.bulk.selectRow}: ${m.vendor || m.subject || m.id}`}
+                      ariaLabel={`${t.trash.bulk.selectRow}: ${vendor || m.subject || m.id}`}
                     />
                   </td>
                 ) : null}
                 <td className="mono tbl__time">{fmtRelative(m.processed_at, lang)}</td>
                 <td>
                   <span className="vchip">
-                    <VendorLogo name={m.vendor} />
-                    <span>{m.vendor || <span className="muted">—</span>}</span>
+                    <VendorLogo name={vendor} />
+                    <span>{vendor || <span className="muted">—</span>}</span>
                   </span>
                 </td>
                 <td className="tbl__subject">

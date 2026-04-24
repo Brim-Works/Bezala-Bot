@@ -23,13 +23,16 @@ test('Gate 5 — "Visa kvittomail"-knapp syns bara för needs_download-rader', a
   await expect(page.getByTestId('show-mail-preview')).toBeVisible();
 });
 
-test('Gate 5 — knappen finns INTE för en vanlig saved-rad', async ({ page }) => {
+test('Gate 5 — "Visa kvittomail" finns även för saved-rader (läs-läge)', async ({ page }) => {
   await setupApiMocks(page);
   await page.goto('/');
   // Klicka rad 4 (Clas Ohlson, saved)
   await page.locator('tr[data-row-id="4"]').click();
   await expect(page.getByTestId('drawer-tab-gmail-content')).toBeVisible();
-  await expect(page.getByTestId('show-mail-preview')).toHaveCount(0);
+  // Knappen finns nu för alla mail — preview hjälper användaren se
+  // kontext även för saved-rader. Länkar i preview visas som externa
+  // <a> istället för fetch-PDF-knappar (canFetch=false).
+  await expect(page.getByTestId('show-mail-preview')).toBeVisible();
 });
 
 test('Gate 5 — klick "Visa kvittomail" laddar preview + länk-lista', async ({

@@ -823,6 +823,21 @@ html[data-theme='B'] .tbl thead th {
   white-space: nowrap;
 }
 
+.mail-preview__link-ext {
+  display: inline-block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--accent);
+  text-decoration: underline;
+  font-size: 13px;
+}
+
+.mail-preview__link-ext:hover {
+  text-decoration: none;
+}
+
 .tbl tbody td {
   padding: 0 14px;
   border-bottom: 1px solid var(--border);
