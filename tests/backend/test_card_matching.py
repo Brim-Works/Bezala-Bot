@@ -59,6 +59,50 @@ def _make_client():
 # ---------- Pure matcher-tester ----------
 
 
+class ParseAmountFromDescriptionTest(unittest.TestCase):
+    """Bezala bill_lines har amount=null — vi plockar från description
+    ('... 28.54 EUR' i slutet)."""
+
+    def _parse(self, desc):
+        from app.main import _parse_amount_from_description
+        return _parse_amount_from_description(desc)
+
+    def test_standard_format(self):
+        self.assertEqual(
+            self._parse("MIKKO KEINONEN: SKANETRAFIKEN APP, KRISTIANSTAD, SE 28.54 EUR"),
+            (28.54, "EUR"),
+        )
+
+    def test_swedish_comma_decimal(self):
+        self.assertEqual(
+            self._parse("MIKKO: MOOVY, HELSINKI, FI 10,69 EUR"),
+            (10.69, "EUR"),
+        )
+
+    def test_ignores_country_code_before_amount(self):
+        self.assertEqual(self._parse("SE 60.58 EUR"), (60.58, "EUR"))
+
+    def test_other_currency_code(self):
+        self.assertEqual(
+            self._parse("NAMN: VENDOR, STOCKHOLM, SE 300.00 SEK"),
+            (300.00, "SEK"),
+        )
+
+    def test_empty_string(self):
+        self.assertEqual(self._parse(""), (None, None))
+
+    def test_none_input(self):
+        self.assertEqual(self._parse(None), (None, None))
+
+    def test_no_amount_in_text(self):
+        self.assertEqual(self._parse("text utan belopp eller valuta"), (None, None))
+
+    def test_amount_without_two_decimals_not_matched(self):
+        """Heuristik: exakt två decimaler krävs för att undvika att plocka
+        ordinarie tal från fri text."""
+        self.assertEqual(self._parse("bara 123 EUR"), (None, None))
+
+
 class ScoreMatchTest(unittest.TestCase):
     def _missing(self, **over):
         base = {
@@ -347,6 +391,45 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(len(body), 1)
         self.assertEqual(body[0]["id"], 12345)
         self.assertEqual(body[0]["description"], "CLAUDE.AI SUBSCRIPTION")
+
+    def test_amount_parsed_from_description_when_field_missing(self):
+        """Bezala bill_lines returnerar amount=null. Vi plockar från
+        description-strängen så matchern har något att jämföra med."""
+        fake_bezala = MagicMock()
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 2176713,
+                "description": "MIKKO KEINONEN: SKANETRAFIKEN APP, KRISTIANSTAD, SE 28.54 EUR",
+                "amount": None,
+                "currency": None,
+                "date": "2026-04-22",
+            },
+        ]
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/missing-receipts")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()[0]
+        self.assertEqual(body["amount"], 28.54)
+        self.assertEqual(body["currency"], "EUR")
+
+    def test_amount_field_takes_precedence_over_description(self):
+        """När Bezala DÅ returnerar strukturerat amount (t.ex. Anthropic)
+        används det; description-parsning är bara en fallback."""
+        fake_bezala = MagicMock()
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 1,
+                "description": "nonsense 999.99 EUR",
+                "amount": 112.95,
+                "currency": "EUR",
+                "date": "2026-04-14",
+            },
+        ]
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/missing-receipts")
+        body = resp.json()[0]
+        self.assertEqual(body["amount"], 112.95)  # från fältet, inte desc
 
     def test_match_suggestions_returns_top_candidates(self):
         # Skapa en ProcessedMessage som matchar perfekt
