@@ -1231,6 +1231,14 @@ html[data-theme='A'] .rev-head__intro h1 {
   white-space: nowrap;
 }
 
+.match-suggestion__conversion {
+  font-size: 11.5px;
+  padding: 4px 8px;
+  background: color-mix(in oklch, var(--accent) 8%, var(--surface));
+  border-radius: var(--radius-sm);
+  align-self: flex-start;
+}
+
 .match-suggestion__actions {
   display: flex;
   justify-content: flex-end;

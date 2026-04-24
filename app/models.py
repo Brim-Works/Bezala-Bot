@@ -125,6 +125,24 @@ class AppSettings(Base):
     )
 
 
+class CurrencyRate(Base):
+    """Cache för historiska ECB-växelkurser från frankfurter.app.
+    Historiska kurser ändras inte → ingen TTL, unik (date, from, to)."""
+
+    __tablename__ = "currency_rates"
+    __table_args__ = (
+        UniqueConstraint("date", "from_currency", "to_currency",
+                         name="uq_currency_rate_date_pair"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    date = Column(String(10), nullable=False, index=True)  # YYYY-MM-DD
+    from_currency = Column(String(3), nullable=False)
+    to_currency = Column(String(3), nullable=False)
+    rate = Column(Float, nullable=False)
+    fetched_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
 class MaintenanceTask(Base):
     """Spår engångs-underhållsjobb som körts (kleaning, seed-data etc)."""
 

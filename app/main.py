@@ -25,6 +25,7 @@ from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import fetch_bezala_metadata, run_scan
 from app.services.receipt_analyzer import AnalyzerError, ReceiptAnalyzer
+from app.services.currency_converter import make_db_rate_provider
 from app.services.receipt_matcher import find_matches
 from app.services.settings_service import load_settings, settings_to_dict
 from app.services.trash_service import (
@@ -1101,10 +1102,16 @@ def get_match_suggestions(
     )
     candidate_dicts = [_serialize_message(r) for r in candidates_q.all()]
 
+    # Rate provider stängd runt request-db:n — möjliggör cross-currency-
+    # matchning (SEK-kvitto mot EUR-debitering osv) via ECB-kurs.
+    rate_provider = make_db_rate_provider(db)
+
     out: list[dict] = []
     for raw in missing_rows:
         missing = _normalize_missing_receipt(raw)
-        suggestions = find_matches(missing, candidate_dicts)
+        suggestions = find_matches(
+            missing, candidate_dicts, rate_provider=rate_provider,
+        )
         out.append({"missing_receipt": missing, "suggestions": suggestions})
     return out
 
