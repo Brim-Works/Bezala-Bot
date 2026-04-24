@@ -21,7 +21,7 @@ from app.models import CurrencyRate
 
 logger = logging.getLogger(__name__)
 
-FRANKFURTER_URL = "https://api.frankfurter.dev"
+FRANKFURTER_URL = "https://api.frankfurter.dev/v1"
 FETCH_TIMEOUT_SECONDS = 5.0
 
 
