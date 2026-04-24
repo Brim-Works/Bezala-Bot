@@ -1,0 +1,30 @@
+# Build-config för Railway. Vi föredrar Dockerfile (deterministisk
+# Debian-bas där weasyprint bara fungerar), men om Railway-dashboard
+# forcerar Nixpacks används denna fil som fallback. apt-libsen
+# hamnar i /usr/lib där weasyprint's ctypes.util.find_library() hittar
+# dem — i motsats till nix-store-libs som kräver LD_LIBRARY_PATH.
+
+[phases.setup]
+nixPkgs = ["python311", "nodejs_20", "gcc"]
+aptPkgs = [
+  "libpango-1.0-0",
+  "libpangoft2-1.0-0",
+  "libharfbuzz0b",
+  "libglib2.0-0",
+  "libcairo2",
+  "libffi8",
+  "fonts-liberation",
+  "fonts-dejavu-core",
+  "fontconfig",
+]
+
+[phases.install]
+cmds = [
+  "python3.11 -m venv /opt/venv",
+  "/opt/venv/bin/pip install --upgrade pip",
+  "/opt/venv/bin/pip install -r requirements.txt",
+  "cd frontend && npm install && npm run build",
+]
+
+[start]
+cmd = "/opt/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port $PORT"
