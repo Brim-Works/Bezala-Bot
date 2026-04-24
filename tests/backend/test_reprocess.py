@@ -209,5 +209,148 @@ class ReprocessEndpointTest(unittest.TestCase):
         mock_scan.assert_called_once()
 
 
+class ReprocessSkippedBySenderTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app import main as app_module
+        from app.models import ProcessedMessage
+        from fastapi.testclient import TestClient
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[app_module.require_auth] = fake_require_auth
+        cls.app_module = app_module
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = ProcessedMessage
+        cls.client = TestClient(app_module.app)
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed(self, **kwargs) -> None:
+        with self.SessionLocal() as db:
+            db.add(self.ProcessedMessage(**kwargs))
+            db.commit()
+
+    def test_matches_senders_case_insensitive_and_deletes(self):
+        self._seed(message_id="gm-1", sender="noreply@skanetrafiken.se",
+                   status="skipped:no_pdf", subject="Din biljett")
+        self._seed(message_id="gm-2", sender="NoReply@Moovy.FI",
+                   status="skipped:no_pdf", subject="Resa")
+        # INTE matchar:
+        self._seed(message_id="gm-3", sender="foo@other.se",
+                   status="skipped:no_pdf", subject="Annan")  # sender mismatch
+        self._seed(message_id="gm-4", sender="noreply@skanetrafiken.se",
+                   status="saved", subject="Klar")  # status mismatch
+
+        fake_gmail = MagicMock()
+        with patch.object(self.app_module, "_get_gmail_client_safe",
+                          return_value=fake_gmail), \
+             patch.object(self.app_module, "run_scan") as mock_scan:
+            resp = self.client.post(
+                "/api/messages/reprocess-skipped",
+                json={"senders": ["skanetrafiken", "moovy"]},
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["deleted"], 2)
+        self.assertEqual(body["labels_removed"], 2)
+        self.assertTrue(body["triggered_scan"])
+        # Bara de två matchande raderna är borta
+        with self.SessionLocal() as db:
+            remaining = {r.message_id for r in db.query(self.ProcessedMessage).all()}
+        self.assertEqual(remaining, {"gm-3", "gm-4"})
+        # Gmail.remove_done anropad för vardera matchande message_id
+        removed_ids = {c.args[0] for c in fake_gmail.remove_done.call_args_list}
+        self.assertEqual(removed_ids, {"gm-1", "gm-2"})
+        mock_scan.assert_called_once()
+
+    def test_empty_senders_returns_400(self):
+        resp = self.client.post(
+            "/api/messages/reprocess-skipped", json={"senders": []},
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn("senders", resp.json()["detail"].lower())
+
+    def test_no_matches_returns_zero_no_scan(self):
+        self._seed(message_id="gm-x", sender="foo@other.se",
+                   status="skipped:no_pdf", subject="X")
+        with patch.object(self.app_module, "_get_gmail_client_safe",
+                          return_value=MagicMock()), \
+             patch.object(self.app_module, "run_scan") as mock_scan:
+            resp = self.client.post(
+                "/api/messages/reprocess-skipped",
+                json={"senders": ["skanetrafiken"]},
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["deleted"], 0)
+        self.assertFalse(body["triggered_scan"])
+        mock_scan.assert_not_called()
+
+    def test_gmail_unavailable_still_deletes_rows(self):
+        """Om Gmail-klienten saknas — rader raderas ändå, labels_removed=0."""
+        self._seed(message_id="gm-a", sender="noreply@skanetrafiken.se",
+                   status="skipped:no_pdf")
+        with patch.object(self.app_module, "_get_gmail_client_safe",
+                          return_value=None), \
+             patch.object(self.app_module, "run_scan") as mock_scan:
+            resp = self.client.post(
+                "/api/messages/reprocess-skipped",
+                json={"senders": ["skanetrafiken"]},
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["deleted"], 1)
+        self.assertEqual(body["labels_removed"], 0)
+        mock_scan.assert_called_once()
+
+
 if __name__ == "__main__":
     unittest.main()
