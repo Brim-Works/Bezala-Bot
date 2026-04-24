@@ -878,9 +878,14 @@ def _safe_bezala_list(fn, label: str) -> dict:
 
 
 def _normalize_missing_receipt(raw: dict) -> dict:
-    """Normalisera Bezalas missing_receipt-format till vår UI-shape."""
+    """Normalisera Bezalas missing_receipt-format till vår UI-shape.
+
+    `id` är det vi skickar tillbaka som `missing_receipt_id` i match-
+    requesten. Bezala UI använder bill_line_id i sin POST /attachments,
+    så vi prefererar bill_line_id och faller tillbaka till id."""
+    bill_line_id = raw.get("bill_line_id") or raw.get("id")
     return {
-        "id": raw.get("id"),
+        "id": bill_line_id,
         "description": (
             raw.get("description")
             or raw.get("merchant")
@@ -967,13 +972,11 @@ def match_message_to_bezala(
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
-    """Bifoga en PDF till en befintlig Bezala-kortransaktion.
+    """Koppla en Drive-PDF till en befintlig Bezala-kortrad (bill_line).
 
-    POST /api/attachments kräver ALLTID metadata (description + date +
-    vat_lines) tillsammans med filen och transaction_id — även för
-    kortransaktioner som finanssystemet äger. Vi rör inte transaktionens
-    eget metadata (PUT är 403), utan skickar metadata i attachment-
-    requesten där Bezala accepterar det."""
+    Replikerar UI:s "Koppla till existerande"-flöde:
+        POST /api/attachments  multipart: file, draft=1, bill_line_id
+    Bill_line äger redan description/date/vat — vi skickar inga metadata."""
     row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Meddelandet finns inte")
@@ -982,24 +985,8 @@ def match_message_to_bezala(
             status_code=400,
             detail="Meddelandet saknar Drive-fil — kan inte koppla till Bezala",
         )
-    if not row.receipt_date:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Kvittot saknar datum. Fyll i datumet i Granska-vyn innan "
-                "du kopplar till Bezala."
-            ),
-        )
-    if row.amount is None or row.amount == 0:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "Kvittot saknar belopp. Fyll i beloppet i Granska-vyn innan "
-                "du kopplar till Bezala."
-            ),
-        )
 
-    tx_id = str(payload.missing_receipt_id)
+    bill_line_id = str(payload.missing_receipt_id)
 
     try:
         drive = DriveClient()
@@ -1015,8 +1002,8 @@ def match_message_to_bezala(
     try:
         pdf_bytes = drive.download_pdf(row.drive_file_id)
         logger.info(
-            "Match-to-bezala: msg_id=%s tx_id=%s drive_file_id=%s pdf_bytes=%d",
-            msg_id, tx_id, row.drive_file_id,
+            "Match-to-bezala: msg_id=%s bill_line_id=%s drive_file_id=%s pdf_bytes=%d",
+            msg_id, bill_line_id, row.drive_file_id,
             len(pdf_bytes) if pdf_bytes else 0,
         )
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
@@ -1025,42 +1012,22 @@ def match_message_to_bezala(
                 detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
             )
 
-        # Bygg metadata via samma mapper som upload_receipt. Vi bryr oss
-        # INTE om credit_account_id här (kortransaktionen äger den redan)
-        # — bara description/date/vat_lines_attributes skickas.
-        metadata = fetch_bezala_metadata(bezala)
-        params = build_receipt_params(
-            file_name=row.file_name,
-            sender=row.sender,
-            vendor=row.vendor,
-            category=row.category,
-            amount=row.amount,
-            currency=row.currency,
-            receipt_date=row.receipt_date,
-            subject=row.subject,
-            accounts=metadata["accounts"],
-            cost_centers=metadata["cost_centers"],
-            vat_rates=metadata["vat_rates"],
-        )
+        bezala.attach_file(bill_line_id, row.file_name, pdf_bytes)
 
-        bezala.attach_file(
-            tx_id, row.file_name, pdf_bytes,
-            description=params["description"],
-            date=params["date"],
-            vat_lines=params.get("vat_lines_attributes", []),
-        )
-
-        row.bezala_transaction_id = tx_id
+        row.bezala_transaction_id = bill_line_id
         row.bezala_upload_status = "success"
         row.bezala_error_message = None
         db.commit()
         logger.info(
-            "Kortmatchning klar (two-step): msg_id=%s → tx_id=%s",
-            msg_id, tx_id,
+            "Kortmatchning klar: msg_id=%s → bill_line_id=%s",
+            msg_id, bill_line_id,
         )
         return _serialize_message(row)
     except BezalaError as exc:
-        logger.exception("Kortmatchning misslyckades för msg_id=%s tx_id=%s", msg_id, tx_id)
+        logger.exception(
+            "Kortmatchning misslyckades för msg_id=%s bill_line_id=%s",
+            msg_id, bill_line_id,
+        )
         row.bezala_upload_status = "failed"
         row.bezala_error_message = (f"{exc} | body={exc.body}" if exc.body else str(exc))[:2000]
         db.commit()
