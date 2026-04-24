@@ -26,9 +26,14 @@ DATE_TOLERANCE_DAYS = 3
 DATE_BASE_SCORE = 30
 DATE_PENALTY_PER_DAY = 5
 
-# Belopp-tolerans: ±5% (valutakurser + avrundning)
+# Belopp-tolerans: ±5% (valutakurser + avrundning) för samma valuta.
 AMOUNT_TOLERANCE = 0.05
 AMOUNT_BONUS = 50
+
+# När vi konverterar via ECB-kurs tillåter vi ±10% (kurs-osäkerhet +
+# bankens spread på debiteringen), men ger något lägre confidence-bonus.
+AMOUNT_TOLERANCE_CONVERTED = 0.10
+AMOUNT_BONUS_CONVERTED = 40
 
 # Vendor-fuzzy: SequenceMatcher → 0..30
 VENDOR_BONUS_MAX = 30
@@ -111,6 +116,41 @@ def _amount_matches(missing_amount: float | None, candidate_amount: float | None
     return diff_pct <= AMOUNT_TOLERANCE
 
 
+def _amount_matches_via_conversion(
+    missing_amount: float | None,
+    missing_currency: str | None,
+    candidate_amount: float | None,
+    candidate_currency: str | None,
+    date_str: str | None,
+    rate_provider,
+) -> tuple[bool, float | None, float | None]:
+    """När kvitto- och kort-valuta skiljer: konvertera kvitto-beloppet
+    till kort-valutan via ECB-kurs (närmast missing.date, eller
+    candidate.date om missing saknar) och jämför med ±10% tolerans.
+
+    Returnerar (matches, converted_amount, rate). converted_amount är
+    candidate_amount i missing_currency (det Bezala-raden visar), som
+    UI kan visa som t.ex. "300 SEK ≈ 26.25 EUR"."""
+    if (
+        missing_amount is None or candidate_amount is None
+        or missing_amount == 0 or rate_provider is None
+    ):
+        return False, None, None
+    mc = (missing_currency or "").upper().strip()
+    cc = (candidate_currency or "").upper().strip()
+    if not mc or not cc or mc == cc:
+        return False, None, None
+    if not date_str:
+        return False, None, None
+
+    rate = rate_provider(date_str, cc, mc)
+    if rate is None:
+        return False, None, None
+    converted = candidate_amount * rate
+    diff_pct = abs(missing_amount - converted) / abs(missing_amount)
+    return diff_pct <= AMOUNT_TOLERANCE_CONVERTED, converted, rate
+
+
 def _date_score(missing_date: str | None, candidate_date: str | None) -> int:
     md = _parse_date(missing_date)
     cd = _parse_date(candidate_date)
@@ -122,18 +162,42 @@ def _date_score(missing_date: str | None, candidate_date: str | None) -> int:
     return max(0, DATE_BASE_SCORE - days * DATE_PENALTY_PER_DAY)
 
 
-def score_match(missing: dict, candidate: dict) -> dict:
+def score_match(
+    missing: dict,
+    candidate: dict,
+    *,
+    rate_provider=None,
+) -> dict:
     """Räkna ut total score 0..110+ för en kandidat mot ett saknat kvitto.
 
-    missing förväntar sig: {amount, currency, date, description}
-    candidate förväntar sig: ProcessedMessage-fält (amount, currency,
-        receipt_date, vendor)
+    missing: {amount, currency, date, description}
+    candidate: ProcessedMessage-fält (amount, currency, receipt_date, vendor)
+    rate_provider: valfri callable (date, from, to) → rate|None som
+        möjliggör cross-currency-matchning via ECB-kurs.
 
-    Returnerar dict {total, breakdown: {amount, date, vendor}}."""
+    Returnerar {total, breakdown: {amount, date, vendor}, conversion?:
+    {from_amount, from_currency, to_amount, to_currency, rate, date}}."""
     breakdown = {"amount": 0, "date": 0, "vendor": 0}
+    conversion: dict | None = None
 
     if _amount_matches(missing.get("amount"), candidate.get("amount")):
         breakdown["amount"] = AMOUNT_BONUS
+    elif rate_provider is not None:
+        matches, converted, rate = _amount_matches_via_conversion(
+            missing.get("amount"), missing.get("currency"),
+            candidate.get("amount"), candidate.get("currency"),
+            missing.get("date"), rate_provider,
+        )
+        if matches and converted is not None and rate is not None:
+            breakdown["amount"] = AMOUNT_BONUS_CONVERTED
+            conversion = {
+                "from_amount": candidate.get("amount"),
+                "from_currency": (candidate.get("currency") or "").upper(),
+                "to_amount": round(converted, 2),
+                "to_currency": (missing.get("currency") or "").upper(),
+                "rate": rate,
+                "date": missing.get("date"),
+            }
 
     breakdown["date"] = _date_score(
         missing.get("date"), candidate.get("receipt_date"),
@@ -145,20 +209,32 @@ def score_match(missing: dict, candidate: dict) -> dict:
     breakdown["vendor"] = int(round(sim * VENDOR_BONUS_MAX))
 
     total = sum(breakdown.values())
-    return {"total": total, "breakdown": breakdown}
+    result: dict = {"total": total, "breakdown": breakdown}
+    if conversion is not None:
+        result["conversion"] = conversion
+    return result
 
 
-def find_matches(missing: dict, candidates: list[dict]) -> list[dict]:
-    """För ett saknat kvitto: returnera top N kandidater som passar
-    tröskeln, sorterat på score desc."""
+def find_matches(
+    missing: dict,
+    candidates: list[dict],
+    *,
+    rate_provider=None,
+) -> list[dict]:
+    """För ett saknat kvitto: returnera top N kandidater över tröskeln,
+    sorterat på score desc. rate_provider möjliggör cross-currency-
+    matchning (None → bara samma-valuta-jämförelser som tidigare)."""
     scored: list[dict] = []
     for cand in candidates:
-        s = score_match(missing, cand)
+        s = score_match(missing, cand, rate_provider=rate_provider)
         if s["total"] >= MIN_DISPLAY_SCORE:
-            scored.append({
+            entry = {
                 "message": cand,
                 "score": s["total"],
                 "score_breakdown": s["breakdown"],
-            })
+            }
+            if "conversion" in s:
+                entry["conversion"] = s["conversion"]
+            scored.append(entry)
     scored.sort(key=lambda x: x["score"], reverse=True)
     return scored[:MAX_SUGGESTIONS_PER_MISSING]

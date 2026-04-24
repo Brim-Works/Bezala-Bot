@@ -63,6 +63,7 @@ function MissingItem({ row, isActive, onSelect }) {
 function SuggestionRow({ suggestion, missing, onMatch, isMatching }) {
   const { t, lang } = useI18n();
   const m = suggestion.message;
+  const conv = suggestion.conversion;
   return (
     <div className="match-suggestion" data-testid={`suggestion-${m.id}`}>
       <div className="match-suggestion__head">
@@ -76,6 +77,17 @@ function SuggestionRow({ suggestion, missing, onMatch, isMatching }) {
           {m.amount != null ? fmtAmount(m.amount, m.currency, lang) : '—'}
         </span>
       </div>
+      {conv ? (
+        <div
+          className="match-suggestion__conversion mono muted"
+          data-testid={`conversion-${m.id}`}
+        >
+          {fmtAmount(conv.from_amount, conv.from_currency, lang)}
+          {' ≈ '}
+          {fmtAmount(conv.to_amount, conv.to_currency, lang)}
+          {conv.date ? ` (ECB ${conv.date})` : ''}
+        </div>
+      ) : null}
       <div className="match-suggestion__file mono muted">
         {m.file_name || '—'}
       </div>
