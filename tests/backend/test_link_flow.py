@@ -744,5 +744,113 @@ class AiConfidenceThresholdTest(unittest.TestCase):
             self.assertEqual(row.ai_confidence, 45)
 
 
+class PreliminaryFieldsExtractionTest(unittest.TestCase):
+    """_extract_preliminary_fields kör HTML→PDF + Claude på mail-bodyn
+    för link_fetch-rader så Dashboard visar vendor/date/amount innan
+    användaren hämtar själva PDFen."""
+
+    def _build_msg(self, html="<p>Kvitto</p>", text="Kvitto"):
+        from datetime import datetime, timezone
+        from app.services.gmail_client import GmailMessage
+        return GmailMessage(
+            message_id="lf-1",
+            thread_id="t",
+            sender="noreply@arlandaexpress.se",
+            subject="Kvitto för ditt köp",
+            received_at=datetime(2026, 4, 24, tzinfo=timezone.utc),
+            snippet="Arlanda Express",
+            attachments=[],
+            body_html=html,
+            body_text=text,
+        )
+
+    def test_returns_empty_when_ai_disabled(self):
+        from app.services.pipeline import _extract_preliminary_fields
+        analyzer = MagicMock()
+        analyzer.enabled = False
+        out = _extract_preliminary_fields(
+            self._build_msg(), analyzer=analyzer,
+            use_ai=True, html_to_pdf_enabled=True,
+        )
+        self.assertEqual(out, {
+            "vendor": None, "amount": None, "currency": None,
+            "receipt_date": None, "category": None,
+        })
+        analyzer.analyze.assert_not_called()
+
+    def test_returns_empty_when_html_to_pdf_disabled(self):
+        from app.services.pipeline import _extract_preliminary_fields
+        analyzer = MagicMock()
+        analyzer.enabled = True
+        out = _extract_preliminary_fields(
+            self._build_msg(), analyzer=analyzer,
+            use_ai=True, html_to_pdf_enabled=False,
+        )
+        self.assertEqual(out["vendor"], None)
+        analyzer.analyze.assert_not_called()
+
+    def test_returns_analysis_fields_on_success(self):
+        from unittest.mock import patch as _patch
+        from app.services.pipeline import _extract_preliminary_fields
+        from app.services.receipt_analyzer import ReceiptAnalysis
+
+        analyzer = MagicMock()
+        analyzer.enabled = True
+        analyzer.analyze.return_value = ReceiptAnalysis(
+            is_receipt=True, confidence=70, filename="x.pdf",
+            vendor="Arlanda Express", amount=320.0, currency="SEK",
+            date="2026-04-24", category="Taxi", summary=None,
+        )
+        with _patch(
+            "app.services.pipeline.html_to_pdf",
+            return_value=b"%PDF-1.4\nstub",
+        ):
+            out = _extract_preliminary_fields(
+                self._build_msg(), analyzer=analyzer,
+                use_ai=True, html_to_pdf_enabled=True,
+            )
+        self.assertEqual(out, {
+            "vendor": "Arlanda Express", "amount": 320.0, "currency": "SEK",
+            "receipt_date": "2026-04-24", "category": "Taxi",
+        })
+        analyzer.analyze.assert_called_once()
+
+    def test_returns_empty_on_html_to_pdf_failure(self):
+        from unittest.mock import patch as _patch
+        from app.services.pipeline import _extract_preliminary_fields
+        from app.services.html_pdf_converter import HtmlToPdfError
+
+        analyzer = MagicMock()
+        analyzer.enabled = True
+        with _patch(
+            "app.services.pipeline.html_to_pdf",
+            side_effect=HtmlToPdfError("simulated"),
+        ):
+            out = _extract_preliminary_fields(
+                self._build_msg(), analyzer=analyzer,
+                use_ai=True, html_to_pdf_enabled=True,
+            )
+        self.assertEqual(out["vendor"], None)
+        analyzer.analyze.assert_not_called()
+
+    def test_returns_empty_on_analyzer_failure(self):
+        from unittest.mock import patch as _patch
+        from app.services.pipeline import _extract_preliminary_fields
+        from app.services.receipt_analyzer import AnalyzerError
+
+        analyzer = MagicMock()
+        analyzer.enabled = True
+        analyzer.analyze.side_effect = AnalyzerError("Claude API-fel")
+        with _patch(
+            "app.services.pipeline.html_to_pdf",
+            return_value=b"%PDF-1.4\nstub",
+        ):
+            out = _extract_preliminary_fields(
+                self._build_msg(), analyzer=analyzer,
+                use_ai=True, html_to_pdf_enabled=True,
+            )
+        self.assertEqual(out["vendor"], None)
+
+
 if __name__ == "__main__":
     unittest.main()
