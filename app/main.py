@@ -1461,6 +1461,77 @@ def debug_html_to_pdf(
         }
 
 
+@app.get("/api/debug/weasyprint-env")
+def debug_weasyprint_env(_: None = Depends(require_auth)):
+    """Debug: returnerar runtime-miljön så vi kan jämföra med vad
+    scan-pipelinen ser. Inkluderar pid, thread, LD_LIBRARY_PATH,
+    ctypes.util.find_library för gobject/pango/cairo, samt ett
+    smoke-test där weasyprint försöker konvertera ett minimalt HTML."""
+    import traceback
+    from app.services.html_pdf_converter import (
+        HtmlToPdfError, _runtime_diagnostics, html_to_pdf,
+    )
+    runtime = _runtime_diagnostics()
+    try:
+        pdf = html_to_pdf("<html><body><p>smoke</p></body></html>")
+        return {
+            "ok": True,
+            "runtime": runtime,
+            "smoke_pdf_bytes": len(pdf),
+        }
+    except HtmlToPdfError as exc:
+        return {
+            "ok": False,
+            "runtime": runtime,
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        }
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "ok": False,
+            "runtime": runtime,
+            "stage": "unexpected",
+            "error": str(exc),
+            "error_type": type(exc).__name__,
+            "traceback": traceback.format_exc(),
+        }
+
+
+@app.get("/api/debug/error-rows")
+def debug_error_rows(
+    limit: int = 20,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Debug: listar de senaste error-raderna med deras message_id,
+    sender, subject, status, error_message. Bättre än att öppna
+    drawer:n per rad för att se vad som krashade."""
+    limit = max(1, min(int(limit or 20), 100))
+    rows = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.status == "error")
+        .order_by(desc(ProcessedMessage.processed_at))
+        .limit(limit)
+        .all()
+    )
+    return {
+        "count": len(rows),
+        "rows": [
+            {
+                "id": r.id,
+                "message_id": r.message_id,
+                "sender": r.sender,
+                "subject": r.subject,
+                "received_at": r.received_at.isoformat() if r.received_at else None,
+                "processed_at": r.processed_at.isoformat() if r.processed_at else None,
+                "error_message": r.error_message,
+            }
+            for r in rows
+        ],
+    }
+
+
 @app.get("/api/debug/sanitized-body")
 def debug_sanitized_body(
     msg_id: int,

@@ -35,6 +35,25 @@ def _wrap_plain_text(text: str) -> str:
     return f"<html><body><pre>{safe}</pre></body></html>"
 
 
+def _runtime_diagnostics() -> dict:
+    """Runtime-info som är identisk per-process men kan skilja mellan
+    uvicorn-workers och APScheduler-tråden. Loggas vid weasyprint-
+    kraschar så vi kan jämföra miljön när det fungerar vs inte."""
+    import ctypes.util
+    import os
+    import sys
+    import threading
+    return {
+        "pid": os.getpid(),
+        "thread": threading.current_thread().name,
+        "python": sys.executable,
+        "ld_library_path": os.environ.get("LD_LIBRARY_PATH", ""),
+        "find_gobject": ctypes.util.find_library("gobject-2.0"),
+        "find_pango": ctypes.util.find_library("pango-1.0"),
+        "find_cairo": ctypes.util.find_library("cairo"),
+    }
+
+
 def _html_diagnostics(source: str) -> dict:
     """Snabb struktur-diagnostik för Railway-loggen: ger dev en känsla
     för vad weasyprint fick in utan att klistra in hela HTML:en."""
@@ -77,12 +96,15 @@ def html_to_pdf(html: str | None, *, plain_text_fallback: str | None = None) -> 
         pdf = HTML(string=source).write_pdf(stylesheets=[CSS(string=_BASE_CSS)])
     except Exception as exc:  # noqa: BLE001 — weasyprint kastar olika typer
         diag = _html_diagnostics(source)
+        runtime = _runtime_diagnostics()
         logger.exception(
-            "HTML→PDF-konvertering misslyckades — fallback=%s diag=%s exc_type=%s",
-            used_fallback, diag, type(exc).__name__,
+            "HTML→PDF-konvertering misslyckades — fallback=%s exc_type=%s "
+            "runtime=%s diag=%s",
+            used_fallback, type(exc).__name__, runtime, diag,
         )
         raise HtmlToPdfError(
-            f"HTML→PDF kraschade ({type(exc).__name__}): {exc}"
+            f"HTML→PDF kraschade ({type(exc).__name__}) pid={runtime['pid']} "
+            f"thread={runtime['thread']} find_gobject={runtime['find_gobject']!r}: {exc}"
         ) from exc
 
     if not pdf or not pdf.startswith(b"%PDF"):
