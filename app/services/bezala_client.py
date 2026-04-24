@@ -462,46 +462,53 @@ class BezalaClient:
 
     def list_missing_receipts(self) -> list[dict]:
         """Hämtar korttransaktioner utan kvitto från Bezala
-        (GET /api/missing_receipts). FAS 5.4 kortmatchning."""
-        return self._fetch_list("/missing_receipts")
+        (GET /api/missing_receipts). FAS 5.4 kortmatchning.
+
+        Loggar första rad-objektets nycklar + ID-relaterade fält så vi kan
+        verifiera vilket fält som faktiskt heter bill_line_id i svaret."""
+        rows = self._fetch_list("/missing_receipts")
+        if rows:
+            sample = rows[0]
+            id_fields = {
+                k: sample.get(k)
+                for k in ("id", "bill_line_id", "transaction_id")
+                if k in sample
+            }
+            logger.info(
+                "missing_receipts: count=%d sample_keys=%s id_fields=%s",
+                len(rows), sorted(sample.keys()), id_fields,
+            )
+        else:
+            logger.info("missing_receipts: count=0")
+        return rows
 
     def attach_file(
         self,
-        transaction_id: str,
+        bill_line_id: str | int,
         filename: str,
         pdf_bytes: bytes,
-        *,
-        description: str | None = None,
-        date: str | None = None,
-        vat_lines: list[dict] | None = None,
     ) -> BezalaAttachment:
-        """Bifoga en PDF till en BEFINTLIG transaktion.
+        """Koppla PDF till befintlig kortrad i Bezala.
 
-        Bezala /attachments kräver alltid description/date/vat_lines i
-        samma request — även när transaction_id skickas för att koppla
-        till en befintlig kortransaktion. Utan metadata → 422.
-
-        vat_lines JSON-serialiseras automatiskt till en sträng i
-        multipart-form (Bezala parser den som nested attributes)."""
-        if not transaction_id:
-            raise BezalaError("attach_file: transaction_id saknas")
+        Replikerar UI:s "Koppla till existerande"-flöde:
+            POST /api/attachments
+            multipart: file=<pdf>, draft=1, bill_line_id=<id>
+        Inga metadata-fält — bill_line äger redan description/date/vat."""
+        if not bill_line_id:
+            raise BezalaError("attach_file: bill_line_id saknas")
         if not filename:
             raise BezalaError("attach_file: filename saknas")
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
             raise BezalaError("attach_file: pdf_bytes är inte en giltig PDF")
 
-        form: dict[str, Any] = {"transaction_id": str(transaction_id)}
-        if description:
-            form["description"] = description
-        if date:
-            form["date"] = date
-        if vat_lines:
-            form["vat_lines"] = json.dumps(vat_lines, ensure_ascii=False)
+        form: dict[str, Any] = {
+            "draft": "1",
+            "bill_line_id": str(bill_line_id),
+        }
 
         logger.info(
-            "attach_file: POST /attachments transaction_id=%s filename=%r "
-            "bytes=%d form_keys=%s",
-            transaction_id, filename, len(pdf_bytes), sorted(form.keys()),
+            "attach_file: POST /attachments bill_line_id=%s filename=%r bytes=%d",
+            bill_line_id, filename, len(pdf_bytes),
         )
         resp = self._request(
             "POST",
@@ -523,7 +530,7 @@ class BezalaClient:
             data.get("id")
             or data.get("attachment_id")
             or (data.get("attachment") or {}).get("id")
-            or transaction_id
+            or bill_line_id
         )
         return BezalaAttachment(attachment_id=str(attachment_id))
 
