@@ -131,7 +131,12 @@ def run_scan(max_results: int = 50) -> ScanResult:
         confidence_threshold = int(app_settings.confidence_threshold or 0)
         ai_min_confidence = int(app_settings.ai_min_confidence_to_save or 0)
         link_fetch_senders = list(app_settings.link_fetch_senders or [])
-        html_to_pdf_enabled = bool(getattr(app_settings, "html_to_pdf_enabled", True))
+        # None betyder att kolumnen är NULL på en legacy-rad (ALTER TABLE-
+        # defaults backfillar inte alltid i PG). bool(None)==False skulle
+        # felaktigt stänga av HTML→PDF för alla — tolka None som TRUE
+        # (matchar default i models.py + settings_to_dict-tolkningen).
+        _htmlpdf_raw = getattr(app_settings, "html_to_pdf_enabled", None)
+        html_to_pdf_enabled = True if _htmlpdf_raw is None else bool(_htmlpdf_raw)
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
