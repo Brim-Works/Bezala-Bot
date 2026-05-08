@@ -97,10 +97,28 @@ class ParseAmountFromDescriptionTest(unittest.TestCase):
     def test_no_amount_in_text(self):
         self.assertEqual(self._parse("text utan belopp eller valuta"), (None, None))
 
-    def test_amount_without_two_decimals_not_matched(self):
-        """Heuristik: exakt två decimaler krävs för att undvika att plocka
-        ordinarie tal från fri text."""
-        self.assertEqual(self._parse("bara 123 EUR"), (None, None))
+    def test_one_decimal_dot(self):
+        """Lovable rapporterar 100.0 EUR (1 decimal). Måste matcha."""
+        self.assertEqual(
+            self._parse("MIKKO KEINONEN: LOVABLE, DOVER, US 100.0 EUR"),
+            (100.0, "EUR"),
+        )
+
+    def test_one_decimal_finnair(self):
+        """Finnair rapporterar 494.5 EUR (1 decimal). Måste matcha."""
+        self.assertEqual(
+            self._parse("MIKKO KEINONEN: FINNAIR O87UJ3J, VANTAA, FI 494.5 EUR"),
+            (494.5, "EUR"),
+        )
+
+    def test_integer_no_decimals(self):
+        """Heltal utan decimaler ('100 EUR') matchar — vissa vendors
+        rapporterar runda belopp utan decimaler."""
+        self.assertEqual(self._parse("VENDOR, NYC, US 100 EUR"), (100.0, "EUR"))
+
+    def test_swedish_comma_one_decimal(self):
+        """Svensk komma med 1 decimal."""
+        self.assertEqual(self._parse("VENDOR, STOCKHOLM, SE 100,5 EUR"), (100.5, "EUR"))
 
 
 class ScoreMatchTest(unittest.TestCase):
@@ -412,6 +430,36 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         body = resp.json()[0]
         self.assertEqual(body["amount"], 28.54)
         self.assertEqual(body["currency"], "EUR")
+
+    def test_amount_parsed_with_one_decimal(self):
+        """Lovable/Finnair rapporterar 100.0 / 494.5 EUR (1 decimal).
+        Tidigare regex \\d{2} missade dessa → amount=null → ingen scoring."""
+        fake_bezala = MagicMock()
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 9001,
+                "description": "MIKKO KEINONEN: LOVABLE, DOVER, US 100.0 EUR",
+                "amount": None,
+                "currency": None,
+                "date": "2026-04-25",
+            },
+            {
+                "id": 9002,
+                "description": "MIKKO KEINONEN: FINNAIR O87UJ3J, VANTAA, FI 494.5 EUR",
+                "amount": None,
+                "currency": None,
+                "date": "2026-04-25",
+            },
+        ]
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/missing-receipts")
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body[0]["amount"], 100.0)
+        self.assertEqual(body[0]["currency"], "EUR")
+        self.assertEqual(body[1]["amount"], 494.5)
+        self.assertEqual(body[1]["currency"], "EUR")
 
     def test_amount_field_takes_precedence_over_description(self):
         """När Bezala DÅ returnerar strukturerat amount (t.ex. Anthropic)

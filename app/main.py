@@ -1027,14 +1027,18 @@ def _safe_bezala_list(fn, label: str) -> dict:
 
 
 _MISSING_AMOUNT_RE = __import__("re").compile(
-    r"(\d+[.,]\d{2})\s+([A-Z]{3})\s*$"
+    r"(\d+(?:[.,]\d{1,2})?)\s+([A-Z]{3})\s*$"
 )
 
 
 def _parse_amount_from_description(desc: str | None) -> tuple[float | None, str | None]:
     """Bezala bill_lines returnerar description som fri text i formatet
     "NAMN: VENDOR, PLATS, LAND 28.54 EUR". Plocka belopp + valuta från
-    slutet av strängen när det strukturerade amount-fältet saknas."""
+    slutet av strängen när det strukturerade amount-fältet saknas.
+
+    Stödjer 0–2 decimaler (vissa vendors rapporterar '100.0 EUR' eller
+    '100 EUR' istället för '100.00 EUR') samt både punkt och komma som
+    decimaltecken."""
     if not desc:
         return None, None
     match = _MISSING_AMOUNT_RE.search(desc)
