@@ -801,5 +801,244 @@ class NegativeExamplesPromptTest(unittest.TestCase):
         self.assertEqual(_build_system_prompt([], []), SYSTEM_PROMPT)
 
 
+# ---------- FAS 8.5c: Match/Skip-feedback ----------
+
+
+class SaveMatchResultTest(unittest.TestCase):
+    """save_match_result med riktig DB."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app.models import AiFeedback, ProcessedMessage
+
+        Base.metadata.create_all(bind=db_module.engine)
+        cls.SessionLocal = db_module.SessionLocal
+        cls.AiFeedback = AiFeedback
+        cls.ProcessedMessage = ProcessedMessage
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.AiFeedback).delete()
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed_message(self, message_id="m-1", vendor="Finnair", subject="Bokning"):
+        with self.SessionLocal() as db:
+            db.add(self.ProcessedMessage(
+                message_id=message_id,
+                sender="noreply@finnair.com",
+                subject=subject,
+                vendor=vendor,
+                status="saved",
+            ))
+            db.commit()
+
+    def test_matched_saves_match_correct_with_json_payload(self):
+        import json
+        from app.services.feedback import save_match_result
+        self._seed_message()
+        breakdown = {"amount": 50, "date": 30, "vendor": 28}
+        with self.SessionLocal() as db:
+            result = save_match_result(
+                db, "m-1", 12345, "matched",
+                ai_score=78, score_breakdown=breakdown,
+            )
+            db.commit()
+        self.assertEqual(result, {"saved": True, "feedback_type": "match_correct"})
+        with self.SessionLocal() as db:
+            fb = db.query(self.AiFeedback).first()
+            self.assertEqual(fb.feedback_type, "match_correct")
+            self.assertEqual(fb.correct_value, "matched")
+            self.assertIsNone(fb.field_name)
+            self.assertEqual(fb.vendor_context, "Finnair")
+            self.assertEqual(fb.subject_context, "Bokning")
+            payload = json.loads(fb.ai_value)
+            self.assertEqual(payload["bill_line_id"], 12345)
+            self.assertEqual(payload["ai_score"], 78)
+            self.assertEqual(payload["score_breakdown"], breakdown)
+
+    def test_skipped_saves_match_wrong(self):
+        from app.services.feedback import save_match_result
+        self._seed_message()
+        with self.SessionLocal() as db:
+            result = save_match_result(
+                db, "m-1", 9999, "skipped",
+                ai_score=42, score_breakdown={"amount": 0, "date": 8, "vendor": 0},
+            )
+            db.commit()
+        self.assertEqual(result["saved"], True)
+        self.assertEqual(result["feedback_type"], "match_wrong")
+        with self.SessionLocal() as db:
+            fb = db.query(self.AiFeedback).first()
+            self.assertEqual(fb.feedback_type, "match_wrong")
+            self.assertEqual(fb.correct_value, "skipped")
+
+    def test_unknown_message_returns_saved_false(self):
+        from app.services.feedback import save_match_result
+        with self.SessionLocal() as db:
+            result = save_match_result(
+                db, "missing-id", 1, "matched", ai_score=10,
+            )
+        self.assertEqual(result, {"saved": False})
+        with self.SessionLocal() as db:
+            self.assertEqual(db.query(self.AiFeedback).count(), 0)
+
+    def test_empty_message_id_returns_saved_false(self):
+        from app.services.feedback import save_match_result
+        with self.SessionLocal() as db:
+            self.assertEqual(
+                save_match_result(db, "", 1, "matched"),
+                {"saved": False},
+            )
+
+    def test_invalid_result_raises(self):
+        from app.services.feedback import save_match_result
+        self._seed_message()
+        with self.SessionLocal() as db:
+            with self.assertRaises(ValueError):
+                save_match_result(db, "m-1", 1, "bogus")
+
+    def test_missing_score_breakdown_persists_empty_dict(self):
+        import json
+        from app.services.feedback import save_match_result
+        self._seed_message()
+        with self.SessionLocal() as db:
+            save_match_result(
+                db, "m-1", None, "matched",
+                ai_score=None, score_breakdown=None,
+            )
+            db.commit()
+        with self.SessionLocal() as db:
+            fb = db.query(self.AiFeedback).first()
+            payload = json.loads(fb.ai_value)
+            self.assertIsNone(payload["bill_line_id"])
+            self.assertIsNone(payload["ai_score"])
+            self.assertEqual(payload["score_breakdown"], {})
+
+
+class FeedbackMatchResultEndpointTest(unittest.TestCase):
+    """POST /api/feedback/match-result — happy path + 400."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app import main as app_module
+        from app.models import AiFeedback, ProcessedMessage
+        from fastapi.testclient import TestClient
+        from contextlib import contextmanager
+
+        Base.metadata.create_all(bind=db_module.engine)
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[
+            app_module.require_auth
+        ] = fake_require_auth
+
+        cls.client = TestClient(app_module.app)
+        cls.app_module = app_module
+        cls.SessionLocal = SessionLocal
+        cls.AiFeedback = AiFeedback
+        cls.ProcessedMessage = ProcessedMessage
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.AiFeedback).delete()
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+        with self.SessionLocal() as db:
+            db.add(self.ProcessedMessage(
+                message_id="m-tt",
+                sender="noreply@finnair.com",
+                subject="Booking",
+                vendor="Finnair",
+                status="saved",
+            ))
+            db.commit()
+
+    def test_post_match_result_happy_path(self):
+        resp = self.client.post(
+            "/api/feedback/match-result",
+            json={
+                "message_id": "m-tt",
+                "bill_line_id": 555,
+                "result": "matched",
+                "ai_score": 88,
+                "score_breakdown": {"amount": 50, "date": 30, "vendor": 8},
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body["saved"])
+        self.assertEqual(body["feedback_type"], "match_correct")
+        with self.SessionLocal() as db:
+            self.assertEqual(db.query(self.AiFeedback).count(), 1)
+
+    def test_post_unknown_message_returns_saved_false(self):
+        resp = self.client.post(
+            "/api/feedback/match-result",
+            json={
+                "message_id": "missing",
+                "result": "matched",
+            },
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.json(), {"saved": False})
+
+    def test_post_invalid_result_returns_400(self):
+        resp = self.client.post(
+            "/api/feedback/match-result",
+            json={"message_id": "m-tt", "result": "bogus"},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_post_missing_message_id_returns_400(self):
+        resp = self.client.post(
+            "/api/feedback/match-result",
+            json={"message_id": "", "result": "matched"},
+        )
+        self.assertEqual(resp.status_code, 400)
+
+
 if __name__ == "__main__":
     unittest.main()

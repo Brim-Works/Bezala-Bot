@@ -12,6 +12,7 @@ gick att spara/hämta.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime
 from typing import Iterable
@@ -482,3 +483,80 @@ def format_not_receipt_examples_for_prompt(examples: list[dict]) -> str:
             " INTE ett kvitto."
         )
     return "\n".join(lines)
+
+
+# ---------- FAS 8.5c — Match/Skip-feedback från Travel Tinder ----------
+
+
+VALID_MATCH_RESULTS: tuple[str, ...] = ("matched", "skipped")
+
+MATCH_FEEDBACK_TYPES = {
+    "matched": "match_correct",
+    "skipped": "match_wrong",
+}
+
+
+def save_match_result(
+    db,
+    message_id: str,
+    bill_line_id: int | str | None,
+    result: str,
+    *,
+    ai_score: int | None = None,
+    score_breakdown: dict | None = None,
+) -> dict:
+    """FAS 8.5c — registrera om användaren bekräftade eller skippade
+    AI:s match-förslag i Travel Tinder.
+
+    `result` är 'matched' eller 'skipped'. Sparar:
+      feedback_type = 'match_correct' / 'match_wrong'
+      ai_value      = JSON {bill_line_id, ai_score, score_breakdown}
+      correct_value = result-strängen
+      vendor_context, subject_context = från ProcessedMessage
+
+    Defensiv: tomt message_id eller okänd msg → {"saved": False}.
+    Ogiltig result → ValueError (kallaren returnerar 400).
+    Andra fel sväljs och loggas så frontend-flödet inte kraschar.
+    """
+    if result not in VALID_MATCH_RESULTS:
+        raise ValueError(f"result måste vara 'matched' eller 'skipped', fick {result!r}")
+    if not message_id:
+        return {"saved": False}
+
+    try:
+        msg = (
+            db.query(ProcessedMessage)
+            .filter(ProcessedMessage.message_id == message_id)
+            .first()
+        )
+        if msg is None:
+            return {"saved": False}
+
+        ai_value_payload = {
+            "bill_line_id": bill_line_id,
+            "ai_score": ai_score,
+            "score_breakdown": score_breakdown or {},
+        }
+
+        feedback = AiFeedback(
+            message_id=message_id,
+            feedback_type=MATCH_FEEDBACK_TYPES[result],
+            field_name=None,
+            ai_value=json.dumps(ai_value_payload, ensure_ascii=False),
+            correct_value=result,
+            vendor_context=(msg.vendor or "")[:255] or None,
+            subject_context=(msg.subject or "")[:500] or None,
+        )
+        db.add(feedback)
+        db.flush()
+        return {"saved": True, "feedback_type": MATCH_FEEDBACK_TYPES[result]}
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "save_match_result misslyckades message_id=%s result=%s",
+            message_id, result,
+        )
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"saved": False}

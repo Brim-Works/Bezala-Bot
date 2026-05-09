@@ -256,15 +256,52 @@ export default function TravelTinder() {
     setSkippedSuggestionIds([]);
   }, []);
 
+  // FAS 8.5c — fire-and-forget feedback. Får aldrig blockera kärnflödet:
+  // alla fel sväljs i en .catch så match/skip-knapparna fortfarande
+  // beter sig snabbt och deterministiskt även om backend är seg.
+  const sendMatchFeedback = useCallback(
+    ({ messageId, billLineId, result, aiScore, scoreBreakdown }) => {
+      if (!messageId) return;
+      api
+        .feedbackMatchResult({
+          messageId,
+          billLineId,
+          result,
+          aiScore,
+          scoreBreakdown,
+        })
+        .catch((err) => {
+          // Tyst — feedback är best-effort. Console.warn för felsökning.
+          // eslint-disable-next-line no-console
+          console.warn('match-feedback failed:', err);
+        });
+    },
+    [],
+  );
+
   const onSkipSuggestion = useCallback(() => {
-    if (!activeSuggestion) return;
+    if (!activeSuggestion || !selected) return;
+    sendMatchFeedback({
+      messageId: activeSuggestion.message.message_id,
+      billLineId: selected.missing_receipt.id,
+      result: 'skipped',
+      aiScore: activeSuggestion.score ?? null,
+      scoreBreakdown: activeSuggestion.score_breakdown || null,
+    });
     setSkippedSuggestionIds((prev) => [...prev, activeSuggestion.message.id]);
-  }, [activeSuggestion]);
+  }, [activeSuggestion, selected, sendMatchFeedback]);
 
   const requestMatch = useCallback(
-    (messageRow, missingReceiptId) => {
+    (messageRow, missingReceiptId, aiContext = null) => {
       if (matching) return;
-      setPendingMatch({ message: messageRow, missingReceiptId });
+      // aiContext: { score, score_breakdown } när Match-klicket kommer
+      // från Tinder-kortet. null när det är manuell koppling via en rad
+      // i "Andra kvitton" — då finns ingen AI-score.
+      setPendingMatch({
+        message: messageRow,
+        missingReceiptId,
+        aiContext,
+      });
     },
     [matching],
   );
@@ -281,6 +318,15 @@ export default function TravelTinder() {
         pendingMatch.message.id,
         pendingMatch.missingReceiptId,
       );
+      // FAS 8.5c — registrera positiv feedback så match-algoritmen kan
+      // lära sig. Manuell koppling skickar aiScore=null.
+      sendMatchFeedback({
+        messageId: pendingMatch.message.message_id,
+        billLineId: pendingMatch.missingReceiptId,
+        result: 'matched',
+        aiScore: pendingMatch.aiContext?.score ?? null,
+        scoreBreakdown: pendingMatch.aiContext?.score_breakdown || null,
+      });
       toast.show({
         kind: 'ok',
         message: t.travelTinder.matched.replace(
@@ -313,6 +359,7 @@ export default function TravelTinder() {
     missingRows,
     selectedPaymentId,
     refresh,
+    sendMatchFeedback,
     t.travelTinder.matched,
     t.travelTinder.matchFailed,
     toast,
@@ -415,6 +462,10 @@ export default function TravelTinder() {
                       requestMatch(
                         activeSuggestion.message,
                         selected.missing_receipt.id,
+                        {
+                          score: activeSuggestion.score,
+                          score_breakdown: activeSuggestion.score_breakdown,
+                        },
                       )
                     }
                     onMoreInfo={() =>

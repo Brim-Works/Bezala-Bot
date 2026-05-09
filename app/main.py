@@ -2135,6 +2135,55 @@ def post_feedback_not_a_receipt(
     return result
 
 
+class FeedbackMatchResultPayload(BaseModel):
+    """FAS 8.5c — Match/Skip-feedback från Travel Tinder.
+
+    `result`: 'matched' (Match-knappen / manuell modal-bekräftelse) eller
+    'skipped' (Skip-knappen). bill_line_id, ai_score och score_breakdown
+    är valfria — vid manuell match utan AI-förslag är de None.
+    """
+    message_id: str
+    result: str
+    bill_line_id: int | str | None = None
+    ai_score: int | None = None
+    score_breakdown: dict | None = None
+
+
+@app.post("/api/feedback/match-result")
+def post_feedback_match_result(
+    payload: FeedbackMatchResultPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 8.5c — registrerar om användaren bekräftade eller skippade
+    AI:s match-förslag. Grunddata för FAS 9 (AI-regelgenerering).
+
+    Returnerar {"saved": True/False}. Frontend ignorerar alltid svaret —
+    feedback ska aldrig blockera kärnflödet."""
+    from app.services.feedback import save_match_result, VALID_MATCH_RESULTS
+
+    if not payload.message_id:
+        raise HTTPException(status_code=400, detail="message_id saknas")
+    if payload.result not in VALID_MATCH_RESULTS:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "result måste vara 'matched' eller 'skipped', "
+                f"fick {payload.result!r}"
+            ),
+        )
+    result = save_match_result(
+        db,
+        payload.message_id,
+        payload.bill_line_id,
+        payload.result,
+        ai_score=payload.ai_score,
+        score_breakdown=payload.score_breakdown,
+    )
+    db.commit()
+    return result
+
+
 @app.get("/api/feedback/stats")
 def get_feedback_stats(
     db: Session = Depends(get_db),

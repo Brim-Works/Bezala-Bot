@@ -156,6 +156,23 @@ export const api = {
       method: 'POST',
       body: { message_id: messageId },
     }),
+  feedbackMatchResult: ({
+    messageId,
+    billLineId = null,
+    result,
+    aiScore = null,
+    scoreBreakdown = null,
+  }) =>
+    request('/api/feedback/match-result', {
+      method: 'POST',
+      body: {
+        message_id: messageId,
+        bill_line_id: billLineId,
+        result,
+        ai_score: aiScore,
+        score_breakdown: scoreBreakdown,
+      },
+    }),
   feedbackStats: () => request('/api/feedback/stats'),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
