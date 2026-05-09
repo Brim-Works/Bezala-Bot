@@ -493,5 +493,270 @@ class FeedbackEndpointsTest(unittest.TestCase):
                 self.assertEqual(r.feedback_type, "correction")
 
 
+
+# ---------- FAS 8.1: not_a_receipt-feedback ----------
+
+
+class FormatNotReceiptExamplesTest(unittest.TestCase):
+    def _format(self, examples):
+        from app.services.feedback import format_not_receipt_examples_for_prompt
+        return format_not_receipt_examples_for_prompt(examples)
+
+    def test_empty_returns_empty_string(self):
+        self.assertEqual(self._format([]), "")
+        self.assertEqual(self._format(None), "")
+
+    def test_includes_sender_and_warning_text(self):
+        out = self._format([
+            {"sender": "Finnair <noreply@finnair.com>"},
+            {"sender": "events@meetingpro.com"},
+        ])
+        self.assertIn("Mail som ANVÄNDAREN markerat som icke-kvitto", out)
+        self.assertIn("Finnair", out)
+        self.assertIn("meetingpro", out)
+        self.assertIn("INTE ett kvitto", out)
+
+
+class NotAReceiptServiceTest(unittest.TestCase):
+    """save_not_a_receipt + get_not_receipt_examples med riktig DB."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app.models import AiFeedback, ProcessedMessage
+
+        Base.metadata.create_all(bind=db_module.engine)
+        cls.db_module = db_module
+        cls.SessionLocal = db_module.SessionLocal
+        cls.AiFeedback = AiFeedback
+        cls.ProcessedMessage = ProcessedMessage
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.AiFeedback).delete()
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed_message(self, message_id, sender, vendor=None):
+        with self.SessionLocal() as db:
+            row = self.ProcessedMessage(
+                message_id=message_id,
+                sender=sender,
+                subject="Bokningsbekräftelse",
+                status="saved",
+                vendor=vendor,
+            )
+            db.add(row)
+            db.commit()
+
+    def test_save_not_a_receipt_creates_feedback_and_soft_deletes_message(self):
+        from app.services.feedback import save_not_a_receipt
+        self._seed_message("m-1", "Finnair <noreply@finnair.com>", vendor="Finnair")
+        with self.SessionLocal() as db:
+            result = save_not_a_receipt(db, "m-1")
+        self.assertTrue(result.get("saved"))
+        self.assertTrue(result.get("deleted"))
+        with self.SessionLocal() as db:
+            fb = db.query(self.AiFeedback).first()
+            self.assertEqual(fb.feedback_type, "not_a_receipt")
+            self.assertIsNone(fb.field_name)
+            self.assertEqual(fb.ai_value, "is_receipt: true")
+            self.assertEqual(fb.correct_value, "is_receipt: false")
+            self.assertIn("Finnair", fb.vendor_context or "")
+
+            msg = db.query(self.ProcessedMessage).filter_by(
+                message_id="m-1"
+            ).first()
+            self.assertIsNotNone(msg.deleted_at)
+            self.assertEqual(msg.delete_reason, "user_marked_not_receipt")
+
+    def test_save_not_a_receipt_returns_false_for_unknown(self):
+        from app.services.feedback import save_not_a_receipt
+        with self.SessionLocal() as db:
+            self.assertEqual(
+                save_not_a_receipt(db, "missing"), {"saved": False},
+            )
+
+    def test_save_not_a_receipt_handles_empty_message_id(self):
+        from app.services.feedback import save_not_a_receipt
+        with self.SessionLocal() as db:
+            self.assertEqual(
+                save_not_a_receipt(db, ""), {"saved": False},
+            )
+
+    def test_get_not_receipt_examples_prioritizes_same_vendor(self):
+        from app.services.feedback import (
+            save_not_a_receipt, get_not_receipt_examples,
+        )
+        # Seed 3 Finnair-mail + 3 från andra leverantörer
+        for i in range(3):
+            self._seed_message(
+                f"fin-{i}", f"Finnair <noreply{i}@finnair.com>",
+            )
+            self._seed_message(
+                f"oth-{i}", f"Acme <events{i}@acme.com>",
+            )
+        with self.SessionLocal() as db:
+            for i in range(3):
+                save_not_a_receipt(db, f"fin-{i}")
+                save_not_a_receipt(db, f"oth-{i}")
+
+        with self.SessionLocal() as db:
+            results = get_not_receipt_examples(
+                db, sender="Finnair <eticket@finnair.com>", limit=5,
+            )
+
+        self.assertEqual(len(results), 5)
+        # Första 3 ska vara Finnair (samma vendor-token)
+        finnair_first_three = sum(
+            1 for r in results[:3] if "Finnair" in r["sender"]
+        )
+        self.assertEqual(finnair_first_three, 3)
+
+    def test_get_not_receipt_examples_returns_empty_when_table_empty(self):
+        from app.services.feedback import get_not_receipt_examples
+        with self.SessionLocal() as db:
+            self.assertEqual(
+                get_not_receipt_examples(db, sender="Finnair"), [],
+            )
+            self.assertEqual(
+                get_not_receipt_examples(db, sender=None), [],
+            )
+
+
+class NotAReceiptEndpointTest(unittest.TestCase):
+    """POST /api/feedback/not-a-receipt — happy path + 404."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app import main as app_module
+        from app.models import AiFeedback, ProcessedMessage
+        from fastapi.testclient import TestClient
+
+        Base.metadata.create_all(bind=db_module.engine)
+
+        from contextlib import contextmanager
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[
+            app_module.require_auth
+        ] = fake_require_auth
+        cls.client = TestClient(app_module.app)
+        cls.app_module = app_module
+        cls.SessionLocal = SessionLocal
+        cls.AiFeedback = AiFeedback
+        cls.ProcessedMessage = ProcessedMessage
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.AiFeedback).delete()
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed(self, message_id="m-nr", sender="Finnair <eticket@finnair.com>"):
+        with self.SessionLocal() as db:
+            row = self.ProcessedMessage(
+                message_id=message_id,
+                sender=sender,
+                subject="Bokningsbekräftelse",
+                status="saved",
+                vendor="Finnair",
+            )
+            db.add(row)
+            db.commit()
+
+    def test_post_not_a_receipt_happy_path(self):
+        self._seed("m-nr-1")
+        resp = self.client.post(
+            "/api/feedback/not-a-receipt",
+            json={"message_id": "m-nr-1"},
+        )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertTrue(body["saved"])
+        self.assertTrue(body["deleted"])
+
+        with self.SessionLocal() as db:
+            fb = db.query(self.AiFeedback).first()
+            self.assertEqual(fb.feedback_type, "not_a_receipt")
+            msg = db.query(self.ProcessedMessage).filter_by(
+                message_id="m-nr-1"
+            ).first()
+            self.assertIsNotNone(msg.deleted_at)
+            self.assertEqual(msg.delete_reason, "user_marked_not_receipt")
+
+    def test_post_not_a_receipt_unknown_returns_404(self):
+        resp = self.client.post(
+            "/api/feedback/not-a-receipt",
+            json={"message_id": "does-not-exist"},
+        )
+        self.assertEqual(resp.status_code, 404, resp.text)
+
+
+class NegativeExamplesPromptTest(unittest.TestCase):
+    """Verifierar att analyzer._build_system_prompt inkluderar
+    not_a_receipt-blocket när negative_examples skickas in."""
+
+    def test_negative_examples_appear_in_system_prompt(self):
+        from app.services.receipt_analyzer import _build_system_prompt
+
+        out = _build_system_prompt(
+            examples=None,
+            negative_examples=[
+                {"sender": "Finnair <eticket@finnair.com>"},
+            ],
+        )
+        self.assertIn("Mail som ANVÄNDAREN markerat som icke-kvitto", out)
+        self.assertIn("Finnair", out)
+
+    def test_no_examples_returns_unchanged_system_prompt(self):
+        from app.services.receipt_analyzer import (
+            SYSTEM_PROMPT, _build_system_prompt,
+        )
+        self.assertEqual(_build_system_prompt(None, None), SYSTEM_PROMPT)
+        self.assertEqual(_build_system_prompt([], []), SYSTEM_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()

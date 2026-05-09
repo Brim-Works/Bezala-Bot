@@ -136,6 +136,22 @@ def _fetch_few_shot_for_sender(sender: str | None) -> list[dict]:
         return []
 
 
+def _fetch_not_receipt_for_sender(sender: str | None) -> list[dict]:
+    """FAS 8.1 — hämta not_a_receipt-exempel inom en kortlivad session.
+    Användaren har tidigare markerat liknande mail som icke-kvitto.
+    Säkert att kalla även om tabellen är tom — returnerar [] vid fel."""
+    try:
+        from app.services.feedback import get_not_receipt_examples
+        with session_scope() as db:
+            return get_not_receipt_examples(db, sender, limit=5)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "not_a_receipt fetch misslyckades för sender=%r — fortsätter utan",
+            sender,
+        )
+        return []
+
+
 def run_scan(max_results: int = 50) -> ScanResult:
     """Kör en scanning-omgång. Skapar en ScanRun-rad och returnerar resultatet."""
 
@@ -547,6 +563,11 @@ def _process_one_message(
     few_shot_examples = (
         _fetch_few_shot_for_sender(msg.sender) if use_ai else []
     )
+    # FAS 8.1 — och negativa exempel (mail användaren tidigare markerat
+    # som icke-kvitto). Skickas till analyzer så Claude kan filtrera.
+    not_receipt_examples = (
+        _fetch_not_receipt_for_sender(msg.sender) if use_ai else []
+    )
 
     for att in pdf_attachments:
         analysis: ReceiptAnalysis | None = None
@@ -561,6 +582,7 @@ def _process_one_message(
                     snippet=msg.snippet,
                     received_at=msg.received_at,
                     examples=few_shot_examples,
+                    negative_examples=not_receipt_examples,
                 )
             except AnalyzerError as exc:
                 logger.exception("Claude-analys misslyckades för %s: %s", message_id, exc)
@@ -750,6 +772,7 @@ def _extract_preliminary_fields(
             snippet=msg.snippet,
             received_at=msg.received_at,
             examples=_fetch_few_shot_for_sender(msg.sender),
+            negative_examples=_fetch_not_receipt_for_sender(msg.sender),
         )
     except AnalyzerError as exc:
         logger.info("Link-fetch prelim AI-analys misslyckades för %s: %s",
