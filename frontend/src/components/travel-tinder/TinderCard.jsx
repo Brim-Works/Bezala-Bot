@@ -127,6 +127,11 @@ export default function TinderCard({
   const anyDiff = validations.some((v) => !v.ok);
 
   const score = suggestion.score;
+  // Cap visning vid 100 — score-summan kan överstiga maxvärdet
+  // (amount-bonus 50 + date 30 + vendor 30 + currency-bonus etc.) men
+  // "110%" ser buggigt ut för användaren. Backend-score lämnas
+  // oförändrad så intern ranking fortfarande har full upplösning.
+  const displayScore = Math.min(100, Math.max(0, Math.round(score ?? 0)));
   const tooltip = breakdown
     ? t.travelTinder.scoreTooltip
         .replace('{amount}', String(breakdown.amount ?? 0))
@@ -143,7 +148,7 @@ export default function TinderCard({
           data-testid="tt-card-score"
         >
           ⭐ {t.travelTinder.aiSuggestion}{' '}
-          <span className="mono">{score}%</span>
+          <span className="mono">{displayScore}%</span>
         </span>
       </div>
 

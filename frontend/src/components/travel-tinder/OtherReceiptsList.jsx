@@ -66,7 +66,9 @@ function ReceiptRow({ message, onClick, isAiSuggestion, score }) {
             </span>
           ) : null}
           {isAiSuggestion ? (
-            <span className="tt-receipt__score mono">{score}%</span>
+            <span className="tt-receipt__score mono">
+              {Math.min(100, Math.max(0, Math.round(score ?? 0)))}%
+            </span>
           ) : null}
         </div>
         <div className="tt-receipt__meta mono muted">
