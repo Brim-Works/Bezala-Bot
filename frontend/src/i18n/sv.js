@@ -79,6 +79,14 @@ export default {
       amount: 'Belopp',
       category: 'Kategori',
       filename: 'Filnamn',
+      feedback: {
+        title: 'Feedback till AI',
+        lead: 'Hjälp Bezala Bot lära sig av rättelser.',
+        thumbsUp: 'Bra extraktion',
+        thumbsDown: 'Något var fel',
+        thanks: 'Tack för feedbacken!',
+        submitted: 'Tack!',
+      },
     },
     drive: {
       filename: 'Filnamn',
@@ -114,6 +122,20 @@ export default {
       naTitle: 'Ingen Bezala-överföring',
       naBody:
         'Steget hoppades över — filen nådde aldrig Drive, eller mailet är inte ett kvitto.',
+    },
+  },
+  feedback: {
+    modal: {
+      title: 'Vad var fel?',
+      lead: 'Markera fält där AI hade fel.',
+      fieldVendor: 'Leverantör',
+      fieldDate: 'Datum',
+      fieldAmount: 'Belopp',
+      fieldCategory: 'Kategori',
+      wasValue: 'var:',
+      cancel: 'Avbryt',
+      save: 'Spara feedback',
+      saved: 'Tack — AI lär sig av detta',
     },
   },
   scanFeedback: {
@@ -235,7 +257,7 @@ export default {
       requireAttachments: 'Kräv bilaga',
       requireAttachmentsHint: 'Hoppa över mail utan bifogade filer.',
       excludePromotions: 'Exkludera Promotions',
-      excludePromotionsHint: 'Gmails reklam-flik skannas inte.',
+      excludePromotionsHint: 'Gmails reklam-flik scannas inte.',
       excludeSocial: 'Exkludera Social',
       excludeSocialHint: 'Notifikationer från LinkedIn och liknande.',
       excludeCalendar: 'Exkludera kalenderinbjudningar',
@@ -321,6 +343,7 @@ export default {
       uploaded: 'Skickat till Bezala',
       uploadFailed: 'Uppladdningen misslyckades, försök igen',
       rejectUnsupported: 'Avvisa kräver backend-stöd (kommer senare)',
+      implicitLearning: 'Sparat — AI lär sig av detta',
     },
   },
   log: {

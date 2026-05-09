@@ -79,6 +79,14 @@ export default {
       amount: 'Amount',
       category: 'Category',
       filename: 'Filename',
+      feedback: {
+        title: 'AI feedback',
+        lead: 'Help Bezala Bot learn from corrections.',
+        thumbsUp: 'Good extraction',
+        thumbsDown: 'Something was wrong',
+        thanks: 'Thanks for the feedback!',
+        submitted: 'Thanks!',
+      },
     },
     drive: {
       filename: 'Filename',
@@ -114,6 +122,20 @@ export default {
       naTitle: 'No Bezala transfer',
       naBody:
         'Step was skipped — the file never reached Drive, or the mail is not a receipt.',
+    },
+  },
+  feedback: {
+    modal: {
+      title: 'What was wrong?',
+      lead: 'Tick the fields where the AI was wrong.',
+      fieldVendor: 'Vendor',
+      fieldDate: 'Date',
+      fieldAmount: 'Amount',
+      fieldCategory: 'Category',
+      wasValue: 'was:',
+      cancel: 'Cancel',
+      save: 'Save feedback',
+      saved: 'Thanks — the AI will learn from this',
     },
   },
   scanFeedback: {
@@ -320,6 +342,7 @@ export default {
       uploaded: 'Sent to Bezala',
       uploadFailed: 'Upload failed, please try again',
       rejectUnsupported: 'Reject requires backend support (coming soon)',
+      implicitLearning: 'Saved — the AI will learn from this',
     },
   },
   log: {

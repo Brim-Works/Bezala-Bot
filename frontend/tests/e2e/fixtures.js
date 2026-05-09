@@ -318,6 +318,12 @@ export async function setupApiMocks(page, overrides = {}) {
     bodyResponse: overrides.bodyResponse || null,
     fetchPdfFromUrlResponse: overrides.fetchPdfFromUrlResponse || null,
     lastFetchPdfFromUrl: null,
+    lastFeedbackRequest: null,
+    feedbackStats: overrides.feedbackStats || {
+      total: 0,
+      last_30_days: 0,
+      by_field: {},
+    },
   };
 
   // --- enklare globala routes ---
@@ -346,6 +352,23 @@ export async function setupApiMocks(page, overrides = {}) {
     }
     return route.fulfill(jsonResponse(state.settings));
   });
+
+  // --- AI-feedback routes (FAS 8) ---
+  await page.route('**/api/feedback/thumbs', async (route) => {
+    const body = route.request().postDataJSON() || {};
+    state.lastFeedbackRequest = { kind: 'thumbs', body };
+    return route.fulfill(jsonResponse({ saved: 1 }));
+  });
+
+  await page.route('**/api/feedback/correction', async (route) => {
+    const body = route.request().postDataJSON() || {};
+    state.lastFeedbackRequest = { kind: 'correction', body };
+    return route.fulfill(jsonResponse({ saved: true }));
+  });
+
+  await page.route('**/api/feedback/stats', (route) =>
+    route.fulfill(jsonResponse(state.feedbackStats)),
+  );
 
   // --- central dispatcher för /api/messages/** ---
   await page.route('**/api/messages**', async (route) => {
