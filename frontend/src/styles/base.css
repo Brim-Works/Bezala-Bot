@@ -3126,15 +3126,59 @@ html[data-theme='B'] .modal__title {
 }
 
 .travel-tinder__grid {
+  /* Inline grid-template-columns sätts av React (panel-bredd + splitter
+     + flex). Default fallback här om inline-stylen försvinner. */
   display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 18px;
+  grid-template-columns: 300px 6px 1fr;
+  gap: 12px;
   align-items: stretch;
 }
 
 @media (max-width: 800px) {
   .travel-tinder__grid {
-    grid-template-columns: 1fr;
+    /* Stacka vertikalt på mobil — splittern göms separat och
+       grid-template-columns-överstyrningen från React ignoreras
+       eftersom vi använder !important här. */
+    grid-template-columns: 1fr !important;
+    gap: 12px;
+  }
+}
+
+.tt-splitter {
+  cursor: col-resize;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  position: relative;
+  outline: none;
+}
+
+.tt-splitter:hover .tt-splitter__grip,
+.tt-splitter:focus-visible .tt-splitter__grip {
+  background: var(--accent);
+  opacity: 0.8;
+}
+
+.tt-splitter:focus-visible {
+  box-shadow: 0 0 0 2px var(--ring);
+  border-radius: 2px;
+}
+
+.tt-splitter__grip {
+  width: 2px;
+  height: 60px;
+  background: var(--border-strong);
+  border-radius: 1px;
+  transition: background 0.12s, opacity 0.12s;
+  opacity: 0.6;
+}
+
+@media (max-width: 800px) {
+  .tt-splitter {
+    display: none;
   }
 }
 

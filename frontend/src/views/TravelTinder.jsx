@@ -30,6 +30,37 @@ import { IconRefresh } from '../icons/index.jsx';
 
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const LS_KEY = 'tt_state_v1';
+const LS_WIDTH_KEY = 'tt_panel_width';
+const PANEL_WIDTH_DEFAULT = 300;
+const PANEL_WIDTH_MIN = 200;
+const PANEL_WIDTH_MAX = 500;
+const MOBILE_BREAKPOINT = 800;
+
+function clampWidth(n) {
+  if (typeof n !== 'number' || Number.isNaN(n)) return PANEL_WIDTH_DEFAULT;
+  return Math.min(PANEL_WIDTH_MAX, Math.max(PANEL_WIDTH_MIN, Math.round(n)));
+}
+
+function loadPanelWidth() {
+  if (typeof window === 'undefined') return PANEL_WIDTH_DEFAULT;
+  try {
+    const raw = window.localStorage.getItem(LS_WIDTH_KEY);
+    if (!raw) return PANEL_WIDTH_DEFAULT;
+    const n = Number.parseInt(raw, 10);
+    return Number.isFinite(n) ? clampWidth(n) : PANEL_WIDTH_DEFAULT;
+  } catch {
+    return PANEL_WIDTH_DEFAULT;
+  }
+}
+
+function persistPanelWidth(px) {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(LS_WIDTH_KEY, String(clampWidth(px)));
+  } catch {
+    // tappa tyst
+  }
+}
 
 function loadPersisted() {
   if (typeof window === 'undefined') return {};
@@ -86,6 +117,64 @@ export default function TravelTinder() {
   const [pendingMatch, setPendingMatch] = useState(null);
   const [matching, setMatching] = useState(false);
   const [pdfPreviewMessage, setPdfPreviewMessage] = useState(null);
+
+  // Resizable splitter — bredd persistas separat (egen LS-nyckel) så
+  // den överlever även om huvud-state-objektet byter shape framöver.
+  const [panelWidth, setPanelWidth] = useState(() => loadPanelWidth());
+  const isDraggingRef = useRef(false);
+  const dragStartRef = useRef({ x: 0, w: PANEL_WIDTH_DEFAULT });
+
+  const onSplitterMouseDown = useCallback(
+    (e) => {
+      e.preventDefault();
+      isDraggingRef.current = true;
+      dragStartRef.current = { x: e.clientX, w: panelWidth };
+      document.body.style.cursor = 'col-resize';
+      // Förhindra textmarkering under drag.
+      document.body.style.userSelect = 'none';
+    },
+    [panelWidth],
+  );
+
+  useEffect(() => {
+    function onMove(e) {
+      if (!isDraggingRef.current) return;
+      const delta = e.clientX - dragStartRef.current.x;
+      setPanelWidth(clampWidth(dragStartRef.current.w + delta));
+    }
+    function onUp() {
+      if (!isDraggingRef.current) return;
+      isDraggingRef.current = false;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+      // Persistera bara vid släpp — undvik att hamra localStorage under drag.
+      setPanelWidth((w) => {
+        persistPanelWidth(w);
+        return w;
+      });
+    }
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+    return () => {
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+    };
+  }, []);
+
+  const onSplitterKeyDown = useCallback((e) => {
+    if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+    e.preventDefault();
+    const step = e.shiftKey ? 32 : 8;
+    setPanelWidth((w) => {
+      const next = clampWidth(w + (e.key === 'ArrowRight' ? step : -step));
+      persistPanelWidth(next);
+      return next;
+    });
+  }, []);
+
+  // Inline grid-template — desktop använder bredden, mobil ignoreras
+  // helt via CSS @media (max-width:800px) som kör vertikal stacking.
+  const gridStyle = { gridTemplateColumns: `${panelWidth}px 6px 1fr` };
 
   // Persist UI-state vid varje förändring
   useEffect(() => {
@@ -270,7 +359,7 @@ export default function TravelTinder() {
         </div>
       </header>
 
-      <div className="travel-tinder__grid">
+      <div className="travel-tinder__grid" style={gridStyle}>
         <MissingPaymentsList
           rows={missingRows}
           selectedId={selectedPaymentId}
@@ -279,6 +368,22 @@ export default function TravelTinder() {
           totalCount={totalCount}
           isLoading={isLoading}
         />
+
+        <div
+          className="tt-splitter"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize panels"
+          aria-valuenow={panelWidth}
+          aria-valuemin={PANEL_WIDTH_MIN}
+          aria-valuemax={PANEL_WIDTH_MAX}
+          tabIndex={0}
+          onMouseDown={onSplitterMouseDown}
+          onKeyDown={onSplitterKeyDown}
+          data-testid="tt-splitter"
+        >
+          <span className="tt-splitter__grip" aria-hidden="true" />
+        </div>
 
         <div className="travel-tinder__right">
           <OtherReceiptsList
