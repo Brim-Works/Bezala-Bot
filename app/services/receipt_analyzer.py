@@ -115,17 +115,31 @@ def _fallback_filename(
     return _sanitize_filename(f"{date_str} {vendor} {desc}.pdf")
 
 
-def _build_system_prompt(examples: list[dict] | None) -> str:
-    """Lägg till few-shot-exempel efter base-prompten. Defensivt — om
-    formateringen kraschar returnerar vi base-prompten ensamt."""
-    if not examples:
+def _build_system_prompt(
+    examples: list[dict] | None,
+    negative_examples: list[dict] | None = None,
+) -> str:
+    """Lägg till few-shot-exempel + negativa exempel (FAS 8.1) efter
+    base-prompten. Defensivt — om formateringen kraschar returnerar vi
+    base-prompten ensamt."""
+    if not examples and not negative_examples:
         return SYSTEM_PROMPT
     try:
         # Lazy import för att undvika cirkulär import (feedback ↔ analyzer)
-        from app.services.feedback import format_examples_for_prompt
-        extra = format_examples_for_prompt(examples)
-        if extra:
-            return SYSTEM_PROMPT + "\n" + extra
+        from app.services.feedback import (
+            format_examples_for_prompt,
+            format_not_receipt_examples_for_prompt,
+        )
+        out = SYSTEM_PROMPT
+        positive = format_examples_for_prompt(examples or [])
+        if positive:
+            out = out + "\n" + positive
+        negative = format_not_receipt_examples_for_prompt(
+            negative_examples or []
+        )
+        if negative:
+            out = out + "\n" + negative
+        return out
     except Exception:  # noqa: BLE001
         logger.exception("Few-shot prompt-bygge misslyckades")
     return SYSTEM_PROMPT
@@ -161,6 +175,7 @@ class ReceiptAnalyzer:
         snippet: str,
         received_at: datetime | None,
         examples: list[dict] | None = None,
+        negative_examples: list[dict] | None = None,
     ) -> ReceiptAnalysis:
         if not self._client:
             raise AnalyzerError("ANTHROPIC_API_KEY saknas")
@@ -177,11 +192,16 @@ class ReceiptAnalyzer:
             "Analysera dokumentet och svara med JSON enligt schemat."
         )
 
-        system_prompt = _build_system_prompt(examples)
+        system_prompt = _build_system_prompt(examples, negative_examples)
         if examples:
             logger.info(
                 "AI-analys: bifogar %d few-shot-exempel (sender=%r)",
                 len(examples), sender,
+            )
+        if negative_examples:
+            logger.info(
+                "AI-analys: bifogar %d not_a_receipt-exempel (sender=%r)",
+                len(negative_examples), sender,
             )
 
         try:

@@ -13,6 +13,7 @@ gick att spara/hämta.
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from typing import Iterable
 
 from sqlalchemy import desc
@@ -321,3 +322,148 @@ def feedback_stats(db) -> dict:
     except Exception:  # noqa: BLE001
         logger.exception("feedback_stats misslyckades")
         return {"total": 0, "last_30_days": 0, "by_field": {}}
+
+
+
+def save_not_a_receipt(db, message_id: str) -> dict:
+    """FAS 8.1 — användaren markerar mailet som icke-kvitto.
+
+    Spar en AiFeedback-rad med feedback_type='not_a_receipt' (vendor_context
+    sätts till mailets sender — används för att hitta liknande mail i framtida
+    scans) OCH soft-deletar ProcessedMessage med delete_reason=
+    'user_marked_not_receipt'. Båda i samma transaktion — antingen båda
+    eller ingen.
+
+    Returnerar:
+      {"saved": False} om message_id inte hittas.
+      {"saved": True, "deleted": True} vid lyckat fall.
+    """
+    try:
+        if not message_id:
+            return {"saved": False}
+        msg = (
+            db.query(ProcessedMessage)
+            .filter(ProcessedMessage.message_id == message_id)
+            .first()
+        )
+        if msg is None:
+            return {"saved": False}
+
+        feedback = AiFeedback(
+            message_id=message_id,
+            feedback_type="not_a_receipt",
+            field_name=None,
+            ai_value="is_receipt: true",
+            correct_value="is_receipt: false",
+            vendor_context=(msg.sender or "")[:255] or None,
+        )
+        db.add(feedback)
+
+        msg.deleted_at = datetime.utcnow()
+        msg.delete_reason = "user_marked_not_receipt"
+
+        db.commit()
+        return {"saved": True, "deleted": True}
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "save_not_a_receipt misslyckades message_id=%s", message_id,
+        )
+        try:
+            db.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+        return {"saved": False}
+
+
+def get_not_receipt_examples(
+    db,
+    sender: str | None = None,
+    limit: int = 5,
+) -> list[dict]:
+    """FAS 8.1 — hämta exempel på mail som användaren markerat som
+    icke-kvitto. Prioritet:
+      1) Senaste från samma vendor (matchad mot extracted vendor-token
+         i sender-headern).
+      2) Komplettera med övriga senaste tills `limit` nås.
+
+    Returnerar list[{"sender": str}]. Tom lista vid DB-fel — analyzern
+    ska aldrig blockeras.
+    """
+    try:
+        if limit <= 0:
+            return []
+        results: list[dict] = []
+        seen_ids: set[int] = set()
+
+        token: str | None = None
+        if sender:
+            token = extract_vendor_for_context(sender) or sender
+
+        if token:
+            same = (
+                db.query(AiFeedback)
+                .filter(AiFeedback.feedback_type == "not_a_receipt")
+                .filter(AiFeedback.vendor_context.like(f"%{token}%"))
+                .order_by(desc(AiFeedback.created_at))
+                .limit(limit)
+                .all()
+            )
+            for ex in same:
+                seen_ids.add(ex.id)
+                results.append({"sender": ex.vendor_context or ""})
+
+        if len(results) < limit:
+            remaining = limit - len(results)
+            q = db.query(AiFeedback).filter(
+                AiFeedback.feedback_type == "not_a_receipt"
+            )
+            if token:
+                q = q.filter(
+                    (AiFeedback.vendor_context.is_(None))
+                    | (~AiFeedback.vendor_context.like(f"%{token}%"))
+                )
+            others = (
+                q.order_by(desc(AiFeedback.created_at))
+                .limit(remaining + len(seen_ids))
+                .all()
+            )
+            for ex in others:
+                if ex.id in seen_ids:
+                    continue
+                results.append({"sender": ex.vendor_context or ""})
+                if len(results) >= limit:
+                    break
+
+        return results
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "get_not_receipt_examples misslyckades sender=%r", sender,
+        )
+        return []
+
+
+def format_not_receipt_examples_for_prompt(examples: list[dict]) -> str:
+    """Formatera not_a_receipt-exempel till ett textblock som klistras in
+    efter SYSTEM_PROMPT. Hjälper Claude att filtrera bort liknande mail
+    (t.ex. bokningsbekräftelser som inte är kvitton). Tom sträng om
+    listan är tom."""
+    if not examples:
+        return ""
+    lines = [
+        "",
+        "## Mail som ANVÄNDAREN markerat som icke-kvitto",
+        "",
+        ("Tidigare har användaren markerat mail från följande avsändare som"
+         " icke-kvitton (t.ex. bokningsbekräftelser, marknadsföring,"
+         " kalenderinbjudningar). Var extra försiktig — om dokumentet"
+         " liknar dessa, sätt is_receipt=false."),
+        "",
+    ]
+    for ex in examples:
+        sender = (ex.get("sender") or "okänd avsändare").strip() or "okänd avsändare"
+        lines.append(f"- Från: {sender}")
+        lines.append(
+            "  Detta är förmodligen en bokningsbekräftelse eller liknande,"
+            " INTE ett kvitto."
+        )
+    return "\n".join(lines)
