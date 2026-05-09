@@ -2,11 +2,15 @@ import { useState } from 'react';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { api } from '../api/client.js';
 import { useToast } from '../lib/toast.jsx';
+import { useDrawer } from '../drawer/DrawerProvider.jsx';
+import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 import FeedbackModal from './FeedbackModal.jsx';
 
 export default function FeedbackButtons({ messageId, message }) {
   const { t } = useI18n();
   const toast = useToast();
+  const { closeIfFor } = useDrawer();
+  const { bump: bumpTrashCount, bumpMessagesVersion } = useTrashCountContext();
   const [submitted, setSubmitted] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -27,9 +31,25 @@ export default function FeedbackButtons({ messageId, message }) {
     }
   };
 
-  const onModalSaved = () => {
+  // FAS 8.1 — modalen kallar denna med kind='field_error' eller
+  // 'not_a_receipt'. Vid not_a_receipt har raden flyttats till papper-
+  // skorgen på backend, så vi stänger drawern och uppdaterar listan.
+  const onModalSaved = (kind) => {
     setSubmitted(true);
     setModalOpen(false);
+    if (kind === 'not_a_receipt' && message) {
+      try {
+        closeIfFor(message.id);
+      } catch {
+        // ignorera — drawer kan vara unmonted
+      }
+      try {
+        bumpTrashCount(1);
+      } catch {}
+      try {
+        bumpMessagesVersion();
+      } catch {}
+    }
   };
 
   return (

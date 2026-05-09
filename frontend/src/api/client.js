@@ -137,6 +137,11 @@ export const api = {
         correct_value: correctValue,
       },
     }),
+  feedbackNotAReceipt: ({ messageId }) =>
+    request('/api/feedback/not-a-receipt', {
+      method: 'POST',
+      body: { message_id: messageId },
+    }),
   feedbackStats: () => request('/api/feedback/stats'),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });

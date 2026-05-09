@@ -16,11 +16,15 @@ const TEST_IDS = {
 export default function FeedbackModal({ open, onClose, onSaved, messageId, message }) {
   const { t, lang } = useI18n();
   const toast = useToast();
+  const [kind, setKind] = useState('field_error');
   const [checked, setChecked] = useState(() => new Set());
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!open) setChecked(new Set());
+    if (!open) {
+      setChecked(new Set());
+      setKind('field_error');
+    }
   }, [open]);
 
   if (!open) return null;
@@ -38,13 +42,22 @@ export default function FeedbackModal({ open, onClose, onSaved, messageId, messa
     if (saving) return;
     setSaving(true);
     try {
-      await api.feedbackThumbs({
-        messageId,
-        isPositive: false,
-        fields: Array.from(checked),
-      });
-      toast.show({ kind: 'ok', message: t.feedback.modal.saved });
-      onSaved?.();
+      if (kind === 'not_a_receipt') {
+        await api.feedbackNotAReceipt({ messageId });
+        toast.show({
+          kind: 'ok',
+          message: t.feedback.modal.notReceiptToast,
+        });
+        onSaved?.('not_a_receipt');
+      } else {
+        await api.feedbackThumbs({
+          messageId,
+          isPositive: false,
+          fields: Array.from(checked),
+        });
+        toast.show({ kind: 'ok', message: t.feedback.modal.saved });
+        onSaved?.('field_error');
+      }
     } catch (err) {
       toast.show({ kind: 'err', message: String(err?.message || err) });
     } finally {
@@ -73,6 +86,16 @@ export default function FeedbackModal({ open, onClose, onSaved, messageId, messa
     return field;
   };
 
+  const senderForBanner = message?.sender || '';
+  const notReceiptInfo = (t.feedback.modal.notReceiptInfo || '').replace(
+    '{sender}', senderForBanner,
+  );
+
+  const saveLabel =
+    kind === 'not_a_receipt'
+      ? t.feedback.modal.saveNotReceipt
+      : t.feedback.modal.saveFieldError || t.feedback.modal.save;
+
   return (
     <div
       className="modal-overlay"
@@ -89,25 +112,74 @@ export default function FeedbackModal({ open, onClose, onSaved, messageId, messa
       >
         <h2 className="modal__title">{t.feedback.modal.title}</h2>
         <p className="muted">{t.feedback.modal.lead}</p>
-        <ul className="feedback-fields">
-          {FIELDS.map((field) => (
-            <li key={field}>
-              <label className="feedback-fields__row">
-                <input
-                  type="checkbox"
-                  checked={checked.has(field)}
-                  onChange={() => toggle(field)}
-                  data-testid={TEST_IDS[field]}
-                />
-                <span className="feedback-fields__label">{fieldLabel(field)}</span>
-                <span className="feedback-fields__var muted">
-                  {' '}
-                  ({t.feedback.modal.wasValue} "{renderValue(field)}")
-                </span>
-              </label>
-            </li>
-          ))}
-        </ul>
+
+        <div className="feedback-kind" style={{ marginBottom: '16px' }}>
+          <label
+            className="feedback-kind__row"
+            style={{ display: 'flex', gap: '8px', alignItems: 'center' }}
+          >
+            <input
+              type="radio"
+              name="feedbackKind"
+              value="field_error"
+              checked={kind === 'field_error'}
+              onChange={() => setKind('field_error')}
+              data-testid="feedback-kind-field-error"
+            />
+            <span>{t.feedback.modal.kindFieldError}</span>
+          </label>
+          <label
+            className="feedback-kind__row"
+            style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '8px' }}
+          >
+            <input
+              type="radio"
+              name="feedbackKind"
+              value="not_a_receipt"
+              checked={kind === 'not_a_receipt'}
+              onChange={() => setKind('not_a_receipt')}
+              data-testid="feedback-kind-not-receipt"
+            />
+            <span>{t.feedback.modal.kindNotReceipt}</span>
+          </label>
+        </div>
+
+        {kind === 'not_a_receipt' ? (
+          <div
+            className="feedback-info-banner"
+            data-testid="feedback-not-receipt-info"
+            style={{
+              padding: '12px',
+              background: 'var(--bg-info, #f0f4ff)',
+              borderRadius: '6px',
+              fontSize: '13px',
+              marginBottom: '16px',
+            }}
+          >
+            {notReceiptInfo}
+          </div>
+        ) : (
+          <ul className="feedback-fields" data-testid="feedback-fields-list">
+            {FIELDS.map((field) => (
+              <li key={field}>
+                <label className="feedback-fields__row">
+                  <input
+                    type="checkbox"
+                    checked={checked.has(field)}
+                    onChange={() => toggle(field)}
+                    data-testid={TEST_IDS[field]}
+                  />
+                  <span className="feedback-fields__label">{fieldLabel(field)}</span>
+                  <span className="feedback-fields__var muted">
+                    {' '}
+                    ({t.feedback.modal.wasValue} "{renderValue(field)}")
+                  </span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+
         <div className="modal__footer">
           <button
             type="button"
@@ -125,7 +197,7 @@ export default function FeedbackModal({ open, onClose, onSaved, messageId, messa
             disabled={saving}
             data-testid="feedback-save"
           >
-            {t.feedback.modal.save}
+            {saveLabel}
           </button>
         </div>
       </div>
