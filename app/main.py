@@ -1750,6 +1750,14 @@ class FeedbackCorrectionPayload(BaseModel):
     correct_value: str
 
 
+class FeedbackNotAReceiptPayload(BaseModel):
+    """Body för POST /api/feedback/not-a-receipt.
+    Användaren markerar att hela mailet inte är ett kvitto. Backend
+    1) sparar feedback med feedback_type='not_a_receipt' och
+    2) soft-deletar ProcessedMessage med delete_reason='user_marked_not_receipt'."""
+    message_id: str
+
+
 @app.post("/api/feedback/thumbs")
 def post_feedback_thumbs(
     payload: FeedbackThumbsPayload,
@@ -1799,6 +1807,23 @@ def post_feedback_correction(
     )
     db.commit()
     return {"saved": bool(fb)}
+
+
+@app.post("/api/feedback/not-a-receipt")
+def post_feedback_not_a_receipt(
+    payload: FeedbackNotAReceiptPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 8.1 — användaren markerar mailet som icke-kvitto.
+    Sparar feedback (så AI:n kan filtrera liknande i framtiden) och
+    flyttar raden till papperskorgen i samma operation.
+    Returnerar 404 om message_id inte finns."""
+    from app.services.feedback import save_not_a_receipt
+    result = save_not_a_receipt(db, payload.message_id)
+    if not result.get("saved"):
+        raise HTTPException(status_code=404, detail="Meddelande hittades inte")
+    return result
 
 
 @app.get("/api/feedback/stats")
