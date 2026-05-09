@@ -1,5 +1,8 @@
 from datetime import datetime
-from sqlalchemy import Boolean, Column, DateTime, Float, Integer, JSON, String, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean, Column, Date, DateTime, Float, ForeignKey, Index, Integer, JSON,
+    Numeric, String, Text, UniqueConstraint,
+)
 from sqlalchemy.sql import func
 
 from app.db import Base
@@ -210,3 +213,90 @@ class AiFeedback(Base):
     created_at = Column(
         DateTime, server_default=func.now(), nullable=False, index=True,
     )
+
+
+# ---------- FAS 11.1 — Resor (trip-gruppering) ----------
+
+
+class Trip(Base):
+    """En resa: en grupp av kvitton (flygbiljett som anchor + relaterade
+    kostnader). Skapas av `suggest_trips` (status='suggested') och
+    aktiveras när användaren accepterar.
+
+    status:
+      'suggested' = AI-förslag, väntar på användarbeslut
+      'active'    = användaren har accepterat
+      'rejected'  = användaren har avvisat (sparas för feedback)
+      'archived'  = arkiverad / klar
+    """
+
+    __tablename__ = "trips"
+
+    id = Column(Integer, primary_key=True)
+    title = Column(String(200), nullable=False)
+    destination = Column(String(100), nullable=True)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    total_amount = Column(Numeric(10, 2), nullable=True)
+    base_currency = Column(String(3), nullable=False, default="EUR")
+    status = Column(String(20), nullable=False, default="suggested", index=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    user_decision_at = Column(DateTime, nullable=True)
+    ai_confidence = Column(Integer, nullable=True)
+    description = Column(Text, nullable=True)
+
+    # Reserverade fält för framtida FAS 11.5 (Netvisor-integration). Inte
+    # populerade i FAS 11.1 — bara strukturen finns på plats.
+    netvisor_trip_id = Column(String(50), nullable=True)
+    netvisor_synced_at = Column(DateTime, nullable=True)
+
+    user_edited = Column(Boolean, nullable=False, default=False)
+
+
+Index("idx_trips_dates", Trip.start_date, Trip.end_date)
+
+
+class TripMessage(Base):
+    """Många-till-många mellan Trip och ProcessedMessage (via message_id).
+    Soft-delete via removed_at — så vi behåller historik om användaren
+    tar bort ett kvitto från resan.
+
+    OBS: vi använder INTE en hård FK till processed_messages eftersom
+    SQLite/Postgres-FK till en UNIQUE (icke-PK) kolumn är inkonsekvent
+    (samma val som AiFeedback)."""
+
+    __tablename__ = "trip_messages"
+    __table_args__ = (
+        UniqueConstraint("trip_id", "message_id", name="uq_trip_message"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(
+        Integer,
+        ForeignKey("trips.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    message_id = Column(String(255), nullable=False, index=True)
+    added_by = Column(String(20), nullable=False)  # 'ai_suggestion' | 'manual'
+    added_at = Column(DateTime, server_default=func.now(), nullable=False)
+    removed_at = Column(DateTime, nullable=True)
+
+
+class TripFeedback(Base):
+    """Loggar användarens beslut (accept/reject/edit/wrong_grouping etc.)
+    så Claude kan dra lärdom via few-shot. `details` är ett JSON-objekt
+    med ändrade fält när feedback_type='edited' (t.ex. {title: {from, to}})."""
+
+    __tablename__ = "trip_feedback"
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(
+        Integer,
+        ForeignKey("trips.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    feedback_type = Column(String(50), nullable=False)
+    details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)

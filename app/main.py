@@ -2194,6 +2194,185 @@ def get_feedback_stats(
     return feedback_stats(db)
 
 
+# --- FAS 11.1 — Resor (trip-gruppering) ---------------------------------
+
+
+class TripEditPayload(BaseModel):
+    title: str | None = None
+    destination: str | None = None
+    start_date: str | None = None  # ISO YYYY-MM-DD
+    end_date: str | None = None
+    description: str | None = None
+    add_message_ids: list[str] | None = None
+    remove_message_ids: list[str] | None = None
+
+
+class TripFeedbackPayload(BaseModel):
+    feedback_type: str
+    details: dict | None = None
+
+
+def _parse_iso_date_or_400(raw: str | None, field: str):
+    if raw is None:
+        return None
+    from datetime import date as _date, datetime as _dt
+    try:
+        return _dt.strptime(raw[:10], "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} måste vara YYYY-MM-DD, fick {raw!r}",
+        )
+
+
+def _trip_or_404(db: Session, trip_id: int):
+    from app.models import Trip
+    trip = db.query(Trip).filter(Trip.id == trip_id).first()
+    if trip is None:
+        raise HTTPException(status_code=404, detail="Resa hittades inte")
+    return trip
+
+
+@app.get("/api/trips/suggestions")
+def list_trip_suggestions(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Lista AI-genererade resa-förslag som väntar på användarbeslut."""
+    from app.models import Trip
+    from app.services.trip_grouper import serialize_trip
+    rows = (
+        db.query(Trip)
+        .filter(Trip.status == "suggested")
+        .order_by(Trip.start_date.desc())
+        .all()
+    )
+    return {"trips": [serialize_trip(db, t) for t in rows]}
+
+
+@app.get("/api/trips/active")
+def list_active_trips(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Lista aktiva (accepterade) resor."""
+    from app.models import Trip
+    from app.services.trip_grouper import serialize_trip
+    rows = (
+        db.query(Trip)
+        .filter(Trip.status == "active")
+        .order_by(Trip.start_date.desc())
+        .all()
+    )
+    return {"trips": [serialize_trip(db, t) for t in rows]}
+
+
+@app.get("/api/trips/stats")
+def get_trip_stats(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.trip_grouper import trip_stats
+    return trip_stats(db)
+
+
+@app.get("/api/trips/{trip_id}")
+def get_trip_detail(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.trip_grouper import serialize_trip
+    trip = _trip_or_404(db, trip_id)
+    return serialize_trip(db, trip)
+
+
+@app.post("/api/trips/{trip_id}/accept")
+def post_accept_trip(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.trip_grouper import accept_trip
+    trip = _trip_or_404(db, trip_id)
+    return accept_trip(db, trip)
+
+
+@app.post("/api/trips/{trip_id}/reject")
+def post_reject_trip(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.trip_grouper import reject_trip
+    trip = _trip_or_404(db, trip_id)
+    return reject_trip(db, trip)
+
+
+@app.patch("/api/trips/{trip_id}")
+def patch_trip(
+    trip_id: int,
+    payload: TripEditPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.trip_grouper import edit_trip
+    trip = _trip_or_404(db, trip_id)
+    start = _parse_iso_date_or_400(payload.start_date, "start_date")
+    end = _parse_iso_date_or_400(payload.end_date, "end_date")
+    return edit_trip(
+        db, trip,
+        title=payload.title,
+        destination=payload.destination,
+        start_date=start,
+        end_date=end,
+        description=payload.description,
+        add_message_ids=payload.add_message_ids or [],
+        remove_message_ids=payload.remove_message_ids or [],
+    )
+
+
+@app.delete("/api/trips/{trip_id}")
+def delete_trip(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Arkivera resa (soft). Kvitton blir ej bortkopplade — de följer
+    med resan in i 'archived'-status."""
+    from app.services.trip_grouper import archive_trip
+    trip = _trip_or_404(db, trip_id)
+    return archive_trip(db, trip)
+
+
+@app.post("/api/trips/refresh-suggestions")
+def post_refresh_trip_suggestions(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Triggar manuell omanalys. Kör samma logik som det nattliga
+    schedulerade jobbet."""
+    from app.services.trip_grouper import persist_suggestions, suggest_trips
+    suggestions = suggest_trips(db, lookback_days=90)
+    saved = persist_suggestions(db, suggestions)
+    return {"generated": len(saved)}
+
+
+@app.post("/api/trips/{trip_id}/feedback")
+def post_trip_feedback(
+    trip_id: int,
+    payload: TripFeedbackPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.trip_grouper import save_trip_feedback
+    if not payload.feedback_type:
+        raise HTTPException(status_code=400, detail="feedback_type saknas")
+    trip = _trip_or_404(db, trip_id)
+    fb = save_trip_feedback(db, trip, payload.feedback_type, payload.details)
+    return {"saved": True, "id": fb.id}
+
+
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
 # /api/*, /health) matchas före. Returnerar index.html för alla client-side
 # routes (/review, /log m.fl.) så browser-reload och deep-linking fungerar.

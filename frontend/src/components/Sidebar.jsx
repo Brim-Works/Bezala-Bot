@@ -10,6 +10,7 @@ const ITEMS = [
   { id: 'review' },
   { id: 'match' },
   { id: 'travelTinder' },
+  { id: 'trips' },
   { id: 'log' },
   { id: 'settings' },
   { id: 'trash' },

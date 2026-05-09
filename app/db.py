@@ -72,6 +72,13 @@ _INDEXES = [
         "processed_messages",
         "deleted_at",
     ),
+    # FAS 11.1 — kompositindex för datum-fönsterfrågor på resor.
+    # Postgres/SQLite-syntax är identisk här.
+    (
+        "idx_trips_dates",
+        "trips",
+        "start_date, end_date",
+    ),
 ]
 
 

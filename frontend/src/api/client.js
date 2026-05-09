@@ -174,6 +174,21 @@ export const api = {
       },
     }),
   feedbackStats: () => request('/api/feedback/stats'),
+  // FAS 11.1 — Resor
+  tripsSuggestions: () => request('/api/trips/suggestions'),
+  tripsActive: () => request('/api/trips/active'),
+  tripsStats: () => request('/api/trips/stats'),
+  tripsGet: (id) => request(`/api/trips/${id}`),
+  tripsAccept: (id) => request(`/api/trips/${id}/accept`, { method: 'POST' }),
+  tripsReject: (id) => request(`/api/trips/${id}/reject`, { method: 'POST' }),
+  tripsEdit: (id, payload) =>
+    request(`/api/trips/${id}`, { method: 'PATCH', body: payload }),
+  tripsArchive: (id) =>
+    request(`/api/trips/${id}`, { method: 'DELETE' }),
+  tripsRefreshSuggestions: () =>
+    request('/api/trips/refresh-suggestions', { method: 'POST' }),
+  tripsFeedback: (id, payload) =>
+    request(`/api/trips/${id}/feedback`, { method: 'POST', body: payload }),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {

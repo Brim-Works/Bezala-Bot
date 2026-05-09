@@ -3691,3 +3691,377 @@ html[data-theme='B'] .modal__title {
 .tt-lightbox__missing {
   font-size: 14px;
 }
+
+/* ========== FAS 11.1 — Resor (trips) ========== */
+
+.trips-view {
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.trips-view__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.trips-view__title {
+  margin: 0 0 4px;
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.trips-view__actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.trips-view__section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trips-view__section-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--muted);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.trips-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.trip-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  text-align: left;
+  width: 100%;
+}
+
+.trip-card--active {
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.trip-card--active:hover {
+  background: var(--surface-2);
+  border-color: var(--border-strong, var(--border));
+}
+
+.trip-card__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.trip-card__title-block {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  flex: 1;
+}
+
+.trip-card__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.trip-card__meta {
+  font-size: 13px;
+}
+
+.trip-card__totals {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  align-items: flex-end;
+  text-align: right;
+}
+
+.trip-card__amount {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.trip-card__count {
+  font-size: 12px;
+}
+
+.trip-card__description {
+  margin: 0;
+  font-size: 13.5px;
+  color: var(--text-2);
+}
+
+.trip-card__receipts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.trip-card__receipt {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  font-size: 13px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+}
+
+.trip-card__receipt:first-child {
+  border-top: 0;
+}
+
+.trip-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.vchip-mini {
+  font-size: 13px;
+  font-weight: 500;
+}
+
+/* Drawer */
+
+.trip-drawer {
+  position: fixed;
+  inset: 0;
+  z-index: 900;
+}
+
+.trip-drawer__backdrop {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in oklch, black 40%, transparent);
+  animation: drawer-fade 0.15s ease;
+}
+
+.trip-drawer__panel {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100vh;
+  width: 560px;
+  max-width: 94vw;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  padding: 20px;
+  gap: 16px;
+  overflow-y: auto;
+  animation: drawer-slide 0.2s ease;
+}
+
+.trip-drawer__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.trip-drawer__title {
+  margin: 0 0 4px;
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.trip-drawer__totals {
+  font-size: 22px;
+  font-weight: 600;
+}
+
+.trip-drawer__description {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.trip-drawer__section-title {
+  margin: 8px 0 4px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--muted);
+}
+
+.trip-drawer__receipts {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.trip-drawer__receipt {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  gap: 12px;
+  align-items: center;
+  padding: 10px;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+}
+
+.trip-drawer__receipt-vendor {
+  font-weight: 500;
+  font-size: 14px;
+}
+
+.trip-drawer__receipt-side {
+  font-size: 14px;
+}
+
+.trip-drawer__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: auto;
+}
+
+/* Modal (edit, feedback, add receipt) */
+
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 950;
+  background: color-mix(in oklch, black 50%, transparent);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  animation: drawer-fade 0.15s ease;
+}
+
+.modal-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  width: min(480px, 100%);
+  max-height: 90vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal-card--wide {
+  width: min(640px, 100%);
+}
+
+.modal-card__title {
+  margin: 0;
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.modal-card__actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.form-row {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  font-size: 13.5px;
+}
+
+.form-row > span {
+  color: var(--muted);
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.form-row input,
+.form-row textarea,
+.form-row select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg);
+  color: var(--text);
+  font-size: 14px;
+  font-family: inherit;
+}
+
+.form-row textarea {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.form-row-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.radio-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 0;
+  font-size: 14px;
+  cursor: pointer;
+}
+
+.trip-add-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 360px;
+  overflow-y: auto;
+}
+
+.trip-add-list__row {
+  border-top: 1px solid var(--border);
+}
+
+.trip-add-list__row:first-child {
+  border-top: 0;
+}
+
+.trip-add-list__label {
+  display: grid;
+  grid-template-columns: auto 1fr auto auto;
+  gap: 10px;
+  align-items: center;
+  padding: 8px 6px;
+  cursor: pointer;
+  font-size: 13.5px;
+}
+
+.trip-add-list__vendor {
+  font-weight: 500;
+}
+
+.pill--accent {
+  background: color-mix(in oklch, var(--accent) 18%, var(--surface-2));
+  color: var(--accent);
+}
