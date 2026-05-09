@@ -10,6 +10,10 @@ Flöde per mail:
   7. Ladda upp till Drive.
   8. Logga i DB (ProcessedMessage + SavedFile).
   9. Sätt etiketten 'Bezala-Klar' på mailet (lager 1).
+
+FAS 8: innan analyzer.analyze hämtas senaste användar-rättelser från
+ai_feedback-tabellen och bifogas Claude-prompten som few-shot. Tomt
+om tabellen är tom eller fetch failar — analysen ska aldrig blockeras.
 """
 
 from __future__ import annotations
@@ -115,6 +119,21 @@ def _filename_already_saved(db, filename: str, date_str: str) -> bool:
         .first()
         is not None
     )
+
+
+def _fetch_few_shot_for_sender(sender: str | None) -> list[dict]:
+    """Hämta few-shot-exempel inom en kortlivad session. Säkert att
+    kalla även om feedback-tabellen är tom eller saknas."""
+    try:
+        from app.services.feedback import get_examples_for_sender
+        with session_scope() as db:
+            return get_examples_for_sender(db, sender, limit=10)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "Few-shot fetch misslyckades för sender=%r — fortsätter utan",
+            sender,
+        )
+        return []
 
 
 def run_scan(max_results: int = 50) -> ScanResult:
@@ -523,6 +542,12 @@ def _process_one_message(
     saved_any = False
     any_non_receipt = False
 
+    # FAS 8 — hämta few-shot-exempel innan AI-anropet (gemensamt per
+    # mail även om det finns flera bilagor)
+    few_shot_examples = (
+        _fetch_few_shot_for_sender(msg.sender) if use_ai else []
+    )
+
     for att in pdf_attachments:
         analysis: ReceiptAnalysis | None = None
         if use_ai:
@@ -535,6 +560,7 @@ def _process_one_message(
                     subject=msg.subject,
                     snippet=msg.snippet,
                     received_at=msg.received_at,
+                    examples=few_shot_examples,
                 )
             except AnalyzerError as exc:
                 logger.exception("Claude-analys misslyckades för %s: %s", message_id, exc)
@@ -723,6 +749,7 @@ def _extract_preliminary_fields(
             subject=msg.subject,
             snippet=msg.snippet,
             received_at=msg.received_at,
+            examples=_fetch_few_shot_for_sender(msg.sender),
         )
     except AnalyzerError as exc:
         logger.info("Link-fetch prelim AI-analys misslyckades för %s: %s",
