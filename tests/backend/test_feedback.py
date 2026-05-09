@@ -508,13 +508,35 @@ class FormatNotReceiptExamplesTest(unittest.TestCase):
 
     def test_includes_sender_and_warning_text(self):
         out = self._format([
-            {"sender": "Finnair <noreply@finnair.com>"},
-            {"sender": "events@meetingpro.com"},
+            {"sender": "Finnair <noreply@finnair.com>", "subject": ""},
+            {"sender": "events@meetingpro.com", "subject": ""},
         ])
         self.assertIn("Mail som ANVÄNDAREN markerat som icke-kvitto", out)
         self.assertIn("Finnair", out)
         self.assertIn("meetingpro", out)
         self.assertIn("INTE ett kvitto", out)
+
+    def test_includes_subject_when_present(self):
+        out = self._format([
+            {
+                "sender": "noreply@finnair.com",
+                "subject": "Varausvahvistus FI-1234",
+            },
+        ])
+        self.assertIn("Från: noreply@finnair.com", out)
+        self.assertIn("Subject: 'Varausvahvistus FI-1234'", out)
+
+    def test_omits_subject_line_when_empty(self):
+        out = self._format([
+            {"sender": "noreply@finnair.com", "subject": ""},
+        ])
+        self.assertIn("Från: noreply@finnair.com", out)
+        self.assertNotIn("Subject:", out)
+
+    def test_handles_missing_subject_key(self):
+        out = self._format([{"sender": "noreply@finnair.com"}])
+        self.assertIn("Från: noreply@finnair.com", out)
+        self.assertNotIn("Subject:", out)
 
 
 class NotAReceiptServiceTest(unittest.TestCase):
@@ -539,12 +561,12 @@ class NotAReceiptServiceTest(unittest.TestCase):
             db.query(self.ProcessedMessage).delete()
             db.commit()
 
-    def _seed_message(self, message_id, sender, vendor=None):
+    def _seed_message(self, message_id, sender, vendor=None, subject="Bokningsbekräftelse"):
         with self.SessionLocal() as db:
             row = self.ProcessedMessage(
                 message_id=message_id,
                 sender=sender,
-                subject="Bokningsbekräftelse",
+                subject=subject,
                 status="saved",
                 vendor=vendor,
             )
@@ -553,7 +575,10 @@ class NotAReceiptServiceTest(unittest.TestCase):
 
     def test_save_not_a_receipt_creates_feedback_and_soft_deletes_message(self):
         from app.services.feedback import save_not_a_receipt
-        self._seed_message("m-1", "Finnair <noreply@finnair.com>", vendor="Finnair")
+        self._seed_message(
+            "m-1", "Finnair <noreply@finnair.com>",
+            vendor="Finnair", subject="Varausvahvistus FI-1234",
+        )
         with self.SessionLocal() as db:
             result = save_not_a_receipt(db, "m-1")
         self.assertTrue(result.get("saved"))
@@ -565,12 +590,24 @@ class NotAReceiptServiceTest(unittest.TestCase):
             self.assertEqual(fb.ai_value, "is_receipt: true")
             self.assertEqual(fb.correct_value, "is_receipt: false")
             self.assertIn("Finnair", fb.vendor_context or "")
+            # FAS 8.1.1 — subject ska sparas också
+            self.assertEqual(fb.subject_context, "Varausvahvistus FI-1234")
 
             msg = db.query(self.ProcessedMessage).filter_by(
                 message_id="m-1"
             ).first()
             self.assertIsNotNone(msg.deleted_at)
             self.assertEqual(msg.delete_reason, "user_marked_not_receipt")
+
+    def test_save_not_a_receipt_handles_empty_subject(self):
+        from app.services.feedback import save_not_a_receipt
+        self._seed_message(
+            "m-empty", "noreply@finnair.com", subject="",
+        )
+        with self.SessionLocal() as db:
+            self.assertTrue(save_not_a_receipt(db, "m-empty").get("saved"))
+            fb = db.query(self.AiFeedback).first()
+            self.assertIsNone(fb.subject_context)
 
     def test_save_not_a_receipt_returns_false_for_unknown(self):
         from app.services.feedback import save_not_a_receipt
@@ -594,9 +631,11 @@ class NotAReceiptServiceTest(unittest.TestCase):
         for i in range(3):
             self._seed_message(
                 f"fin-{i}", f"Finnair <noreply{i}@finnair.com>",
+                subject=f"Varausvahvistus FI-{i}",
             )
             self._seed_message(
                 f"oth-{i}", f"Acme <events{i}@acme.com>",
+                subject=f"Event invite {i}",
             )
         with self.SessionLocal() as db:
             for i in range(3):
@@ -614,6 +653,10 @@ class NotAReceiptServiceTest(unittest.TestCase):
             1 for r in results[:3] if "Finnair" in r["sender"]
         )
         self.assertEqual(finnair_first_three, 3)
+        # FAS 8.1.1 — subject ska följa med i varje resultatrad
+        for r in results:
+            self.assertIn("subject", r)
+            self.assertTrue(r["subject"])  # icke-tom sträng
 
     def test_get_not_receipt_examples_returns_empty_when_table_empty(self):
         from app.services.feedback import get_not_receipt_examples

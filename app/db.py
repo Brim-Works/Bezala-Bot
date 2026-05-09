@@ -60,6 +60,12 @@ _SCAN_RUNS_ADDITIONS = {
     "filtered_messages": "JSON",
 }
 
+_AI_FEEDBACK_ADDITIONS = {
+    # FAS 8.1.1 — subject sparas på not_a_receipt-rader så AI:n kan
+    # skilja olika mail-typer från samma avsändare.
+    "subject_context": "VARCHAR(500)",
+}
+
 _INDEXES = [
     (
         "ix_processed_messages_deleted_at",
@@ -116,6 +122,20 @@ def _apply_schema_migrations() -> None:
                         text(f"ALTER TABLE scan_runs ADD COLUMN {name} {col_type}")
                     )
                     logger.info("Lade till kolumn scan_runs.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
+    if "ai_feedback" in tables:
+        existing = {col["name"] for col in insp.get_columns("ai_feedback")}
+        with engine.begin() as conn:
+            for name, col_type in _AI_FEEDBACK_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE ai_feedback ADD COLUMN {name} {col_type}")
+                    )
+                    logger.info("Lade till kolumn ai_feedback.%s", name)
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 

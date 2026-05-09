@@ -356,6 +356,7 @@ def save_not_a_receipt(db, message_id: str) -> dict:
             ai_value="is_receipt: true",
             correct_value="is_receipt: false",
             vendor_context=(msg.sender or "")[:255] or None,
+            subject_context=(msg.subject or "")[:500] or None,
         )
         db.add(feedback)
 
@@ -386,8 +387,8 @@ def get_not_receipt_examples(
          i sender-headern).
       2) Komplettera med övriga senaste tills `limit` nås.
 
-    Returnerar list[{"sender": str}]. Tom lista vid DB-fel — analyzern
-    ska aldrig blockeras.
+    Returnerar list[{"sender": str, "subject": str}]. Tom lista vid DB-
+    fel — analyzern ska aldrig blockeras.
     """
     try:
         if limit <= 0:
@@ -398,6 +399,12 @@ def get_not_receipt_examples(
         token: str | None = None
         if sender:
             token = extract_vendor_for_context(sender) or sender
+
+        def _row(ex: AiFeedback) -> dict:
+            return {
+                "sender": ex.vendor_context or "",
+                "subject": ex.subject_context or "",
+            }
 
         if token:
             same = (
@@ -410,7 +417,7 @@ def get_not_receipt_examples(
             )
             for ex in same:
                 seen_ids.add(ex.id)
-                results.append({"sender": ex.vendor_context or ""})
+                results.append(_row(ex))
 
         if len(results) < limit:
             remaining = limit - len(results)
@@ -430,7 +437,7 @@ def get_not_receipt_examples(
             for ex in others:
                 if ex.id in seen_ids:
                     continue
-                results.append({"sender": ex.vendor_context or ""})
+                results.append(_row(ex))
                 if len(results) >= limit:
                     break
 
@@ -446,24 +453,32 @@ def format_not_receipt_examples_for_prompt(examples: list[dict]) -> str:
     """Formatera not_a_receipt-exempel till ett textblock som klistras in
     efter SYSTEM_PROMPT. Hjälper Claude att filtrera bort liknande mail
     (t.ex. bokningsbekräftelser som inte är kvitton). Tom sträng om
-    listan är tom."""
+    listan är tom.
+
+    FAS 8.1.1: subject inkluderas så AI:n kan skilja olika mail-typer
+    från samma avsändare (Finnair-bokningsbekräftelse vs Finnair-eticket-
+    kvitto)."""
     if not examples:
         return ""
     lines = [
         "",
         "## Mail som ANVÄNDAREN markerat som icke-kvitto",
         "",
-        ("Tidigare har användaren markerat mail från följande avsändare som"
-         " icke-kvitton (t.ex. bokningsbekräftelser, marknadsföring,"
-         " kalenderinbjudningar). Var extra försiktig — om dokumentet"
-         " liknar dessa, sätt is_receipt=false."),
+        ("Tidigare har användaren markerat följande mail som icke-kvitton"
+         " (t.ex. bokningsbekräftelser, marknadsföring, kalenderinbjudningar)."
+         " Jämför avsändare OCH ämnesrad — samma avsändare kan skicka både"
+         " riktiga kvitton och icke-kvitton, det är ämnesmönstret som avgör."
+         " Om dokumentet liknar dessa, sätt is_receipt=false."),
         "",
     ]
     for ex in examples:
-        sender = (ex.get("sender") or "okänd avsändare").strip() or "okänd avsändare"
+        sender = (ex.get("sender") or "").strip() or "okänd avsändare"
+        subject = (ex.get("subject") or "").strip()
         lines.append(f"- Från: {sender}")
+        if subject:
+            lines.append(f"  Subject: '{subject}'")
         lines.append(
-            "  Detta är förmodligen en bokningsbekräftelse eller liknande,"
+            "  → Detta är en bokningsbekräftelse eller liknande,"
             " INTE ett kvitto."
         )
     return "\n".join(lines)

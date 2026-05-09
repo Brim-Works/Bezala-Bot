@@ -203,6 +203,10 @@ class AiFeedback(Base):
     ai_value = Column(Text, nullable=True)
     correct_value = Column(Text, nullable=True)
     vendor_context = Column(String(255), nullable=True, index=True)
+    # FAS 8.1.1 — subject sparas tillsammans med sender för not_a_receipt-
+    # rader så AI:n kan skilja på subject-mönster för samma avsändare
+    # (t.ex. Finnair-bokningsbekräftelse vs Finnair-eticket-kvitto).
+    subject_context = Column(String(500), nullable=True)
     created_at = Column(
         DateTime, server_default=func.now(), nullable=False, index=True,
     )
