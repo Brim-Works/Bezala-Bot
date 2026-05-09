@@ -7,6 +7,7 @@ export const ROUTES = {
   review: '/review',
   match: '/match',
   travelTinder: '/travel-tinder',
+  trips: '/trips',
   log: '/log',
   settings: '/settings',
   trash: '/trash',
@@ -26,6 +27,8 @@ export function viewForPath(path) {
       return 'match';
     case '/travel-tinder':
       return 'travelTinder';
+    case '/trips':
+      return 'trips';
     case '/log':
       return 'log';
     case '/settings':

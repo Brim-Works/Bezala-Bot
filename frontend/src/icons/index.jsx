@@ -162,11 +162,23 @@ export function IconPlane(props) {
   );
 }
 
+export function IconGlobe(props) {
+  return (
+    <IconBase {...props}>
+      <circle cx="10" cy="10" r="7" />
+      <path d="M3 10h14" />
+      <path d="M10 3a10 10 0 0 1 0 14" />
+      <path d="M10 3a10 10 0 0 0 0 14" />
+    </IconBase>
+  );
+}
+
 export const NAV_ICONS = {
   dashboard: IconDashboard,
   review: IconReview,
   match: IconLink,
   travelTinder: IconPlane,
+  trips: IconGlobe,
   log: IconLog,
   settings: IconSettings,
   trash: IconTrash,
