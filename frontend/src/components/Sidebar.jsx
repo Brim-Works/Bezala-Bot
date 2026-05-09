@@ -9,6 +9,7 @@ const ITEMS = [
   { id: 'dashboard' },
   { id: 'review' },
   { id: 'match' },
+  { id: 'travelTinder' },
   { id: 'log' },
   { id: 'settings' },
   { id: 'trash' },

@@ -1,0 +1,357 @@
+/* FAS 8.5a — Travel Tinder. Tinder-stil-koppling av Bezala-korttrans
+ * mot kvitton. Vänster panel = saknade korttransaktioner, höger panel
+ * = AI-förslag som stort kort + lista med alla kvitton.
+ *
+ * Är en PARALLELL vy bredvid Översikt + Kortmatchning. När den är
+ * verifierad rivs gamla vyerna i FAS 8.5b.
+ *
+ * State:
+ *  - selectedPayment: vald korttrans (objektet, inte bara id)
+ *  - all_messages: alla saved-rader (inkl. kopplade) från backend
+ *  - missing_receipts: saknade Bezala-kortrader + AI-suggestions
+ *  - search/filter/sort persistas i localStorage (tt_*)
+ *
+ * Auto-refresh var 10 min. Network-fel renderas som toast utan att
+ * tappa cachen.
+ */
+
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useI18n } from '../i18n/useI18n.jsx';
+import { api, ApiError } from '../api/client.js';
+import { useToast } from '../lib/toast.jsx';
+import { useDrawer } from '../drawer/DrawerProvider.jsx';
+import MissingPaymentsList from '../components/travel-tinder/MissingPaymentsList.jsx';
+import OtherReceiptsList from '../components/travel-tinder/OtherReceiptsList.jsx';
+import TinderCard from '../components/travel-tinder/TinderCard.jsx';
+import MatchConfirmModal from '../components/travel-tinder/MatchConfirmModal.jsx';
+import UploadCard from '../components/travel-tinder/UploadCard.jsx';
+import PdfPreviewLightbox from '../components/travel-tinder/PdfPreviewLightbox.jsx';
+import { IconRefresh } from '../icons/index.jsx';
+
+const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
+const LS_KEY = 'tt_state_v1';
+
+function loadPersisted() {
+  if (typeof window === 'undefined') return {};
+  try {
+    const raw = window.localStorage.getItem(LS_KEY);
+    return raw ? JSON.parse(raw) || {} : {};
+  } catch {
+    return {};
+  }
+}
+
+function persist(patch) {
+  if (typeof window === 'undefined') return;
+  try {
+    const cur = loadPersisted();
+    window.localStorage.setItem(LS_KEY, JSON.stringify({ ...cur, ...patch }));
+  } catch {
+    // localStorage kan vara full eller blockerad — tappa tyst.
+  }
+}
+
+function formatRelative(ts, t) {
+  if (!ts) return t.travelTinder.justNow;
+  const diff = Math.max(0, Math.floor((Date.now() - ts) / 60000));
+  if (diff < 1) return t.travelTinder.justNow;
+  return t.travelTinder.minutesAgo.replace('{n}', String(diff));
+}
+
+export default function TravelTinder() {
+  const { t } = useI18n();
+  const toast = useToast();
+  const { openDrawer } = useDrawer();
+  const persisted = useRef(loadPersisted()).current;
+
+  const [data, setData] = useState({ missing_receipts: [], all_messages: [] });
+  const [isLoading, setIsLoading] = useState(true);
+  const [lastRefresh, setLastRefresh] = useState(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const [selectedPaymentId, setSelectedPaymentId] = useState(null);
+  const [skippedSuggestionIds, setSkippedSuggestionIds] = useState([]);
+
+  const [searchQuery, setSearchQuery] = useState(persisted.search || '');
+  const [statusFilter, setStatusFilter] = useState(
+    persisted.statusFilter || 'uncoupled',
+  );
+  const [dateFilter, setDateFilter] = useState(persisted.dateFilter || '30d');
+  const [currencyFilter, setCurrencyFilter] = useState(
+    persisted.currencyFilter || 'all',
+  );
+  const [sortBy, setSortBy] = useState(persisted.sortBy || 'processed_at');
+  const [sortDir, setSortDir] = useState(persisted.sortDir || 'desc');
+
+  const [pendingMatch, setPendingMatch] = useState(null);
+  const [matching, setMatching] = useState(false);
+  const [pdfPreviewMessage, setPdfPreviewMessage] = useState(null);
+
+  // Persist UI-state vid varje förändring
+  useEffect(() => {
+    persist({
+      search: searchQuery,
+      statusFilter,
+      dateFilter,
+      currencyFilter,
+      sortBy,
+      sortDir,
+    });
+  }, [searchQuery, statusFilter, dateFilter, currencyFilter, sortBy, sortDir]);
+
+  const refresh = useCallback(
+    async ({ silent = false } = {}) => {
+      if (!silent) setRefreshing(true);
+      try {
+        const body = await api.bezalaMatchSuggestionsAll();
+        setData({
+          missing_receipts: body?.missing_receipts || [],
+          all_messages: body?.all_messages || [],
+        });
+        setLastRefresh(Date.now());
+      } catch (err) {
+        const msg = err instanceof ApiError ? err.message : String(err);
+        toast.show({
+          kind: 'err',
+          message: `${t.travelTinder.refreshFailed}: ${msg}`,
+        });
+      } finally {
+        setIsLoading(false);
+        setRefreshing(false);
+      }
+    },
+    [t.travelTinder.refreshFailed, toast],
+  );
+
+  useEffect(() => {
+    refresh({ silent: true });
+  }, [refresh]);
+
+  useEffect(() => {
+    const id = setInterval(() => refresh({ silent: true }), REFRESH_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [refresh]);
+
+  const missingRows = data.missing_receipts;
+
+  // Auto-välj första saknade kortbetalning om inget är valt
+  useEffect(() => {
+    if (selectedPaymentId == null && missingRows.length > 0) {
+      setSelectedPaymentId(missingRows[0].missing_receipt.id);
+    }
+  }, [missingRows, selectedPaymentId]);
+
+  const selected = useMemo(
+    () =>
+      missingRows.find((r) => r.missing_receipt.id === selectedPaymentId) ||
+      null,
+    [missingRows, selectedPaymentId],
+  );
+
+  const matchedCount = useMemo(
+    () => data.all_messages.filter((m) => m.coupled).length,
+    [data.all_messages],
+  );
+  const totalCount = data.all_messages.length;
+
+  const activeSuggestion = useMemo(() => {
+    if (!selected) return null;
+    const list = (selected.suggestions || []).filter(
+      (s) => !skippedSuggestionIds.includes(s.message.id),
+    );
+    return list[0] || null;
+  }, [selected, skippedSuggestionIds]);
+
+  const onSelectPayment = useCallback((id) => {
+    setSelectedPaymentId(id);
+    setSkippedSuggestionIds([]);
+  }, []);
+
+  const onSkipSuggestion = useCallback(() => {
+    if (!activeSuggestion) return;
+    setSkippedSuggestionIds((prev) => [...prev, activeSuggestion.message.id]);
+  }, [activeSuggestion]);
+
+  const requestMatch = useCallback(
+    (messageRow, missingReceiptId) => {
+      if (matching) return;
+      setPendingMatch({ message: messageRow, missingReceiptId });
+    },
+    [matching],
+  );
+
+  const cancelMatch = useCallback(() => {
+    setPendingMatch(null);
+  }, []);
+
+  const confirmMatch = useCallback(async () => {
+    if (!pendingMatch) return;
+    setMatching(true);
+    try {
+      await api.matchToBezala(
+        pendingMatch.message.id,
+        pendingMatch.missingReceiptId,
+      );
+      toast.show({
+        kind: 'ok',
+        message: t.travelTinder.matched.replace(
+          '{vendor}',
+          pendingMatch.message.vendor || pendingMatch.message.file_name || '',
+        ),
+      });
+      setPendingMatch(null);
+      setSkippedSuggestionIds([]);
+      // Markera nästa korttrans automatiskt
+      const idx = missingRows.findIndex(
+        (r) => r.missing_receipt.id === selectedPaymentId,
+      );
+      const nextRow = missingRows[idx + 1] || null;
+      setSelectedPaymentId(
+        nextRow ? nextRow.missing_receipt.id : null,
+      );
+      refresh({ silent: true });
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      toast.show({
+        kind: 'err',
+        message: `${t.travelTinder.matchFailed}: ${detail}`,
+      });
+    } finally {
+      setMatching(false);
+    }
+  }, [
+    pendingMatch,
+    missingRows,
+    selectedPaymentId,
+    refresh,
+    t.travelTinder.matched,
+    t.travelTinder.matchFailed,
+    toast,
+  ]);
+
+  const onClickReceipt = useCallback(
+    (msg) => {
+      // Med vald korttrans → öppna bekräftelsemodal
+      if (selected && !msg.coupled) {
+        requestMatch(msg, selected.missing_receipt.id);
+        return;
+      }
+      // Annars (eller redan kopplad) → öppna drawer
+      openDrawer(msg, 'gmail');
+    },
+    [openDrawer, requestMatch, selected],
+  );
+
+  const onShowPdfPreview = useCallback((msg) => {
+    setPdfPreviewMessage(msg);
+  }, []);
+
+  return (
+    <div className="travel-tinder" data-testid="travel-tinder">
+      <header className="travel-tinder__head">
+        <h1 className="travel-tinder__title">{t.travelTinder.title}</h1>
+        <div className="travel-tinder__head-meta">
+          <span className="muted mono" data-testid="last-refresh">
+            {t.travelTinder.lastRefresh.replace(
+              '{when}',
+              formatRelative(lastRefresh, t),
+            )}
+          </span>
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={() => refresh()}
+            disabled={refreshing}
+            data-testid="tt-refresh"
+            aria-label={t.travelTinder.refresh}
+          >
+            <IconRefresh className="icon sm" />
+          </button>
+        </div>
+      </header>
+
+      <div className="travel-tinder__grid">
+        <MissingPaymentsList
+          rows={missingRows}
+          selectedId={selectedPaymentId}
+          onSelect={onSelectPayment}
+          matchedCount={matchedCount}
+          totalCount={totalCount}
+          isLoading={isLoading}
+        />
+
+        <div className="travel-tinder__right">
+          <OtherReceiptsList
+            allMessages={data.all_messages}
+            selected={selected}
+            activeSuggestion={activeSuggestion}
+            onClickReceipt={onClickReceipt}
+            onShowPdfPreview={onShowPdfPreview}
+            search={searchQuery}
+            setSearch={setSearchQuery}
+            statusFilter={statusFilter}
+            setStatusFilter={setStatusFilter}
+            dateFilter={dateFilter}
+            setDateFilter={setDateFilter}
+            currencyFilter={currencyFilter}
+            setCurrencyFilter={setCurrencyFilter}
+            sortBy={sortBy}
+            setSortBy={setSortBy}
+            sortDir={sortDir}
+            setSortDir={setSortDir}
+            tinderCard={
+              selected ? (
+                activeSuggestion ? (
+                  <TinderCard
+                    suggestion={activeSuggestion}
+                    payment={selected.missing_receipt}
+                    onSkip={onSkipSuggestion}
+                    onMatch={() =>
+                      requestMatch(
+                        activeSuggestion.message,
+                        selected.missing_receipt.id,
+                      )
+                    }
+                    onMoreInfo={() =>
+                      openDrawer(activeSuggestion.message, 'gmail')
+                    }
+                    onShowPdfPreview={() =>
+                      onShowPdfPreview(activeSuggestion.message)
+                    }
+                    matching={matching}
+                  />
+                ) : (
+                  <div className="tt-empty-card" data-testid="tt-no-suggestion">
+                    <h3>{t.travelTinder.empty.noSuggestion}</h3>
+                    <p className="muted">
+                      {t.travelTinder.empty.noSuggestionBody}
+                    </p>
+                  </div>
+                )
+              ) : null
+            }
+            uploadCard={<UploadCard payment={selected?.missing_receipt} />}
+            isLoading={isLoading}
+          />
+        </div>
+      </div>
+
+      {pendingMatch ? (
+        <MatchConfirmModal
+          payment={selected?.missing_receipt}
+          message={pendingMatch.message}
+          onCancel={cancelMatch}
+          onConfirm={confirmMatch}
+          loading={matching}
+        />
+      ) : null}
+
+      {pdfPreviewMessage ? (
+        <PdfPreviewLightbox
+          message={pdfPreviewMessage}
+          onClose={() => setPdfPreviewMessage(null)}
+        />
+      ) : null}
+    </div>
+  );
+}

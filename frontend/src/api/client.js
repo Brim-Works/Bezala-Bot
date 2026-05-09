@@ -97,6 +97,8 @@ export const api = {
     }),
   bezalaMissingReceipts: () => request('/api/bezala/missing-receipts'),
   bezalaMatchSuggestions: () => request('/api/bezala/match-suggestions'),
+  bezalaMatchSuggestionsAll: () =>
+    request('/api/bezala/match-suggestions?include_all_messages=true'),
   matchToBezala: (msgId, missingReceiptId) =>
     request(`/api/messages/${msgId}/match-to-bezala`, {
       method: 'POST',

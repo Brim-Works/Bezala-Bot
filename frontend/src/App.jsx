@@ -10,6 +10,7 @@ import ViewErrorBoundary from './components/ViewErrorBoundary.jsx';
 import Dashboard from './views/Dashboard.jsx';
 import Review from './views/Review.jsx';
 import Match from './views/Match.jsx';
+import TravelTinder from './views/TravelTinder.jsx';
 import Log from './views/Log.jsx';
 import Settings from './views/Settings.jsx';
 import Trash from './views/Trash.jsx';
@@ -38,6 +39,12 @@ function ViewForRoute() {
       return (
         <ViewErrorBoundary viewKey="match">
           <Match />
+        </ViewErrorBoundary>
+      );
+    case 'travelTinder':
+      return (
+        <ViewErrorBoundary viewKey="travelTinder">
+          <TravelTinder />
         </ViewErrorBoundary>
       );
     case 'log':

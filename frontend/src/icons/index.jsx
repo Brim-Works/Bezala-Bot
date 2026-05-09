@@ -153,10 +153,20 @@ export function IconLink(props) {
   );
 }
 
+export function IconPlane(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M2 11l16-7-3 14-4-5.5-3.5 4-2-4z" />
+      <path d="M11.5 12.5L18 4" />
+    </IconBase>
+  );
+}
+
 export const NAV_ICONS = {
   dashboard: IconDashboard,
   review: IconReview,
   match: IconLink,
+  travelTinder: IconPlane,
   log: IconLog,
   settings: IconSettings,
   trash: IconTrash,
