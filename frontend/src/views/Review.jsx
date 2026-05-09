@@ -16,6 +16,17 @@ import DeleteReasonDialog from '../components/trash/DeleteReasonDialog.jsx';
 import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
 import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 
+// Override-keys som mappar 1:1 till ProcessedMessage-kolumner och som
+// AI-feedback-pipelinen lär sig av. Andra fält (vat_rate, project, ...)
+// finns inte i backend-schemat ännu och hoppas över.
+const FEEDBACK_FIELDS = new Set([
+  'vendor',
+  'amount',
+  'receipt_date',
+  'currency',
+  'category',
+]);
+
 export default function Review() {
   const { t } = useI18n();
   const toast = useToast();
@@ -89,9 +100,43 @@ export default function Review() {
         next.add(msg.id);
         return next;
       });
+
+      // Implicit feedback: skicka korrigeringar för ändrade fält parallellt
+      // med upload. Wrappade i .catch — får aldrig blockera kärnflödet.
+      const correctionPromises = [];
+      if (overrides && msg.message_id) {
+        for (const [key, val] of Object.entries(overrides)) {
+          if (!FEEDBACK_FIELDS.has(key)) continue;
+          const aiVal = msg[key];
+          const aiStr = aiVal == null ? null : String(aiVal);
+          const newStr = val == null ? null : String(val);
+          if (aiStr === newStr) continue;
+          correctionPromises.push(
+            api
+              .feedbackCorrection({
+                messageId: msg.message_id,
+                fieldName: key,
+                aiValue: aiStr,
+                correctValue: newStr,
+              })
+              .catch(() => null),
+          );
+        }
+      }
+
       try {
-        await api.uploadToBezala(msg.id, overrides);
+        const [uploadResult] = await Promise.all([
+          api.uploadToBezala(msg.id, overrides),
+          Promise.allSettled(correctionPromises),
+        ]);
+        void uploadResult;
         toast.show({ kind: 'ok', message: t.review.toast.uploaded });
+        if (correctionPromises.length > 0) {
+          toast.show({
+            kind: 'ok',
+            message: t.review.toast.implicitLearning,
+          });
+        }
         // Stäng drawern om den var öppen för den godkända raden.
         closeIfFor(msg.id);
         refetch()
@@ -114,7 +159,15 @@ export default function Review() {
         setUploadingId(null);
       }
     },
-    [closeIfFor, refetch, t.review.toast.uploadFailed, t.review.toast.uploaded, toast, uploadingId],
+    [
+      closeIfFor,
+      refetch,
+      t.review.toast.implicitLearning,
+      t.review.toast.uploadFailed,
+      t.review.toast.uploaded,
+      toast,
+      uploadingId,
+    ],
   );
 
   const deleteFlow = useDeleteFlow({

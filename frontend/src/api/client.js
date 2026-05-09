@@ -122,6 +122,22 @@ export const api = {
       method: 'POST',
       body: { url },
     }),
+  feedbackThumbs: ({ messageId, isPositive, fields = [] }) =>
+    request('/api/feedback/thumbs', {
+      method: 'POST',
+      body: { message_id: messageId, is_positive: isPositive, fields },
+    }),
+  feedbackCorrection: ({ messageId, fieldName, aiValue, correctValue }) =>
+    request('/api/feedback/correction', {
+      method: 'POST',
+      body: {
+        message_id: messageId,
+        field_name: fieldName,
+        ai_value: aiValue,
+        correct_value: correctValue,
+      },
+    }),
+  feedbackStats: () => request('/api/feedback/stats'),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {

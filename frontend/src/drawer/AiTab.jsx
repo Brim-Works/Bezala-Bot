@@ -1,5 +1,6 @@
 import { useI18n } from '../i18n/useI18n.jsx';
 import Confidence from '../components/Confidence.jsx';
+import FeedbackButtons from '../components/FeedbackButtons.jsx';
 import { fmtAmount } from '../lib/format.js';
 import { IconSparkle } from '../icons/index.jsx';
 
@@ -59,6 +60,8 @@ export default function AiTab({ message }) {
           <p className="drawer-reasoning">{message.summary}</p>
         </>
       ) : null}
+
+      <FeedbackButtons messageId={message.message_id} message={message} />
     </div>
   );
 }
