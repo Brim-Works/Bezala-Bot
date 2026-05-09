@@ -804,6 +804,9 @@ def edit_trip(
         db.add(TripFeedback(
             trip_id=trip.id, feedback_type="edited", details=changes,
         ))
+        # Flush så recalculate ser nyligen uppdaterade trip_messages
+        # (sessionen kör med autoflush=False).
+        db.flush()
         # Räkna om totalsumman när kvitton ändras
         recalculate_trip_total(db, trip)
         db.commit()
