@@ -504,6 +504,81 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(len(entry["suggestions"]), 1)
         self.assertGreaterEqual(entry["suggestions"][0]["score"], 80)
 
+    def test_match_suggestions_include_all_messages_returns_envelope(self):
+        """FAS 8.5a — när include_all_messages=true returneras envelope
+        {missing_receipts, all_messages} och alla saved-rader (inkl
+        kopplade) listas i all_messages med coupled-flagga."""
+        # En okopplad rad
+        self._seed_processed()
+        # En kopplad rad — bezala_upload_status='success'
+        self._seed_processed(
+            message_id="m-coupled",
+            file_name="20260301 Hotel.pdf",
+            drive_file_id="drv-2",
+            vendor="Scandic",
+            amount=500.0,
+            currency="EUR",
+            receipt_date="2026-03-01",
+            bezala_upload_status="success",
+            bezala_transaction_id="9999",
+        )
+
+        fake_bezala = MagicMock()
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 12345,
+                "description": "CLAUDE.AI SUBSCRIPTION",
+                "amount": 112.95,
+                "currency": "EUR",
+                "date": "2026-04-14",
+            },
+        ]
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get(
+                "/api/bezala/match-suggestions?include_all_messages=true",
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        # Envelope-shape
+        self.assertIn("missing_receipts", body)
+        self.assertIn("all_messages", body)
+        self.assertEqual(len(body["missing_receipts"]), 1)
+        self.assertEqual(len(body["all_messages"]), 2)
+
+        by_msgid = {m["message_id"]: m for m in body["all_messages"]}
+        self.assertFalse(by_msgid["m-1"]["coupled"])
+        self.assertIsNone(by_msgid["m-1"]["matched_bill_line_id"])
+        self.assertTrue(by_msgid["m-coupled"]["coupled"])
+        self.assertEqual(by_msgid["m-coupled"]["matched_bill_line_id"], "9999")
+
+        # Suggestion-listan ska INTE innehålla den kopplade raden
+        suggestions = body["missing_receipts"][0]["suggestions"]
+        suggestion_msg_ids = {s["message"]["message_id"] for s in suggestions}
+        self.assertNotIn("m-coupled", suggestion_msg_ids)
+
+    def test_match_suggestions_default_shape_unchanged(self):
+        """Bakåtkompatibilitet: utan flaggan returneras samma shape som tidigare."""
+        self._seed_processed()
+        fake_bezala = MagicMock()
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 12345,
+                "description": "CLAUDE.AI SUBSCRIPTION",
+                "amount": 112.95,
+                "currency": "EUR",
+                "date": "2026-04-14",
+            },
+        ]
+        with patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.get("/api/bezala/match-suggestions")
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertIsInstance(body, list)  # ren lista, inte envelope
+        self.assertEqual(len(body), 1)
+        self.assertIn("missing_receipt", body[0])
+        self.assertIn("suggestions", body[0])
+
     def test_match_to_bezala_links_via_bill_line_id(self):
         """Match-flödet anropar attach_file med bill_line_id (UI:s
         'Koppla till existerande'-flöde) — inga metadata, inga PUT."""

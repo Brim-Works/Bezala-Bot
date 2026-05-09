@@ -1365,11 +1365,27 @@ def get_bezala_missing_receipts(_: None = Depends(require_auth)):
 
 @app.get("/api/bezala/match-suggestions")
 def get_match_suggestions(
+    include_all_messages: bool = False,
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
     """För varje saknat kvitto i Bezala: hitta matchande
-    ProcessedMessage-rader baserat på belopp, datum, vendor."""
+    ProcessedMessage-rader baserat på belopp, datum, vendor.
+
+    När `include_all_messages=true` (FAS 8.5a — Travel Tinder) returneras
+    en utökad shape:
+
+        {
+          "missing_receipts": [{"missing_receipt": ..., "suggestions": ...}],
+          "all_messages": [
+            {<serialized ProcessedMessage>, "coupled": bool,
+             "matched_bill_line_id": str|null}
+          ]
+        }
+
+    Default-shapen (utan flaggan) bibehålls för bakåtkompatibilitet med
+    Kortmatchning-vyn — rena listan av missing-receipt-objekten.
+    """
     try:
         bezala = BezalaClient()
     except BezalaError as exc:
@@ -1383,29 +1399,71 @@ def get_match_suggestions(
     finally:
         bezala.close()
 
-    # Kandidater: saved-rader som ännu inte är knutna till en Bezala-tx
-    candidates_q = (
-        db.query(ProcessedMessage)
-        .filter(ProcessedMessage.deleted_at.is_(None))
-        .filter(ProcessedMessage.status == "saved")
-        .filter(ProcessedMessage.bezala_upload_status != "success")
-        .order_by(desc(ProcessedMessage.received_at))
-        .limit(500)
-    )
-    candidate_dicts = [_serialize_message(r) for r in candidates_q.all()]
+    if include_all_messages:
+        # Travel Tinder behöver hela kvittolistan inkl. redan kopplade,
+        # så användaren kan se historik och välja bland alla rader.
+        all_q = (
+            db.query(ProcessedMessage)
+            .filter(ProcessedMessage.deleted_at.is_(None))
+            .filter(ProcessedMessage.status == "saved")
+            .order_by(desc(ProcessedMessage.received_at))
+            .limit(1000)
+        )
+        # Suggestion-matchningen ska bara köra mot okopplade kandidater
+        # (samma logik som default-shapen) — annars skulle gamla kopplade
+        # rader stjäla AI-förslagen.
+        candidate_dicts = [
+            _serialize_message(r)
+            for r in all_q.all()
+            if r.bezala_upload_status != "success"
+        ]
+    else:
+        # Bakåtkompatibel shape: ingen all_messages, candidates filtreras strikt.
+        candidates_q = (
+            db.query(ProcessedMessage)
+            .filter(ProcessedMessage.deleted_at.is_(None))
+            .filter(ProcessedMessage.status == "saved")
+            .filter(ProcessedMessage.bezala_upload_status != "success")
+            .order_by(desc(ProcessedMessage.received_at))
+            .limit(500)
+        )
+        candidate_dicts = [_serialize_message(r) for r in candidates_q.all()]
 
-    # Rate provider stängd runt request-db:n — möjliggör cross-currency-
-    # matchning (SEK-kvitto mot EUR-debitering osv) via ECB-kurs.
     rate_provider = make_db_rate_provider(db)
 
-    out: list[dict] = []
+    missing_out: list[dict] = []
     for raw in missing_rows:
         missing = _normalize_missing_receipt(raw)
         suggestions = find_matches(
             missing, candidate_dicts, rate_provider=rate_provider,
         )
-        out.append({"missing_receipt": missing, "suggestions": suggestions})
-    return out
+        missing_out.append({"missing_receipt": missing, "suggestions": suggestions})
+
+    if not include_all_messages:
+        return missing_out
+
+    # Bygg om all_messages med coupled-flagga + matched_bill_line_id.
+    all_rows = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.status == "saved")
+        .order_by(desc(ProcessedMessage.received_at))
+        .limit(1000)
+        .all()
+    )
+    all_messages: list[dict] = []
+    for r in all_rows:
+        d = _serialize_message(r)
+        d["coupled"] = bool(
+            r.bezala_upload_status == "success" or r.bezala_transaction_id
+        )
+        d["matched_bill_line_id"] = r.bezala_transaction_id
+        all_messages.append(d)
+
+    return {
+        "missing_receipts": missing_out,
+        "all_messages": all_messages,
+    }
 
 
 class MatchToBezalaPayload(BaseModel):
