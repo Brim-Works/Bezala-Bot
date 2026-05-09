@@ -150,3 +150,32 @@ class MaintenanceTask(Base):
 
     name = Column(String(128), primary_key=True)
     ran_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class AiFeedback(Base):
+    """FAS 8 — feedback-loop. Loggar 👍/👎 + rättelser från användaren
+    så AI:n kan lära sig genom few-shot-exempel i nästa anrop.
+
+    feedback_type: 'thumbs_up' | 'thumbs_down' | 'correction'
+    field_name: 'vendor' | 'amount' | 'date' | 'category' (NULL för
+    thumbs_up + thumbs_down utan specificerade fält).
+    vendor_context: leverantörsnamn för indexering — gör det möjligt
+    att hämta vendor-specifika few-shot-exempel.
+
+    OBS: vi använder INTE en hård FK till processed_messages eftersom
+    SQLite/Postgres-FK till en UNIQUE (icke-PK) kolumn beter sig olika.
+    Föräldralösa rader (efter hard-delete) är OK — de behöver inte
+    putsas bort, eftersom de fortfarande är användbara träningsdata."""
+
+    __tablename__ = "ai_feedback"
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(String(255), nullable=False, index=True)
+    feedback_type = Column(String(20), nullable=False)
+    field_name = Column(String(50), nullable=True)
+    ai_value = Column(Text, nullable=True)
+    correct_value = Column(Text, nullable=True)
+    vendor_context = Column(String(255), nullable=True, index=True)
+    created_at = Column(
+        DateTime, server_default=func.now(), nullable=False, index=True,
+    )

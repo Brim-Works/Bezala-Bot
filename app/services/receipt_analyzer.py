@@ -4,6 +4,10 @@ Skickar hela bilagan (PDF eller HTML) till Claude Sonnet 4 som dokument-input
 och ber om strukturerad JSON om innehållet. Analyzern används i pipeline för
 att avgöra om ett mail ska sparas eller hoppas över, samt för att sätta ett
 beskrivande filnamn och fylla i ProcessedMessage-raden med AI-data.
+
+FAS 8: tar nu emot en valfri lista `examples` med tidigare användar-
+rättelser. När den ges bifogas exemplen som few-shot-block efter
+SYSTEM_PROMPT så Claude kan dra lärdom av dem.
 """
 
 from __future__ import annotations
@@ -111,6 +115,22 @@ def _fallback_filename(
     return _sanitize_filename(f"{date_str} {vendor} {desc}.pdf")
 
 
+def _build_system_prompt(examples: list[dict] | None) -> str:
+    """Lägg till few-shot-exempel efter base-prompten. Defensivt — om
+    formateringen kraschar returnerar vi base-prompten ensamt."""
+    if not examples:
+        return SYSTEM_PROMPT
+    try:
+        # Lazy import för att undvika cirkulär import (feedback ↔ analyzer)
+        from app.services.feedback import format_examples_for_prompt
+        extra = format_examples_for_prompt(examples)
+        if extra:
+            return SYSTEM_PROMPT + "\n" + extra
+    except Exception:  # noqa: BLE001
+        logger.exception("Few-shot prompt-bygge misslyckades")
+    return SYSTEM_PROMPT
+
+
 class ReceiptAnalyzer:
     """Analyserar bilagor och returnerar ReceiptAnalysis.
 
@@ -140,6 +160,7 @@ class ReceiptAnalyzer:
         subject: str,
         snippet: str,
         received_at: datetime | None,
+        examples: list[dict] | None = None,
     ) -> ReceiptAnalysis:
         if not self._client:
             raise AnalyzerError("ANTHROPIC_API_KEY saknas")
@@ -156,11 +177,18 @@ class ReceiptAnalyzer:
             "Analysera dokumentet och svara med JSON enligt schemat."
         )
 
+        system_prompt = _build_system_prompt(examples)
+        if examples:
+            logger.info(
+                "AI-analys: bifogar %d few-shot-exempel (sender=%r)",
+                len(examples), sender,
+            )
+
         try:
             resp = self._client.messages.create(
                 model=self._model,
                 max_tokens=600,
-                system=SYSTEM_PROMPT,
+                system=system_prompt,
                 messages=[
                     {
                         "role": "user",
