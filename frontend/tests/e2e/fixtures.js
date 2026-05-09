@@ -353,7 +353,7 @@ export async function setupApiMocks(page, overrides = {}) {
     return route.fulfill(jsonResponse(state.settings));
   });
 
-  // --- AI-feedback routes (FAS 8) ---
+  // --- AI-feedback routes (FAS 8 + 8.1) ---
   await page.route('**/api/feedback/thumbs', async (route) => {
     const body = route.request().postDataJSON() || {};
     state.lastFeedbackRequest = { kind: 'thumbs', body };
@@ -364,6 +364,26 @@ export async function setupApiMocks(page, overrides = {}) {
     const body = route.request().postDataJSON() || {};
     state.lastFeedbackRequest = { kind: 'correction', body };
     return route.fulfill(jsonResponse({ saved: true }));
+  });
+
+  await page.route('**/api/feedback/not-a-receipt', async (route) => {
+    const body = route.request().postDataJSON() || {};
+    state.lastFeedbackRequest = { kind: 'not_a_receipt', body };
+    // Soft-deleta motsvarande rad i mock-state så nästa /api/messages-fetch
+    // döljer den (frontend triggar refetch via bumpMessagesVersion).
+    if (body.message_id) {
+      const idx = state.messages.findIndex(
+        (m) => m.message_id === body.message_id,
+      );
+      if (idx >= 0) {
+        state.messages[idx] = {
+          ...state.messages[idx],
+          deleted_at: new Date().toISOString(),
+          delete_reason: 'user_marked_not_receipt',
+        };
+      }
+    }
+    return route.fulfill(jsonResponse({ saved: true, deleted: true }));
   });
 
   await page.route('**/api/feedback/stats', (route) =>

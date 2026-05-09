@@ -107,3 +107,68 @@ test('Granska — redigerade fält skickar /correction parallellt med upload', a
   await expect(page.getByText(/AI lär sig av detta/i)).toBeVisible();
   expect(apiState.lastFeedbackRequest?.kind).toBe('correction');
 });
+
+// ---------- FAS 8.1 — not_a_receipt-feedback ----------
+
+test('Feedback 8.1 — 👎 modal har radio-knappar', async ({ page }) => {
+  await openAiTabForRow(page, 1);
+  await page.getByTestId('feedback-thumbs-down').click();
+  await expect(page.getByTestId('feedback-modal')).toBeVisible();
+
+  await expect(page.getByTestId('feedback-kind-field-error')).toBeVisible();
+  await expect(page.getByTestId('feedback-kind-not-receipt')).toBeVisible();
+  // Default: field_error är vald — fields-listan synlig
+  await expect(page.getByTestId('feedback-fields-list')).toBeVisible();
+  await expect(page.getByTestId('feedback-not-receipt-info')).toHaveCount(0);
+});
+
+test('Feedback 8.1 — välj "Inte ett kvitto" → fields-checkboxar döljs + info-banner visas', async ({ page }) => {
+  await openAiTabForRow(page, 1);
+  await page.getByTestId('feedback-thumbs-down').click();
+  await expect(page.getByTestId('feedback-modal')).toBeVisible();
+
+  await page.getByTestId('feedback-kind-not-receipt').check();
+
+  await expect(page.getByTestId('feedback-fields-list')).toHaveCount(0);
+  await expect(page.getByTestId('feedback-not-receipt-info')).toBeVisible();
+  // Save-knappens text byts till "Markera som icke-kvitto"
+  await expect(page.getByTestId('feedback-save')).toContainText(/Markera som icke-kvitto/i);
+});
+
+test('Feedback 8.1 — save skickar POST /not-a-receipt', async ({ page }) => {
+  await openAiTabForRow(page, 1);
+  await page.getByTestId('feedback-thumbs-down').click();
+  await page.getByTestId('feedback-kind-not-receipt').check();
+
+  const reqPromise = page.waitForRequest(
+    (req) =>
+      req.url().includes('/api/feedback/not-a-receipt') &&
+      req.method() === 'POST',
+  );
+  await page.getByTestId('feedback-save').click();
+  const req = await reqPromise;
+  const body = req.postDataJSON();
+  expect(body.message_id).toBe('gmail-msg-1');
+
+  // Toast med inlärnings-text
+  await expect(page.getByText(/AI lär sig att filtrera liknande/i)).toBeVisible();
+  expect(apiState.lastFeedbackRequest?.kind).toBe('not_a_receipt');
+});
+
+test('Feedback 8.1 — efter save: drawer stängs + raden försvinner ur listan', async ({ page }) => {
+  await openAiTabForRow(page, 1);
+  await page.getByTestId('feedback-thumbs-down').click();
+  await page.getByTestId('feedback-kind-not-receipt').check();
+
+  await page.getByTestId('feedback-save').click();
+
+  // Drawer stängs
+  await expect(page.getByTestId('drawer')).toHaveCount(0, { timeout: 5000 });
+  // Modal stängs också
+  await expect(page.getByTestId('feedback-modal')).toHaveCount(0);
+  // Raden försvinner ur listan (mock soft-deletar id=1 → nästa /api/messages
+  // returnerar utan den)
+  await expect(
+    page.locator('tr[data-row-id="1"]'),
+  ).toHaveCount(0, { timeout: 5000 });
+});

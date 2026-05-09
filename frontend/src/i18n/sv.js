@@ -136,6 +136,13 @@ export default {
       cancel: 'Avbryt',
       save: 'Spara feedback',
       saved: 'Tack — AI lär sig av detta',
+      kindFieldError: 'Något fält var fel',
+      kindNotReceipt: 'Detta är inte ett kvitto alls',
+      notReceiptInfo:
+        'AI kommer lära sig att liknande mail från {sender} inte är kvitton, och raden flyttas till papperskorgen.',
+      saveFieldError: 'Spara feedback',
+      saveNotReceipt: 'Markera som icke-kvitto',
+      notReceiptToast: 'Markerat som icke-kvitto. AI lär sig att filtrera liknande.',
     },
   },
   scanFeedback: {

@@ -136,6 +136,13 @@ export default {
       cancel: 'Cancel',
       save: 'Save feedback',
       saved: 'Thanks — the AI will learn from this',
+      kindFieldError: 'Some field was wrong',
+      kindNotReceipt: 'This is not a receipt at all',
+      notReceiptInfo:
+        'The AI will learn that mail like this from {sender} is not a receipt, and the row will be moved to trash.',
+      saveFieldError: 'Save feedback',
+      saveNotReceipt: 'Mark as not a receipt',
+      notReceiptToast: 'Marked as not a receipt. The AI will filter similar mails.',
     },
   },
   scanFeedback: {
