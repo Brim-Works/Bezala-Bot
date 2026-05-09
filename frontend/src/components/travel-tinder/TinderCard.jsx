@@ -16,9 +16,17 @@ function parseDate(s) {
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
-function daysApart(a, b) {
-  if (!a || !b) return null;
-  return Math.round(Math.abs(a.getTime() - b.getTime()) / (1000 * 60 * 60 * 24));
+function formatShortDate(s, lang) {
+  const d = parseDate(s);
+  if (!d) return '—';
+  try {
+    return d.toLocaleDateString(lang === 'sv' ? 'sv-SE' : 'en-GB', {
+      day: 'numeric',
+      month: 'short',
+    });
+  } catch {
+    return s;
+  }
 }
 
 function amountClose(a, b) {
@@ -46,10 +54,38 @@ export default function TinderCard({
 }) {
   const { t, lang } = useI18n();
   const m = suggestion.message;
+  const breakdown = suggestion.score_breakdown || {};
+  const matchedField = breakdown.date_matched_field || null;
+  const daysOff = breakdown.date_days_off;
 
-  const receiptDate = parseDate(m.receipt_date);
-  const paymentDate = parseDate(payment?.date);
-  const dDays = daysApart(receiptDate, paymentDate);
+  // Bygg datum-validering från backend's dual-date-resultat. matched_field
+  // berättar om receipt_date (resedatum) eller received_at (bokningsdatum)
+  // gav den bästa matchen — vi visar rätt kontext-text för användaren.
+  let dateOk = false;
+  let dateLabel = '';
+  if (matchedField === 'receipt_date') {
+    const dateStr = formatShortDate(m.receipt_date, lang);
+    dateOk = daysOff === 0;
+    dateLabel = (daysOff === 0
+      ? t.travelTinder.valid.dateMatchReceiptDate
+      : t.travelTinder.valid.dateNearReceiptDate
+    )
+      .replace('{date}', dateStr)
+      .replace('{days}', String(daysOff ?? '—'));
+  } else if (matchedField === 'received_at') {
+    const dateStr = formatShortDate(m.received_at, lang);
+    dateOk = daysOff === 0;
+    dateLabel = (daysOff === 0
+      ? t.travelTinder.valid.dateMatchReceivedAt
+      : t.travelTinder.valid.dateNearReceivedAt
+    )
+      .replace('{date}', dateStr)
+      .replace('{days}', String(daysOff ?? '—'));
+  } else {
+    // matched_field=null: backend matchade inte (>7 dagar isär eller båda
+    // datumen saknas). Visa varning utan att gissa "samma dag".
+    dateLabel = t.travelTinder.valid.dateDiffNoMatch;
+  }
 
   const validations = [
     {
@@ -73,12 +109,9 @@ export default function TinderCard({
     },
     {
       key: 'date',
-      ok: dDays != null && dDays === 0,
-      okLabel: t.travelTinder.valid.dateMatch,
-      diffLabel:
-        dDays != null
-          ? t.travelTinder.valid.dateDiff.replace('{days}', String(dDays))
-          : t.travelTinder.valid.dateDiff.replace('{days}', '—'),
+      ok: dateOk,
+      okLabel: dateLabel,
+      diffLabel: dateLabel,
     },
     {
       key: 'vendor',
@@ -94,12 +127,11 @@ export default function TinderCard({
   const anyDiff = validations.some((v) => !v.ok);
 
   const score = suggestion.score;
-  const scoreBreakdown = suggestion.score_breakdown;
-  const tooltip = scoreBreakdown
+  const tooltip = breakdown
     ? t.travelTinder.scoreTooltip
-        .replace('{amount}', String(scoreBreakdown.amount ?? 0))
-        .replace('{date}', String(scoreBreakdown.date ?? 0))
-        .replace('{vendor}', String(scoreBreakdown.vendor ?? 0))
+        .replace('{amount}', String(breakdown.amount ?? 0))
+        .replace('{date}', String(breakdown.date ?? 0))
+        .replace('{vendor}', String(breakdown.vendor ?? 0))
     : '';
 
   return (

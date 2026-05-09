@@ -21,10 +21,18 @@ logger = logging.getLogger(__name__)
 MIN_DISPLAY_SCORE = 50
 MAX_SUGGESTIONS_PER_MISSING = 5
 
-# Datum-bonus: exakt match = 30, ±1 dag = 25, ±2 = 20, ±3 = 15, >3 = 0
-DATE_TOLERANCE_DAYS = 3
-DATE_BASE_SCORE = 30
-DATE_PENALTY_PER_DAY = 5
+# Datum-bonus (FAS 8.5a fix — dual-date matching):
+# Bucket-skala för bästa matchen mellan kort-trans och receipt_date /
+# received_at. Anledning till bucket istället för linjär decay: vi vill
+# ha ett brett 4-7-dagars intervall (minskat värde) för att fånga
+# bokningar där bekräftelsen kommer dagar före/efter resedagen, men
+# fortfarande prioritera samma-dag-match.
+DATE_BUCKETS: tuple[tuple[int, int], ...] = (
+    (0, 30),
+    (1, 25),
+    (3, 15),
+    (7, 8),
+)
 
 # Belopp-tolerans: ±5% (valutakurser + avrundning) för samma valuta.
 AMOUNT_TOLERANCE = 0.05
@@ -151,15 +159,65 @@ def _amount_matches_via_conversion(
     return diff_pct <= AMOUNT_TOLERANCE_CONVERTED, converted, rate
 
 
+def _date_diff_days(a_str: str | None, b_str: str | None) -> int | None:
+    """Returnera abs-skillnad i dagar mellan två datum-strängar.
+
+    Stöder både 'YYYY-MM-DD' och fulla ISO-timestamps. Tids-komponenten
+    ignoreras (jämförelse på datum-nivå) — viktigt för received_at som
+    är en datetime medan kort-trans-date är ett rent datum.
+    """
+    a = _parse_date(a_str)
+    b = _parse_date(b_str)
+    if a is None or b is None:
+        return None
+    return abs((a.date() - b.date()).days)
+
+
+def _date_score_dual(
+    missing_date: str | None,
+    receipt_date: str | None,
+    received_at: str | None,
+) -> tuple[int, str | None, int | None]:
+    """FAS 8.5a fix — dual-date scoring.
+
+    För flyg/hotell/event är "riktiga köpdatumet" oftast received_at
+    (när bekräftelsen kom in) — inte receipt_date (resedatum). Den här
+    funktionen försöker båda fälten och plockar den bästa matchen.
+
+    Returnerar (score, matched_field, days_off):
+      - matched_field: 'receipt_date' | 'received_at' | None
+      - None när inget gav score > 0 (eller båda fälten saknas)
+      - days_off: best diff i dagar (None bara när båda fälten saknas)
+    """
+    primary = _date_diff_days(missing_date, receipt_date)
+    fallback = _date_diff_days(missing_date, received_at)
+
+    if primary is None and fallback is None:
+        return 0, None, None
+    if fallback is None:
+        best_diff, best_field = primary, "receipt_date"
+    elif primary is None:
+        best_diff, best_field = fallback, "received_at"
+    else:
+        # Vid lika diff föredrar vi receipt_date (mer specifik).
+        if primary <= fallback:
+            best_diff, best_field = primary, "receipt_date"
+        else:
+            best_diff, best_field = fallback, "received_at"
+
+    for threshold, score in DATE_BUCKETS:
+        if best_diff <= threshold:
+            return score, best_field, best_diff
+    # Bortom 7 dagar — ingen meningsfull match. matched_field=None
+    # signalerar UI att visa varningstext istället för ✓.
+    return 0, None, best_diff
+
+
 def _date_score(missing_date: str | None, candidate_date: str | None) -> int:
-    md = _parse_date(missing_date)
-    cd = _parse_date(candidate_date)
-    if md is None or cd is None:
-        return 0
-    days = abs((md - cd).days)
-    if days > DATE_TOLERANCE_DAYS:
-        return 0
-    return max(0, DATE_BASE_SCORE - days * DATE_PENALTY_PER_DAY)
+    """Bakåtkompatibilitet: en-datum-API. Använd _date_score_dual för
+    full kontext (matched_field + days_off)."""
+    score, _, _ = _date_score_dual(missing_date, candidate_date, None)
+    return score
 
 
 def score_match(
@@ -199,16 +257,21 @@ def score_match(
                 "date": missing.get("date"),
             }
 
-    breakdown["date"] = _date_score(
-        missing.get("date"), candidate.get("receipt_date"),
+    date_score, matched_field, days_off = _date_score_dual(
+        missing.get("date"),
+        candidate.get("receipt_date"),
+        candidate.get("received_at"),
     )
+    breakdown["date"] = date_score
+    breakdown["date_matched_field"] = matched_field
+    breakdown["date_days_off"] = days_off
 
     sim = vendor_similarity(
         missing.get("description"), candidate.get("vendor"),
     )
     breakdown["vendor"] = int(round(sim * VENDOR_BONUS_MAX))
 
-    total = sum(breakdown.values())
+    total = breakdown["amount"] + breakdown["date"] + breakdown["vendor"]
     result: dict = {"total": total, "breakdown": breakdown}
     if conversion is not None:
         result["conversion"] = conversion

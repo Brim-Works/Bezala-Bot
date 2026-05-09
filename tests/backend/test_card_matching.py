@@ -176,10 +176,106 @@ class ScoreMatchTest(unittest.TestCase):
         self.assertEqual(
             score_match(self._missing(), self._candidate(receipt_date="2026-04-17"))["breakdown"]["date"], 15,
         )
-        # >3 days → 0
+        # FAS 8.5a — 4-7 days → 8 (utökat fönster för bokningar där
+        # bekräftelsen kommer dagar före/efter resedagen)
         self.assertEqual(
-            score_match(self._missing(), self._candidate(receipt_date="2026-04-20"))["breakdown"]["date"], 0,
+            score_match(self._missing(), self._candidate(receipt_date="2026-04-20"))["breakdown"]["date"], 8,
         )
+        # >7 days → 0
+        self.assertEqual(
+            score_match(self._missing(), self._candidate(receipt_date="2026-04-25"))["breakdown"]["date"], 0,
+        )
+
+    # ---------- FAS 8.5a fix — dual-date matching ----------
+
+    def test_dual_date_uses_receipt_date_when_matches(self):
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(),
+            self._candidate(
+                receipt_date="2026-04-14",
+                received_at="2026-04-10T10:00:00+00:00",
+            ),
+        )
+        self.assertEqual(s["breakdown"]["date"], 30)
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+        self.assertEqual(s["breakdown"]["date_days_off"], 0)
+
+    def test_dual_date_uses_received_at_when_better(self):
+        """Finnair-case: card_trans 24 april, receipt_date 30 april
+        (resedag), received_at 24 april (bokning) → matcha via received_at."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-04-24"),
+            self._candidate(
+                receipt_date="2026-04-30",
+                received_at="2026-04-24T18:42:00+00:00",
+            ),
+        )
+        self.assertEqual(s["breakdown"]["date"], 30)
+        self.assertEqual(s["breakdown"]["date_matched_field"], "received_at")
+        self.assertEqual(s["breakdown"]["date_days_off"], 0)
+
+    def test_dual_date_picks_smaller_diff(self):
+        """När båda finns men ingen är exakt: välj fältet med minst diff."""
+        from app.services.receipt_matcher import score_match
+        # card_trans 14 april, receipt_date 17 april (3 dagar), received_at 16 april (2 dagar)
+        s = score_match(
+            self._missing(date="2026-04-14"),
+            self._candidate(
+                receipt_date="2026-04-17",
+                received_at="2026-04-16T10:00:00+00:00",
+            ),
+        )
+        self.assertEqual(s["breakdown"]["date_matched_field"], "received_at")
+        self.assertEqual(s["breakdown"]["date_days_off"], 2)
+        self.assertEqual(s["breakdown"]["date"], 15)
+
+    def test_dual_date_neither_matches(self):
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-04-14"),
+            self._candidate(
+                receipt_date="2026-05-30",
+                received_at="2026-05-29T10:00:00+00:00",
+            ),
+        )
+        self.assertEqual(s["breakdown"]["date"], 0)
+        self.assertIsNone(s["breakdown"]["date_matched_field"])
+
+    def test_dual_date_received_at_null_falls_back(self):
+        """Defensivt: received_at saknas → använd bara receipt_date."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(),
+            self._candidate(receipt_date="2026-04-14", received_at=None),
+        )
+        self.assertEqual(s["breakdown"]["date"], 30)
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+
+    def test_dual_date_both_null_returns_zero(self):
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(),
+            self._candidate(receipt_date=None, received_at=None),
+        )
+        self.assertEqual(s["breakdown"]["date"], 0)
+        self.assertIsNone(s["breakdown"]["date_matched_field"])
+        self.assertIsNone(s["breakdown"]["date_days_off"])
+
+    def test_dual_date_strips_time_component(self):
+        """received_at är full ISO-timestamp — jämförelse görs på datum-nivå
+        så timme/minut inte räknas in."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-04-24"),
+            self._candidate(
+                receipt_date=None,
+                received_at="2026-04-24T23:59:59+00:00",
+            ),
+        )
+        self.assertEqual(s["breakdown"]["date"], 30)
+        self.assertEqual(s["breakdown"]["date_days_off"], 0)
 
     def test_vendor_override_claude_anthropic(self):
         from app.services.receipt_matcher import vendor_similarity
