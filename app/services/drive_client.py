@@ -17,6 +17,7 @@ import logging
 import os
 from dataclasses import dataclass
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
@@ -24,6 +25,12 @@ from googleapiclient.errors import HttpError
 from googleapiclient.http import MediaIoBaseUpload
 
 from app.config import get_settings
+from app.services.oauth_token_store import (
+    OAuthAuthError,
+    get_refresh_token,
+    is_invalid_grant,
+    set_auth_required,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -51,27 +58,35 @@ class DriveUploadResult:
 class DriveClient:
     def __init__(self) -> None:
         settings = get_settings()
+        refresh_token = get_refresh_token("drive")
         if not (
             settings.gmail_client_id
             and settings.gmail_client_secret
-            and settings.drive_refresh_token
+            and refresh_token
         ):
-            raise RuntimeError(
-                "Drive OAuth saknar konfiguration. Sätt GMAIL_CLIENT_ID, "
-                "GMAIL_CLIENT_SECRET och DRIVE_REFRESH_TOKEN (refresh-tokenen "
-                "måste vara skapad från Drive-kontot och ha godkänt scopen "
-                "drive.file + drive.readonly)."
+            set_auth_required("drive", True)
+            raise OAuthAuthError(
+                "drive",
+                "Drive OAuth saknar konfiguration. Klicka Återanslut Drive "
+                "i Inställningar.",
             )
 
         creds = Credentials(
             token=None,
-            refresh_token=settings.drive_refresh_token,
+            refresh_token=refresh_token,
             client_id=settings.gmail_client_id,
             client_secret=settings.gmail_client_secret,
             token_uri="https://oauth2.googleapis.com/token",
             scopes=SCOPES,
         )
-        creds.refresh(Request())
+        try:
+            creds.refresh(Request())
+        except RefreshError as exc:
+            if is_invalid_grant(exc):
+                set_auth_required("drive", True)
+                logger.warning("Drive invalid_grant — kräver återanslutning: %s", exc)
+                raise OAuthAuthError("drive", str(exc)) from exc
+            raise
         self._service = build("drive", "v3", credentials=creds, cache_discovery=False)
         self._folder_id = settings.google_drive_folder_id
 

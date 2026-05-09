@@ -49,16 +49,28 @@ async function request(path, options = {}) {
     signal,
   });
 
-  if (resp.status === 401) {
-    unauthorizedHandler();
-    throw new ApiError('Not authenticated', { status: 401 });
-  }
-
   if (resp.status === 204) return null;
 
   const contentType = resp.headers.get('content-type') || '';
   const isJson = contentType.includes('application/json');
   const data = isJson ? await resp.json().catch(() => null) : await resp.text();
+
+  if (resp.status === 401) {
+    // Skilj på "ej inloggad" och "OAuth-token utgången" — det senare
+    // signaleras av {auth_required: 'gmail'|'drive'} i bodyn och ska
+    // INTE trigga redirect till /login.
+    const authRequired = data && typeof data === 'object' ? data.auth_required : null;
+    if (!authRequired) {
+      unauthorizedHandler();
+      throw new ApiError('Not authenticated', { status: 401, body: data });
+    }
+    const message =
+      (data && typeof data === 'object' && data.detail) ||
+      `${authRequired} requires reconnect`;
+    const err = new ApiError(message, { status: 401, body: data });
+    err.authRequired = authRequired;
+    throw err;
+  }
 
   if (!resp.ok) {
     const message =

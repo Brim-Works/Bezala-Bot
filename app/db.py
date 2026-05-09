@@ -49,6 +49,9 @@ _APP_SETTINGS_ADDITIONS = {
     "link_fetch_senders": "JSON NOT NULL DEFAULT '[]'",
     # Gate 1 — HTML→PDF för mailkvitton utan bilaga. Default ON.
     "html_to_pdf_enabled": "BOOLEAN NOT NULL DEFAULT TRUE",
+    # OAuth re-auth flags — sätts till true vid invalid_grant.
+    "gmail_auth_required": "BOOLEAN NOT NULL DEFAULT FALSE",
+    "drive_auth_required": "BOOLEAN NOT NULL DEFAULT FALSE",
 }
 
 _SCAN_RUNS_ADDITIONS = {

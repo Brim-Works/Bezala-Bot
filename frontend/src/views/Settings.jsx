@@ -3,6 +3,7 @@ import { useI18n } from '../i18n/useI18n.jsx';
 import { api } from '../api/client.js';
 import { useApiData } from '../hooks/useApiData.js';
 
+import AuthSection from '../components/settings/AuthSection.jsx';
 import AutomationSection from '../components/settings/AutomationSection.jsx';
 import FilterSection from '../components/settings/FilterSection.jsx';
 import ScanRulesSection from '../components/settings/ScanRulesSection.jsx';
@@ -107,6 +108,7 @@ export default function Settings() {
   return (
     <>
       <div className="settings-wrap" data-testid="settings-view">
+        <AuthSection form={form} />
         <AutomationSection form={form} update={update} />
         <FilterSection form={form} update={update} />
         <ScanRulesSection

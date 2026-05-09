@@ -303,6 +303,22 @@ export default {
       saved: 'Settings saved',
       saveFailed: 'Could not save',
     },
+    auth: {
+      title: 'Connections',
+      lead:
+        'Bezala Bot uses Google OAuth for Gmail and Drive. Click Reconnect if a token has expired.',
+      gmailLabel: 'Gmail account',
+      driveLabel: 'Drive account',
+      reconnectGmail: 'Reconnect Gmail',
+      reconnectDrive: 'Reconnect Drive',
+      connected: 'Connected',
+      bannerGmailTitle: 'Gmail connection lost',
+      bannerGmail:
+        'The token has expired or been revoked. Click Reconnect Gmail to keep scanning new receipts.',
+      bannerDriveTitle: 'Drive connection lost',
+      bannerDrive:
+        'The token has expired or been revoked. Click Reconnect Drive to keep saving files.',
+    },
   },
   review: {
     title: 'Review before transfer',

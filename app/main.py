@@ -27,6 +27,12 @@ from app.services.pipeline import fetch_bezala_metadata, run_scan
 from app.services.receipt_analyzer import AnalyzerError, ReceiptAnalyzer
 from app.services.currency_converter import make_db_rate_provider
 from app.services.receipt_matcher import find_matches
+from app.services.oauth_token_store import (
+    OAuthAuthError,
+    SERVICES as OAUTH_SERVICES,
+    save_refresh_token,
+    set_auth_required,
+)
 from app.services.settings_service import load_settings, settings_to_dict
 from app.services.trash_service import (
     drive_delete_safe,
@@ -205,6 +211,241 @@ def health():
     return {"status": "ok"}
 
 
+# --- OAuth re-auth flow för Gmail/Drive ---------------------------------
+#
+# Refresh-tokens går ibland ut (Google återkallar dem efter t.ex. 6 mån
+# inaktivitet, lösenordsbyte, eller om OAuth-clienten är i Testing-mode).
+# I produktion kan vi inte köra scripts/generate_token.py — istället
+# erbjuder vi ett OAuth-flöde direkt i appen:
+#
+#   GET  /api/auth/{service}/start      → redirect till Google
+#   GET  /api/auth/{service}/callback   → tar emot code, sparar token
+#
+# Tokens persisteras i `oauth_tokens`-tabellen via oauth_token_store så
+# de överlever Railway-redeploys.
+
+OAUTH_SCOPES = {
+    "gmail": [
+        "https://www.googleapis.com/auth/gmail.modify",
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.labels",
+    ],
+    "drive": [
+        "https://www.googleapis.com/auth/drive.file",
+        "https://www.googleapis.com/auth/drive.readonly",
+    ],
+}
+
+
+def _build_oauth_redirect_uri(request: Request, service: str) -> str:
+    """Bygg redirect_uri för OAuth-callbacken.
+
+    Föredrar env-variabel om satt (för deploys där Railway-domänen inte
+    matchar request.url, eller för stage/prod-skillnader). Annars
+    konstrueras URI:n från request:ens host.
+    """
+    import os
+    explicit = os.environ.get(f"{service.upper()}_OAUTH_REDIRECT_URI", "").strip()
+    if explicit:
+        return explicit
+    base = str(request.base_url).rstrip("/")
+    return f"{base}/api/auth/{service}/callback"
+
+
+def _build_oauth_flow(service: str, redirect_uri: str):
+    """Bygg Google OAuth Flow från env-credentials."""
+    from google_auth_oauthlib.flow import Flow
+
+    settings = get_settings()
+    if not (settings.gmail_client_id and settings.gmail_client_secret):
+        raise HTTPException(
+            status_code=500,
+            detail="OAuth client saknas (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET).",
+        )
+    client_config = {
+        "web": {
+            "client_id": settings.gmail_client_id,
+            "client_secret": settings.gmail_client_secret,
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "redirect_uris": [redirect_uri],
+        }
+    }
+    flow = Flow.from_client_config(
+        client_config,
+        scopes=OAUTH_SCOPES[service],
+        redirect_uri=redirect_uri,
+    )
+    return flow
+
+
+@app.get("/api/auth/{service}/start")
+def oauth_start(
+    service: str,
+    request: Request,
+    _: None = Depends(require_auth),
+):
+    """Initierar OAuth-flow. Redirectar till Google's consent-sida.
+
+    Sparar `state` + redirect_uri i sessionen så callbacken kan validera
+    att svaret kommer från samma användare.
+    """
+    if service not in OAUTH_SERVICES:
+        raise HTTPException(status_code=404, detail=f"Okänd service: {service}")
+
+    redirect_uri = _build_oauth_redirect_uri(request, service)
+    flow = _build_oauth_flow(service, redirect_uri)
+    auth_url, state = flow.authorization_url(
+        access_type="offline",
+        prompt="consent",  # tvinga ny refresh_token
+        include_granted_scopes="false",
+    )
+    request.session[f"oauth_state_{service}"] = state
+    request.session[f"oauth_redirect_{service}"] = redirect_uri
+    logger.info("OAuth start för %s — redirectar till Google", service)
+    return RedirectResponse(url=auth_url, status_code=303)
+
+
+_OAUTH_RESULT_PAGE = """<!doctype html>
+<html lang="sv"><head><meta charset="utf-8">
+<title>{title}</title>
+<style>
+ body {{ font-family: system-ui, sans-serif; background: #111; color: #eee;
+        display: grid; place-items: center; min-height: 100vh; margin: 0; }}
+ .card {{ background: #1a1a1a; padding: 2rem; border-radius: 8px; max-width: 480px;
+        text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,.4); }}
+ .ok {{ color: #6cf07a; }} .err {{ color: #f66; }}
+ h1 {{ margin: 0 0 .8rem; font-size: 1.2rem; }}
+ a {{ color: #3a82f6; }}
+</style></head><body>
+<div class="card">
+ <h1 class="{kind}">{title}</h1>
+ <p>{body}</p>
+ <p><a href="/settings">Tillbaka till Inställningar</a></p>
+</div></body></html>
+"""
+
+
+def _oauth_result_html(*, ok: bool, service: str, message: str) -> HTMLResponse:
+    title = (
+        f"{service.capitalize()} återansluten"
+        if ok
+        else f"{service.capitalize()}-anslutning misslyckades"
+    )
+    return HTMLResponse(
+        _OAUTH_RESULT_PAGE.format(
+            title=title,
+            kind="ok" if ok else "err",
+            body=message,
+        ),
+        status_code=200 if ok else 400,
+    )
+
+
+@app.get("/api/auth/{service}/callback")
+def oauth_callback(
+    service: str,
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+    _: None = Depends(require_auth),
+):
+    """Tar emot Google's redirect, växlar `code` mot tokens och sparar
+    refresh-tokenen i `oauth_tokens`-tabellen.
+
+    Vid framgång: rensar gmail/drive_auth_required-flaggan och visar en
+    success-sida med länk tillbaka till /settings.
+    """
+    if service not in OAUTH_SERVICES:
+        raise HTTPException(status_code=404, detail=f"Okänd service: {service}")
+
+    if error:
+        return _oauth_result_html(
+            ok=False, service=service, message=f"Google avvisade flödet: {error}",
+        )
+    if not code:
+        return _oauth_result_html(
+            ok=False, service=service, message="Saknar OAuth-kod i callbacken.",
+        )
+
+    expected_state = request.session.pop(f"oauth_state_{service}", None)
+    if not expected_state or state != expected_state:
+        return _oauth_result_html(
+            ok=False,
+            service=service,
+            message="State-parametern matchar inte. Starta om återanslutningen.",
+        )
+
+    redirect_uri = request.session.pop(
+        f"oauth_redirect_{service}", None,
+    ) or _build_oauth_redirect_uri(request, service)
+
+    try:
+        flow = _build_oauth_flow(service, redirect_uri)
+        flow.fetch_token(code=code)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("OAuth-token-utbyte misslyckades för %s", service)
+        return _oauth_result_html(
+            ok=False, service=service, message=f"Token-utbyte misslyckades: {exc}",
+        )
+
+    creds = flow.credentials
+    refresh_token = getattr(creds, "refresh_token", None)
+    if not refresh_token:
+        # Händer när Google återanvänder ett tidigare consent. Vi tvingar
+        # prompt=consent i /start, så detta ska normalt inte ske, men
+        # rapportera tydligt om det gör det.
+        return _oauth_result_html(
+            ok=False,
+            service=service,
+            message=(
+                "Google returnerade ingen refresh_token. Återkalla appens "
+                "åtkomst i ditt Google-konto (myaccount.google.com → Säkerhet "
+                "→ Tredjepartsappar) och försök igen."
+            ),
+        )
+
+    try:
+        save_refresh_token(
+            service,  # type: ignore[arg-type]
+            refresh_token,
+            extra={
+                "scopes": list(getattr(creds, "scopes", []) or []),
+            },
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Kunde inte spara refresh-token för %s", service)
+        return _oauth_result_html(
+            ok=False, service=service, message=f"Sparning misslyckades: {exc}",
+        )
+
+    logger.info("OAuth callback OK — refresh-token sparad för %s", service)
+    return _oauth_result_html(
+        ok=True,
+        service=service,
+        message=(
+            f"{service.capitalize()}-anslutningen är återställd. "
+            "Nästa scanning körs automatiskt."
+        ),
+    )
+
+
+# Global exception-hanterare: konvertera OAuth-fel från Gmail/Drive till
+# 401 (inte 500) så frontend kan reagera korrekt och visa banner.
+@app.exception_handler(OAuthAuthError)
+def _handle_oauth_auth_error(request: Request, exc: OAuthAuthError):
+    from fastapi.responses import JSONResponse
+    set_auth_required(exc.service, True)
+    return JSONResponse(
+        status_code=401,
+        content={
+            "detail": str(exc),
+            "auth_required": exc.service,
+        },
+    )
+
+
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
 if FRONTEND_DIST.exists():
     app.mount(
@@ -353,9 +594,13 @@ class BulkDeletePayload(BaseModel):
 
 def _get_gmail_client_safe() -> GmailClient | None:
     """Instansiera Gmail-klient best-effort. Vid fel → None (operationen
-    fortsätter utan Gmail-sidoeffekt)."""
+    fortsätter utan Gmail-sidoeffekt). OAuthAuthError sätter auth_required-
+    flaggan internt; vi låter ändå huvudoperationen lyckas."""
     try:
         return GmailClient()
+    except OAuthAuthError:
+        logger.warning("Gmail kräver återanslutning — Gmail-sidoeffekten hoppas över.")
+        return None
     except Exception:  # noqa: BLE001
         logger.exception("Gmail-klient kunde inte initialiseras för trash-op.")
         return None
@@ -364,9 +609,33 @@ def _get_gmail_client_safe() -> GmailClient | None:
 def _get_drive_client_safe() -> DriveClient | None:
     try:
         return DriveClient()
+    except OAuthAuthError:
+        logger.warning("Drive kräver återanslutning — Drive-sidoeffekten hoppas över.")
+        return None
     except Exception:  # noqa: BLE001
         logger.exception("Drive-klient kunde inte initialiseras för trash-op.")
         return None
+
+
+def _get_gmail_or_401() -> GmailClient:
+    """Strikt Gmail-init: OAuthAuthError bubblar upp till global handler → 401."""
+    try:
+        return GmailClient()
+    except OAuthAuthError:
+        raise
+    except Exception as exc:
+        logger.exception("Gmail-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Gmail-init: {exc}") from exc
+
+
+def _get_drive_or_401() -> DriveClient:
+    try:
+        return DriveClient()
+    except OAuthAuthError:
+        raise
+    except Exception as exc:
+        logger.exception("Drive-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
 
 
 @app.delete("/api/messages/trash")
@@ -479,14 +748,12 @@ def get_message_body(
     if not row.message_id:
         raise HTTPException(status_code=400, detail="Meddelandet saknar Gmail message_id")
 
-    try:
-        gmail = GmailClient()
-    except Exception as exc:
-        logger.exception("Gmail-klient kunde inte initialiseras")
-        raise HTTPException(status_code=500, detail=f"Gmail-init: {exc}") from exc
+    gmail = _get_gmail_or_401()
 
     try:
         msg = gmail.fetch_message(row.message_id)
+    except OAuthAuthError:
+        raise
     except Exception as exc:
         logger.exception("Kunde inte hämta mail-body för %s", row.message_id)
         raise HTTPException(
@@ -540,11 +807,7 @@ def fetch_pdf_from_url_for_message(
             status_code = 422
         raise HTTPException(status_code=status_code, detail=exc.message) from exc
 
-    try:
-        drive = DriveClient()
-    except Exception as exc:
-        logger.exception("Drive-klient kunde inte initialiseras")
-        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+    drive = _get_drive_or_401()
 
     analyzer = ReceiptAnalyzer()
     filename = (row.file_name
@@ -842,11 +1105,7 @@ def fetch_pdf_for_message(
         raise HTTPException(status_code=502, detail=exc.message) from exc
 
     # Drive + AI + Gmail
-    try:
-        drive = DriveClient()
-    except Exception as exc:
-        logger.exception("Drive-klient kunde inte initialiseras")
-        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+    drive = _get_drive_or_401()
 
     analyzer = ReceiptAnalyzer()
     analysis = None
@@ -1176,11 +1435,7 @@ def match_message_to_bezala(
 
     bill_line_id = str(payload.missing_receipt_id)
 
-    try:
-        drive = DriveClient()
-    except Exception as exc:
-        logger.exception("Drive-klient kunde inte initialiseras")
-        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+    drive = _get_drive_or_401()
 
     try:
         bezala = BezalaClient()
@@ -1321,11 +1576,7 @@ def upload_message_to_bezala(
             ),
         )
 
-    try:
-        drive = DriveClient()
-    except Exception as exc:
-        logger.exception("Drive-klient kunde inte initialiseras")
-        raise HTTPException(status_code=500, detail=f"Drive-init: {exc}") from exc
+    drive = _get_drive_or_401()
 
     try:
         bezala = BezalaClient()

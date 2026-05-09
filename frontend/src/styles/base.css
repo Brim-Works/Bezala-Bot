@@ -2077,6 +2077,58 @@ html[data-theme='B'] .settings-section__title {
   line-height: 1.5;
 }
 
+.settings-banner {
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+}
+
+.settings-banner--warn {
+  border-color: rgba(255, 110, 110, 0.6);
+  background: rgba(255, 110, 110, 0.08);
+}
+
+.settings-banner__title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 2px;
+}
+
+.settings-banner__body {
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.settings-auth-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 8px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-auth-row:first-of-type {
+  border-top: 0;
+  padding-top: 0;
+}
+
+.settings-auth-row__label {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.settings-auth-row__status {
+  font-size: 12px;
+}
+
+.settings-auth-row__status--err {
+  color: #f66;
+}
+
 .settings-field {
   display: flex;
   flex-direction: column;

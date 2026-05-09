@@ -304,6 +304,22 @@ export default {
       saved: 'Inställningar sparade',
       saveFailed: 'Kunde inte spara',
     },
+    auth: {
+      title: 'Anslutningar',
+      lead:
+        'Bezala Bot använder Google OAuth för Gmail och Drive. Klicka Återanslut om en token gått ut.',
+      gmailLabel: 'Gmail-konto',
+      driveLabel: 'Drive-konto',
+      reconnectGmail: 'Återanslut Gmail',
+      reconnectDrive: 'Återanslut Drive',
+      connected: 'Ansluten',
+      bannerGmailTitle: 'Gmail-anslutning förlorad',
+      bannerGmail:
+        'Tokenen har gått ut eller återkallats. Klicka Återanslut Gmail för att fortsätta scanna nya kvitton.',
+      bannerDriveTitle: 'Drive-anslutning förlorad',
+      bannerDrive:
+        'Tokenen har gått ut eller återkallats. Klicka Återanslut Drive för att fortsätta spara filer.',
+    },
   },
   review: {
     title: 'Granska innan överföring',

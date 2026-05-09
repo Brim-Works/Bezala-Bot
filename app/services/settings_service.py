@@ -102,6 +102,8 @@ def settings_to_dict(row: AppSettings) -> dict:
         "html_to_pdf_enabled": bool(
             row.html_to_pdf_enabled if row.html_to_pdf_enabled is not None else True
         ),
+        "gmail_auth_required": bool(getattr(row, "gmail_auth_required", False)),
+        "drive_auth_required": bool(getattr(row, "drive_auth_required", False)),
         "builtin_senders": list(BUILTIN_INCLUDES),  # read-only i UI
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
     }

@@ -117,6 +117,33 @@ class AppSettings(Base):
     # Skånetrafiken). Default ON.
     html_to_pdf_enabled = Column(Boolean, nullable=False, default=True)
 
+    # Sätts av Gmail/Drive-klienterna när refresh-tokenen är ogiltig
+    # (invalid_grant). UI visar varningsbanner + Återanslut-knapp.
+    gmail_auth_required = Column(Boolean, nullable=False, default=False)
+    drive_auth_required = Column(Boolean, nullable=False, default=False)
+
+    updated_at = Column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
+class OAuthToken(Base):
+    """Persistenta OAuth-tokens (Gmail/Drive) — sparas i DB istället för
+    fil eller env så de överlever Railway-redeploys.
+
+    `service` är primärnyckel ('gmail' eller 'drive'). `token_data` är ett
+    JSON-objekt med minst nyckeln `refresh_token` (kan även innehålla
+    access_token/expiry för felsökning, men access_token genereras alltid
+    om från refresh_token vid behov).
+    """
+
+    __tablename__ = "oauth_tokens"
+
+    service = Column(String(32), primary_key=True)
+    token_data = Column(JSON, nullable=False, default=dict)
     updated_at = Column(
         DateTime,
         server_default=func.now(),

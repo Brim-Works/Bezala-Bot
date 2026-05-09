@@ -13,11 +13,18 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from typing import Iterable, Iterator
 
+from google.auth.exceptions import RefreshError
 from google.auth.transport.requests import Request
 from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from app.config import get_settings
+from app.services.oauth_token_store import (
+    OAuthAuthError,
+    get_refresh_token,
+    is_invalid_grant,
+    set_auth_required,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,25 +70,37 @@ class GmailMessage:
 class GmailClient:
     def __init__(self) -> None:
         settings = get_settings()
+        refresh_token = get_refresh_token("gmail")
         if not (
             settings.gmail_client_id
             and settings.gmail_client_secret
-            and settings.gmail_refresh_token
+            and refresh_token
         ):
-            raise RuntimeError(
-                "Gmail OAuth saknar konfiguration. Sätt GMAIL_CLIENT_ID, "
-                "GMAIL_CLIENT_SECRET och GMAIL_REFRESH_TOKEN."
+            # Saknar token helt → samma effekt som invalid_grant ur UI:s
+            # synvinkel: användaren måste klicka Återanslut.
+            set_auth_required("gmail", True)
+            raise OAuthAuthError(
+                "gmail",
+                "Gmail OAuth saknar konfiguration. Klicka Återanslut Gmail "
+                "i Inställningar.",
             )
 
         self._creds = Credentials(
             token=None,
-            refresh_token=settings.gmail_refresh_token,
+            refresh_token=refresh_token,
             client_id=settings.gmail_client_id,
             client_secret=settings.gmail_client_secret,
             token_uri="https://oauth2.googleapis.com/token",
             scopes=SCOPES,
         )
-        self._creds.refresh(Request())
+        try:
+            self._creds.refresh(Request())
+        except RefreshError as exc:
+            if is_invalid_grant(exc):
+                set_auth_required("gmail", True)
+                logger.warning("Gmail invalid_grant — kräver återanslutning: %s", exc)
+                raise OAuthAuthError("gmail", str(exc)) from exc
+            raise
         self._service = build("gmail", "v1", credentials=self._creds, cache_discovery=False)
         self._done_label_id: str | None = None
 
