@@ -1034,11 +1034,7 @@ _MISSING_AMOUNT_RE = __import__("re").compile(
 def _parse_amount_from_description(desc: str | None) -> tuple[float | None, str | None]:
     """Bezala bill_lines returnerar description som fri text i formatet
     "NAMN: VENDOR, PLATS, LAND 28.54 EUR". Plocka belopp + valuta från
-    slutet av strängen när det strukturerade amount-fältet saknas.
-
-    Stödjer 0–2 decimaler (vissa vendors rapporterar '100.0 EUR' eller
-    '100 EUR' istället för '100.00 EUR') samt både punkt och komma som
-    decimaltecken."""
+    slutet av strängen när det strukturerade amount-fältet saknas."""
     if not desc:
         return None, None
     match = _MISSING_AMOUNT_RE.search(desc)
@@ -1265,6 +1261,15 @@ def upload_message_to_bezala(
     # INNAN uppladdningen så DB alltid speglar vad som skickats — om
     # Bezala 422:ar kan användaren läsa det från bezala_error_message.
     if payload:
+        # FAS 8 — fånga gamla värden FÖRE override så vi kan logga
+        # auto-correction för fält som faktiskt ändras.
+        old_values = {
+            "vendor": row.vendor,
+            "amount": row.amount,
+            "receipt_date": row.receipt_date,
+            "category": row.category,
+            "currency": row.currency,
+        }
         if payload.amount is not None:
             row.amount = payload.amount
         if payload.vendor is not None:
@@ -1275,6 +1280,26 @@ def upload_message_to_bezala(
             row.currency = payload.currency
         if payload.category is not None:
             row.category = payload.category
+        # Logga rättelser för fält som faktiskt ändrades (defensivt —
+        # feedback-loop ska aldrig blockera Bezala-uploaden).
+        try:
+            from app.services.feedback import save_correction
+            for fld, old_val in old_values.items():
+                new_val = getattr(row, fld, None)
+                if old_val == new_val:
+                    continue
+                # Hoppa rena None→None eller None→tomma värden
+                if new_val is None:
+                    continue
+                save_correction(
+                    db,
+                    row.message_id or "",
+                    fld,
+                    str(old_val) if old_val is not None else None,
+                    str(new_val) if new_val is not None else None,
+                )
+        except Exception:  # noqa: BLE001
+            logger.exception("Auto-correction-feedback misslyckades msg_id=%s", msg_id)
         db.commit()
         db.refresh(row)
 
@@ -1701,6 +1726,89 @@ def debug_sanitized_body(
             "error_type": type(exc).__name__,
             "traceback": traceback.format_exc(),
         }
+
+
+# --- FAS 8: feedback-loop endpoints --------------------------------------
+
+
+class FeedbackThumbsPayload(BaseModel):
+    """Body för POST /api/feedback/thumbs.
+    fields är bara meningsfullt när is_positive=False (vilka fält var fel).
+    Tomt fields-list för thumbs_down → en generell rad utan field_name."""
+    message_id: str
+    is_positive: bool
+    fields: list[str] = Field(default_factory=list)
+
+
+class FeedbackCorrectionPayload(BaseModel):
+    """Body för POST /api/feedback/correction.
+    ai_value är valfritt — om frontend inte skickar det plockas det från
+    ProcessedMessage (kräver att POST sker INNAN raden uppdateras)."""
+    message_id: str
+    field_name: str
+    ai_value: str | None = None
+    correct_value: str
+
+
+@app.post("/api/feedback/thumbs")
+def post_feedback_thumbs(
+    payload: FeedbackThumbsPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 8 — explicit 👍/👎 från användaren."""
+    from app.services.feedback import save_thumbs
+    rows = save_thumbs(
+        db,
+        payload.message_id,
+        payload.is_positive,
+        payload.fields,
+    )
+    db.commit()
+    return {"saved": len(rows)}
+
+
+@app.post("/api/feedback/correction")
+def post_feedback_correction(
+    payload: FeedbackCorrectionPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 8 — implicit feedback när användaren rättar ett fält i Granska.
+    Om ai_value saknas i body, läses det från ProcessedMessage (kräver att
+    POST sker INNAN raden uppdateras av upload-to-bezala)."""
+    from app.services.feedback import save_correction
+    ai_value = payload.ai_value
+    if ai_value is None:
+        row = (
+            db.query(ProcessedMessage)
+            .filter(ProcessedMessage.message_id == payload.message_id)
+            .first()
+        )
+        if row is not None:
+            # Frontend-fältnamn kan vara "date" — backend-kolumnen heter receipt_date
+            attr = "receipt_date" if payload.field_name == "date" else payload.field_name
+            existing_val = getattr(row, attr, None)
+            ai_value = str(existing_val) if existing_val is not None else None
+    fb = save_correction(
+        db,
+        payload.message_id,
+        payload.field_name,
+        ai_value,
+        payload.correct_value,
+    )
+    db.commit()
+    return {"saved": bool(fb)}
+
+
+@app.get("/api/feedback/stats")
+def get_feedback_stats(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 8 — aggregerad statistik. Förbereder framtida statistikflik."""
+    from app.services.feedback import feedback_stats
+    return feedback_stats(db)
 
 
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
