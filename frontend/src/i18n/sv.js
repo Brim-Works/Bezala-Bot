@@ -106,6 +106,18 @@ export default {
       downloadSuccess: 'PDF hämtad och sparad till Drive',
       downloadFailed: 'Kunde inte hämta PDF',
     },
+    trips: {
+      title: 'Resor',
+      linkedTo: 'Detta kvitto är kopplat till:',
+      availableTrips: 'Tillgängliga resor:',
+      noAvailable: 'Inga matchande resor — kvittot ligger utanför pågående resor.',
+      manuallyAdded: 'Manuellt tillagt',
+      aiSuggested: 'AI-förslag',
+      linked: 'Kvitto kopplat till resa',
+      unlinked: 'Kvitto bortkopplat från resa',
+      toggleFailed: 'Kunde inte uppdatera koppling',
+      loadFailed: 'Kunde inte hämta resor',
+    },
     bezala: {
       pendingTitle: 'Väntar på granskning',
       pendingBody:
@@ -305,6 +317,31 @@ export default {
     toast: {
       saved: 'Inställningar sparade',
       saveFailed: 'Kunde inte spara',
+    },
+    excludedVendors: {
+      title: 'Exkluderade vendors',
+      description:
+        'Bezala Bot ignorerar dessa vendors när det föreslår resor — de är prenumerationer eller tjänster som inte hör till resor.',
+      systemList: 'Standardlista (system)',
+      myAdditions: 'Mina tillägg',
+      userEmpty: 'Inga egna tillägg ännu.',
+      showAll: 'Visa alla',
+      hideAll: 'Visa färre',
+      addVendor: '+ Lägg till vendor',
+      addModal: {
+        title: 'Lägg till exkluderad vendor',
+        pattern: 'Vendor (matchas case-insensitive)',
+        description: 'Beskrivning (valfri)',
+        cancel: 'Avbryt',
+        add: 'Lägg till',
+      },
+      toast: {
+        added: 'Vendor tillagd',
+        removed: 'Vendor borttagen',
+        loadFailed: 'Kunde inte hämta vendor-listan',
+        addFailed: 'Kunde inte lägga till',
+        removeFailed: 'Kunde inte ta bort',
+      },
     },
     auth: {
       title: 'Anslutningar',
@@ -693,6 +730,10 @@ export default {
     addReceiptApply: 'Lägg till markerade',
     receiptsHeader: 'Kvitton i resan',
     removeReceipt: 'Ta bort från resa',
+    receipts: {
+      aiSuggested: 'AI-förslag',
+      manuallyAdded: 'Manuellt tillagda',
+    },
     confirmReject: 'Avvisa AI-förslaget?',
     confirmArchive: 'Arkivera resan?',
     toast: {

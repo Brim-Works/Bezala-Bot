@@ -59,12 +59,19 @@ export default function TripDetailDrawer({
         <h4 className="trip-drawer__section-title">
           {t.trips.receiptsHeader}
         </h4>
-        <ul className="trip-drawer__receipts">
-          {(trip.messages || []).map((m) => (
+        {(() => {
+          const aiMsgs = (trip.messages || []).filter(
+            (m) => m.added_by !== 'manual',
+          );
+          const manualMsgs = (trip.messages || []).filter(
+            (m) => m.added_by === 'manual',
+          );
+          const renderRow = (m) => (
             <li
               key={m.message_id}
               className="trip-drawer__receipt"
               data-testid={`trip-drawer-receipt-${m.message_id}`}
+              data-added-by={m.added_by || 'ai_suggestion'}
             >
               <div className="trip-drawer__receipt-main">
                 <div className="trip-drawer__receipt-vendor">
@@ -91,8 +98,41 @@ export default function TripDetailDrawer({
                 </button>
               ) : null}
             </li>
-          ))}
-        </ul>
+          );
+          return (
+            <>
+              {aiMsgs.length > 0 ? (
+                <>
+                  <div
+                    className="trip-drawer__source-label muted mono"
+                    data-testid="trip-drawer-ai-label"
+                  >
+                    🤖 {t.trips.receipts.aiSuggested}
+                  </div>
+                  <ul className="trip-drawer__receipts">
+                    {aiMsgs.map(renderRow)}
+                  </ul>
+                </>
+              ) : null}
+              {manualMsgs.length > 0 ? (
+                <>
+                  <div
+                    className="trip-drawer__source-label muted mono"
+                    data-testid="trip-drawer-manual-label"
+                  >
+                    🏷️ {t.trips.receipts.manuallyAdded}
+                  </div>
+                  <ul className="trip-drawer__receipts">
+                    {manualMsgs.map(renderRow)}
+                  </ul>
+                </>
+              ) : null}
+              {aiMsgs.length === 0 && manualMsgs.length === 0 ? (
+                <p className="muted">—</p>
+              ) : null}
+            </>
+          );
+        })()}
 
         <footer className="trip-drawer__actions">
           {trip.status !== 'archived' ? (

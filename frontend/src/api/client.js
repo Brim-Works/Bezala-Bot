@@ -189,6 +189,24 @@ export const api = {
     request('/api/trips/refresh-suggestions', { method: 'POST' }),
   tripsFeedback: (id, payload) =>
     request(`/api/trips/${id}/feedback`, { method: 'POST', body: payload }),
+  // FAS 11.1.1 — manuell tagging + SaaS-lista
+  tripsAvailableForMessage: (messageId) =>
+    request(`/api/messages/${encodeURIComponent(messageId)}/available-trips`),
+  tripsLinkMessage: (messageId, tripId) =>
+    request(`/api/messages/${encodeURIComponent(messageId)}/link-to-trip`, {
+      method: 'POST',
+      body: { trip_id: tripId },
+    }),
+  tripsUnlinkMessage: (messageId, tripId) =>
+    request(
+      `/api/messages/${encodeURIComponent(messageId)}/unlink-from-trip/${tripId}`,
+      { method: 'DELETE' },
+    ),
+  excludedVendorsList: () => request('/api/excluded-vendors'),
+  excludedVendorsAdd: (payload) =>
+    request('/api/excluded-vendors', { method: 'POST', body: payload }),
+  excludedVendorsRemove: (id) =>
+    request(`/api/excluded-vendors/${id}`, { method: 'DELETE' }),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {

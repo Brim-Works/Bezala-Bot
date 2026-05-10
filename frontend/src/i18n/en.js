@@ -106,6 +106,18 @@ export default {
       downloadSuccess: 'PDF fetched and saved to Drive',
       downloadFailed: 'Could not fetch PDF',
     },
+    trips: {
+      title: 'Trips',
+      linkedTo: 'This receipt is linked to:',
+      availableTrips: 'Available trips:',
+      noAvailable: 'No matching trips — the receipt is outside any current trip.',
+      manuallyAdded: 'Manually added',
+      aiSuggested: 'AI suggestion',
+      linked: 'Receipt linked to trip',
+      unlinked: 'Receipt unlinked from trip',
+      toggleFailed: 'Could not update link',
+      loadFailed: 'Could not load trips',
+    },
     bezala: {
       pendingTitle: 'Awaiting review',
       pendingBody:
@@ -304,6 +316,31 @@ export default {
     toast: {
       saved: 'Settings saved',
       saveFailed: 'Could not save',
+    },
+    excludedVendors: {
+      title: 'Excluded vendors',
+      description:
+        'Bezala Bot ignores these vendors when suggesting trips — subscriptions and services that don’t belong to trips.',
+      systemList: 'Default list (system)',
+      myAdditions: 'My additions',
+      userEmpty: 'No custom additions yet.',
+      showAll: 'Show all',
+      hideAll: 'Show fewer',
+      addVendor: '+ Add vendor',
+      addModal: {
+        title: 'Add excluded vendor',
+        pattern: 'Vendor (case-insensitive match)',
+        description: 'Description (optional)',
+        cancel: 'Cancel',
+        add: 'Add',
+      },
+      toast: {
+        added: 'Vendor added',
+        removed: 'Vendor removed',
+        loadFailed: 'Could not load vendor list',
+        addFailed: 'Could not add',
+        removeFailed: 'Could not remove',
+      },
     },
     auth: {
       title: 'Connections',
@@ -692,6 +729,10 @@ export default {
     addReceiptApply: 'Add selected',
     receiptsHeader: 'Receipts in trip',
     removeReceipt: 'Remove from trip',
+    receipts: {
+      aiSuggested: 'AI suggestion',
+      manuallyAdded: 'Manually added',
+    },
     confirmReject: 'Reject the AI suggestion?',
     confirmArchive: 'Archive the trip?',
     toast: {
