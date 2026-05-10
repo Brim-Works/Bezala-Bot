@@ -295,6 +295,117 @@ class SuggestAndPersistTest(unittest.TestCase):
             recalculate_trip_total(db, trip)
             self.assertEqual(float(trip.total_amount), 600.0)
 
+    def test_suggestion_total_calculated_correctly(self):
+        """Regression — persist_suggestions räknar trip.total_amount
+        även utan att kallaren manuellt kallar recalculate_trip_total
+        igen efteråt. Bugfix: db.flush() saknades innan recalc, så
+        autoflush=False-sessionen visade 0 trip_messages."""
+        from app.models import Trip
+        from app.services.trip_grouper import (
+            persist_suggestions, suggest_trips,
+        )
+        self._seed(message_id="flight", vendor="Finnair", category="Flyg",
+                   amount=100.0, currency="EUR", receipt_date="2026-05-01")
+        self._seed(message_id="hotel", vendor="Scandic", category="Hotell",
+                   amount=200.0, currency="EUR", receipt_date="2026-05-02")
+        self._seed(message_id="taxi", vendor="Uber", category="Taxi",
+                   amount=50.0, currency="EUR", receipt_date="2026-05-02")
+        with self.SessionLocal() as db:
+            with patch(
+                "app.services.trip_grouper.call_claude_for_trip",
+                return_value=None,
+            ):
+                trips = persist_suggestions(
+                    db, suggest_trips(db, lookback_days=90),
+                )
+            self.assertEqual(len(trips), 1)
+            self.assertEqual(float(trips[0].total_amount), 350.0)
+
+        # Re-läs i en fresh session — totalen ska vara persisterad
+        with self.SessionLocal() as db:
+            trip = db.query(Trip).first()
+            self.assertEqual(float(trip.total_amount), 350.0)
+
+    def test_suggestion_total_with_eur_sek_mix(self):
+        """Cross-currency: EUR + SEK → konverteras via _convert.
+        Mockar get_rate så testet inte hänger på frankfurter-API.
+        Verifierar att de nu-synliga trip_message-raderna får sina
+        belopp summerade korrekt."""
+        from app.services.trip_grouper import (
+            persist_suggestions, suggest_trips,
+        )
+        self._seed(message_id="flight", vendor="Finnair", category="Flyg",
+                   amount=400.0, currency="EUR", receipt_date="2026-05-01")
+        # Skånetrafiken-kvitto 230 SEK ≈ 20 EUR (rate=1/11.5)
+        self._seed(message_id="bus", vendor="Skanetrafiken",
+                   category="Buss", amount=230.0, currency="SEK",
+                   receipt_date="2026-05-02")
+
+        def fake_get_rate(date_str, frm, to, *, db):
+            if frm == "SEK" and to == "EUR":
+                return 1.0 / 11.5
+            return None
+
+        with self.SessionLocal() as db:
+            with patch(
+                "app.services.trip_grouper.call_claude_for_trip",
+                return_value=None,
+            ), patch(
+                "app.services.currency_converter.get_rate",
+                side_effect=fake_get_rate,
+            ):
+                trips = persist_suggestions(
+                    db, suggest_trips(db, lookback_days=90),
+                )
+            self.assertEqual(len(trips), 1)
+            total = float(trips[0].total_amount)
+            # 400 EUR + 230 / 11.5 EUR = 420 EUR
+            self.assertAlmostEqual(total, 420.0, places=2)
+
+    def test_suggestion_total_skips_null_amount(self):
+        """Edge case: kvitto utan amount hoppas över i sum, kraschar inte."""
+        from app.services.trip_grouper import (
+            persist_suggestions, suggest_trips,
+        )
+        self._seed(message_id="flight", vendor="Finnair", category="Flyg",
+                   amount=400.0, currency="EUR", receipt_date="2026-05-01")
+        # Hotell utan belopp — t.ex. AI extraherade inte amount korrekt
+        self._seed(message_id="hotel", vendor="Scandic", category="Hotell",
+                   amount=None, currency="EUR", receipt_date="2026-05-02")
+        with self.SessionLocal() as db:
+            with patch(
+                "app.services.trip_grouper.call_claude_for_trip",
+                return_value=None,
+            ):
+                trips = persist_suggestions(
+                    db, suggest_trips(db, lookback_days=90),
+                )
+            self.assertEqual(len(trips), 1)
+            self.assertEqual(float(trips[0].total_amount), 400.0)
+
+    def test_persist_suggestions_handles_empty_message_ids(self):
+        """Edge case: suggestion utan message_ids → trip skapas med
+        total_amount=0, ingen krash. Reflekterar att Claude kan returnera
+        ett tomt förslag i extremfall."""
+        from datetime import date as _date
+        from app.services.trip_grouper import persist_suggestions
+
+        # Bygg ett refined dict manuellt — inga ProcessedMessages alls
+        suggestion = {
+            "title": "Tomt förslag",
+            "destination": None,
+            "description": None,
+            "start_date": _date(2026, 5, 1),
+            "end_date": _date(2026, 5, 2),
+            "confidence": 30,
+            "message_ids": [],
+            "anchor_message_id": "no-such-id",
+        }
+        with self.SessionLocal() as db:
+            saved = persist_suggestions(db, [suggestion])
+            self.assertEqual(len(saved), 1)
+            self.assertEqual(float(saved[0].total_amount), 0.0)
+
     def test_edit_logs_feedback_and_recalcs(self):
         from app.models import Trip, TripFeedback
         from app.services.trip_grouper import (
