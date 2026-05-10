@@ -4072,6 +4072,23 @@ html[data-theme='B'] .modal__title {
   color: var(--accent);
 }
 
+/* Cleanup-PR — settings-rad med text-vänster + knapp-höger */
+.settings-cleanup-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 12px 0;
+  border-top: 1px solid var(--border);
+}
+
+.settings-cleanup-row__text {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 13px;
+}
+
 /* ========== FAS 11.1.1 — Drawer trip-link section ========== */
 
 .drawer__trip-link {

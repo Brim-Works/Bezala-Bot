@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { useDrawer } from './DrawerProvider.jsx';
 import DrawerTabs from './DrawerTabs.jsx';
@@ -7,11 +7,13 @@ import AiTab from './AiTab.jsx';
 import DriveTab from './DriveTab.jsx';
 import BezalaTab from './BezalaTab.jsx';
 import TripLinkSection from './TripLinkSection.jsx';
-import { IconMail, IconTrash } from '../icons/index.jsx';
+import { IconMail, IconRefresh, IconTrash } from '../icons/index.jsx';
 import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
 import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
 import DeleteReasonDialog from '../components/trash/DeleteReasonDialog.jsx';
 import { withStatuses } from '../api/adapters.js';
+import { api, ApiError } from '../api/client.js';
+import { useToast } from '../lib/toast.jsx';
 
 function stepStatusMap(message) {
   if (!message) return {};
@@ -48,6 +50,10 @@ export default function PipelineDrawer({ onRefetch }) {
   } = useDrawer();
   const { bump: bumpTrashCount, bumpMessagesVersion } = useTrashCountContext();
   const closeBtnRef = useRef(null);
+  const toast = useToast();
+  const [reprocessing, setReprocessing] = useState(false);
+  const [reprocessWarning, setReprocessWarning] = useState(null);
+  // null | { id, message }
 
   // Gemensam handler: när en tab uppdaterar raden (t.ex. fetch-pdf-from-url
   // lyckas) → uppdatera drawer-state + refresha Dashboard-listan.
@@ -76,6 +82,45 @@ export default function PipelineDrawer({ onRefetch }) {
     deleteFlow.openDialog([deletingId], 'row');
   };
 
+  const runReprocess = async (force) => {
+    if (deletingId == null) return;
+    setReprocessing(true);
+    try {
+      const result = await api.reprocessMessageFull(deletingId, { force });
+      if (result?.warning && result?.is_coupled) {
+        // Backend ber om bekräftelse innan vi raderar en kopplad rad
+        setReprocessWarning({
+          id: deletingId,
+          message:
+            result.message || t.drawer.reprocess.confirmCoupled,
+        });
+        return;
+      }
+      toast.show({ kind: 'ok', message: t.drawer.reprocess.success });
+      // Stäng drawern + refresha listan — raden är borta tills nästa scan
+      // tar in den på nytt.
+      setReprocessWarning(null);
+      bumpMessagesVersion();
+      onRefetch?.();
+      closeDrawer();
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      toast.show({
+        kind: 'err',
+        message: t.drawer.reprocess.error.replace('{error}', detail),
+      });
+    } finally {
+      setReprocessing(false);
+    }
+  };
+
+  const onReprocessClick = () => runReprocess(false);
+  const onReprocessConfirm = () => runReprocess(true);
+  const onReprocessCancel = () => {
+    if (reprocessing) return;
+    setReprocessWarning(null);
+  };
+
   useEffect(() => {
     if (!isOpen) return undefined;
     function onKey(e) {
@@ -96,14 +141,56 @@ export default function PipelineDrawer({ onRefetch }) {
 
   // Dialog hålls monterad även när drawern stängs så delete-flödet kan
   // avslutas utanför drawer-subträdet.
+  const reprocessConfirm = reprocessWarning ? (
+    <div
+      className="modal-shell"
+      role="dialog"
+      aria-modal="true"
+      aria-label={t.drawer.reprocess.button}
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onReprocessCancel();
+      }}
+      data-testid="drawer-reprocess-confirm"
+    >
+      <div className="modal-card card-pad">
+        <h3 className="modal-card__title">{t.drawer.reprocess.button}</h3>
+        <p className="muted">{reprocessWarning.message}</p>
+        <footer className="modal-card__actions">
+          <button
+            type="button"
+            className="btn ghost"
+            onClick={onReprocessCancel}
+            disabled={reprocessing}
+          >
+            {t.common.cancel}
+          </button>
+          <button
+            type="button"
+            className="btn primary"
+            onClick={onReprocessConfirm}
+            disabled={reprocessing}
+            data-testid="drawer-reprocess-confirm-btn"
+          >
+            {reprocessing
+              ? t.drawer.reprocess.loading
+              : t.drawer.reprocess.confirmAction}
+          </button>
+        </footer>
+      </div>
+    </div>
+  ) : null;
+
   const dialog = (
-    <DeleteReasonDialog
-      open={deleteFlow.dialogOpen}
-      count={deleteFlow.pendingTargets?.ids.length || 0}
-      onCancel={deleteFlow.closeDialog}
-      onConfirm={deleteFlow.confirmDelete}
-      busy={deleteFlow.busy}
-    />
+    <>
+      <DeleteReasonDialog
+        open={deleteFlow.dialogOpen}
+        count={deleteFlow.pendingTargets?.ids.length || 0}
+        onCancel={deleteFlow.closeDialog}
+        onConfirm={deleteFlow.confirmDelete}
+        busy={deleteFlow.busy}
+      />
+      {reprocessConfirm}
+    </>
   );
 
   if (!isOpen || !selectedMessage) return dialog;
@@ -135,6 +222,17 @@ export default function PipelineDrawer({ onRefetch }) {
               {selectedMessage.file_name || selectedMessage.subject || '—'}
             </div>
           </div>
+          <button
+            type="button"
+            className="drawer__head-action"
+            onClick={onReprocessClick}
+            disabled={reprocessing}
+            aria-label={t.drawer.reprocess.button}
+            title={t.drawer.reprocess.button}
+            data-testid="drawer-reprocess"
+          >
+            <IconRefresh className="icon sm" />
+          </button>
           <button
             type="button"
             className="drawer__head-action"

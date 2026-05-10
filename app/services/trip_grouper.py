@@ -718,7 +718,24 @@ def recalculate_trip_total(db: Session, trip: Trip) -> None:
 
 
 def serialize_trip(db: Session, trip: Trip) -> dict:
-    """Returnera Trip + dess kvitton som ett dict redo för JSON-svar."""
+    """Returnera Trip + dess kvitton som ett dict redo för JSON-svar.
+
+    FAS 11.1+: applicera reaktivt excluded_vendors-filter (substring
+    case-insensitive) — kvitton vars vendor matchar någon ExcludedVendor-
+    rad tas bort ur respons-objektet utan att röra DB. Cleanup-endpointen
+    tar permanent bort dem."""
+    try:
+        from app.services.excluded_vendors import (
+            is_vendor_excluded, list_excluded_vendor_patterns,
+        )
+        excluded_patterns = list_excluded_vendor_patterns(db)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "serialize_trip: kunde inte läsa excluded_vendors — fortsätter utan filter",
+        )
+        excluded_patterns = []
+        is_vendor_excluded = lambda *_a, **_kw: False  # noqa: E731
+
     rows = (
         db.query(TripMessage, ProcessedMessage)
         .join(
@@ -732,6 +749,8 @@ def serialize_trip(db: Session, trip: Trip) -> dict:
     )
     messages = []
     for tm, msg in rows:
+        if is_vendor_excluded(msg.vendor, excluded_patterns):
+            continue
         messages.append({
             "id": msg.id,
             "message_id": msg.message_id,
@@ -766,6 +785,9 @@ def serialize_trip(db: Session, trip: Trip) -> dict:
         "ai_confidence": trip.ai_confidence,
         "description": trip.description,
         "user_edited": bool(trip.user_edited),
+        # message_count reflekterar antalet kvitton EFTER excluded_vendors-
+        # filtreringen — frontend kan visa "0 kvitton" eller dölja resan.
+        "message_count": len(messages),
         "netvisor_trip_id": trip.netvisor_trip_id,
         "netvisor_synced_at": (
             trip.netvisor_synced_at.isoformat()

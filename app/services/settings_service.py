@@ -193,3 +193,5 @@ def sender_matches_link_fetch(sender: str | None, link_fetch_senders: Iterable[s
         if needle.lower() in lower:
             return True
     return False
+
+

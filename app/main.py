@@ -1084,6 +1084,111 @@ def reprocess_message(
     }
 
 
+@app.post("/api/messages/{msg_id}/reprocess-full")
+def reprocess_message_full(
+    msg_id: int,
+    background: BackgroundTasks,
+    force: bool = False,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS Cleanup-PR — bearbeta om ett enskilt meddelande från början.
+
+    Skiljer sig från /reprocess (som bara accepterar skipped/needs_manual_download):
+    - Tillåter REPROCESS av saved/coupled rader (med force=true).
+    - Raderar Drive-fil best-effort (om den finns).
+    - Rensar trip_messages-koppling.
+    - Triggar bakgrunds-scan så pipelinen tar in mailet på nytt.
+
+    Vid bezala_transaction_id satt och force=False returneras en
+    warning så frontend kan visa bekräftelsemodal innan andra anropet
+    med force=true. Bezala-kopplingen rensas INTE automatiskt — användaren
+    får koppla om manuellt om hen vill.
+    """
+    from app.models import TripMessage
+
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+
+    if row.bezala_transaction_id and not force:
+        return {
+            "warning": True,
+            "is_coupled": True,
+            "bezala_transaction_id": row.bezala_transaction_id,
+            "message": (
+                "Detta kvitto är kopplat till Bezala. Bekräfta för att fortsätta."
+            ),
+        }
+
+    gmail_message_id = row.message_id
+    old_drive_id = row.drive_file_id
+    old_coupling = row.bezala_transaction_id
+    prior_status = row.status
+
+    # 1. Drive-fil best-effort
+    if old_drive_id:
+        drive = _get_drive_client_safe()
+        if drive is not None:
+            try:
+                drive.delete_file(old_drive_id)
+                logger.info("Reprocess-full: raderade Drive-fil %s", old_drive_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Reprocess-full: kunde inte radera Drive-fil %s — fortsätter",
+                    old_drive_id,
+                )
+
+    # 2. Trip-koppling (best-effort, men i samma transaktion som radering)
+    try:
+        if gmail_message_id:
+            db.query(TripMessage).filter(
+                TripMessage.message_id == gmail_message_id
+            ).delete(synchronize_session=False)
+
+        # 3. Radera ProcessedMessage så pipelinens dubblett-check tillåter
+        #    nytt processande
+        db.delete(row)
+        db.commit()
+    except Exception as exc:
+        db.rollback()
+        logger.exception("Reprocess-full: DB-radering misslyckades")
+        raise HTTPException(
+            status_code=500, detail=f"Bearbetning misslyckades: {exc}",
+        ) from exc
+
+    # 4. Ta bort Bezala-Klar-etiketten i Gmail (best-effort — annars
+    #    filtreras mailet bort av default-querien)
+    if gmail_message_id:
+        gmail = _get_gmail_client_safe()
+        if gmail is not None:
+            try:
+                gmail.remove_done(gmail_message_id)
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "Reprocess-full: kunde inte ta bort Bezala-Klar för %s",
+                    gmail_message_id,
+                )
+
+    # 5. Trigga bakgrunds-scan så pipelinen tar in mailet på nytt
+    background.add_task(run_scan, max_results=10)
+
+    logger.info(
+        "Reprocess-full: msg_id=%s gmail=%s prior_status=%r had_coupling=%s "
+        "had_drive=%s force=%s",
+        msg_id, gmail_message_id, prior_status,
+        bool(old_coupling), bool(old_drive_id), force,
+    )
+    return {
+        "success": True,
+        "id": msg_id,
+        "gmail_message_id": gmail_message_id,
+        "had_coupling": bool(old_coupling),
+        "had_drive": bool(old_drive_id),
+        "prior_status": prior_status,
+    }
+
+
 class ReprocessSkippedPayload(BaseModel):
     senders: list[str] = Field(default_factory=list)
 
@@ -2383,21 +2488,31 @@ def _trip_or_404(db: Session, trip_id: int):
     return trip
 
 
+def _list_trips_filtered(db: Session, status: str) -> list[dict]:
+    """Hämta trips med given status, applicera excluded_vendors-filter
+    via serialize_trip och dölj resor som blir tomma efter filtreringen.
+
+    Resorna ligger kvar i DB — det är bara list-vyn som skippar dem.
+    Cleanup-endpointen är det som permanent tömmer."""
+    from app.models import Trip
+    from app.services.trip_grouper import serialize_trip
+    rows = (
+        db.query(Trip)
+        .filter(Trip.status == status)
+        .order_by(Trip.start_date.desc())
+        .all()
+    )
+    serialized = [serialize_trip(db, t) for t in rows]
+    return [s for s in serialized if (s.get("message_count") or 0) > 0]
+
+
 @app.get("/api/trips/suggestions")
 def list_trip_suggestions(
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
     """Lista AI-genererade resa-förslag som väntar på användarbeslut."""
-    from app.models import Trip
-    from app.services.trip_grouper import serialize_trip
-    rows = (
-        db.query(Trip)
-        .filter(Trip.status == "suggested")
-        .order_by(Trip.start_date.desc())
-        .all()
-    )
-    return {"trips": [serialize_trip(db, t) for t in rows]}
+    return {"trips": _list_trips_filtered(db, "suggested")}
 
 
 @app.get("/api/trips/active")
@@ -2406,15 +2521,7 @@ def list_active_trips(
     _: None = Depends(require_auth),
 ):
     """Lista aktiva (accepterade) resor."""
-    from app.models import Trip
-    from app.services.trip_grouper import serialize_trip
-    rows = (
-        db.query(Trip)
-        .filter(Trip.status == "active")
-        .order_by(Trip.start_date.desc())
-        .all()
-    )
-    return {"trips": [serialize_trip(db, t) for t in rows]}
+    return {"trips": _list_trips_filtered(db, "active")}
 
 
 @app.get("/api/trips/stats")
@@ -2493,6 +2600,88 @@ def delete_trip(
     from app.services.trip_grouper import archive_trip
     trip = _trip_or_404(db, trip_id)
     return archive_trip(db, trip)
+
+
+@app.post("/api/trips/cleanup-excluded-vendors")
+def post_cleanup_excluded_vendors(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 11.1+ — permanent städa befintliga trip_messages för vendors
+    som matchar någon ExcludedVendor-rad (substring, case-insensitive).
+    Resor som blir tomma raderas också. Idempotent: andra körningen ger
+    0/0/0.
+    """
+    from app.models import ProcessedMessage, Trip, TripMessage
+    from app.services.excluded_vendors import (
+        is_vendor_excluded, list_excluded_vendor_patterns,
+    )
+
+    patterns = list_excluded_vendor_patterns(db)
+    if not patterns:
+        return {
+            "removed_messages": 0,
+            "affected_trips": 0,
+            "deleted_empty_trips": 0,
+        }
+
+    try:
+        # Substring-matchning är inte uttryckbar i SQL utan multipla
+        # OR LIKE-klausuler — enklare att läsa kandidater och filtrera
+        # i Python. trip_messages är litet (≤ tusentals rader) så
+        # latency är försumbar.
+        candidate_rows = (
+            db.query(TripMessage, ProcessedMessage)
+            .join(
+                ProcessedMessage,
+                ProcessedMessage.message_id == TripMessage.message_id,
+            )
+            .filter(TripMessage.removed_at.is_(None))
+            .all()
+        )
+        rows = [
+            tm for tm, msg in candidate_rows
+            if is_vendor_excluded(msg.vendor, patterns)
+        ]
+        affected_trip_ids = {r.trip_id for r in rows}
+        removed_count = len(rows)
+        for r in rows:
+            db.delete(r)
+        db.flush()
+
+        # Tomma resor: trip_id som inte längre har några aktiva trip_messages
+        empty_trips = (
+            db.query(Trip)
+            .filter(
+                ~Trip.id.in_(
+                    db.query(TripMessage.trip_id)
+                    .filter(TripMessage.removed_at.is_(None))
+                    .distinct()
+                )
+            )
+            .all()
+        )
+        empty_count = len(empty_trips)
+        for t in empty_trips:
+            db.delete(t)
+
+        db.commit()
+        logger.info(
+            "Cleanup excluded_vendors: removed_messages=%d affected_trips=%d "
+            "deleted_empty_trips=%d patterns=%s",
+            removed_count, len(affected_trip_ids), empty_count, sorted(patterns),
+        )
+        return {
+            "removed_messages": removed_count,
+            "affected_trips": len(affected_trip_ids),
+            "deleted_empty_trips": empty_count,
+        }
+    except Exception as exc:  # noqa: BLE001
+        db.rollback()
+        logger.exception("Cleanup excluded_vendors misslyckades")
+        raise HTTPException(
+            status_code=500, detail=f"Cleanup misslyckades: {exc}",
+        ) from exc
 
 
 @app.post("/api/trips/refresh-suggestions")
