@@ -240,14 +240,30 @@ OAUTH_SCOPES = {
 def _build_oauth_redirect_uri(request: Request, service: str) -> str:
     """Bygg redirect_uri för OAuth-callbacken.
 
-    Föredrar env-variabel om satt (för deploys där Railway-domänen inte
-    matchar request.url, eller för stage/prod-skillnader). Annars
-    konstrueras URI:n från request:ens host.
+    Prioritet:
+      1. Env-variabel `<SERVICE>_OAUTH_REDIRECT_URI` (rekommenderat på
+         Railway — mest pålitligt och slipper proxy-detektion).
+      2. X-Forwarded-Proto + Host från Railway:s proxy. Railway termer
+         TLS i sin edge och pratar HTTP internt med appen, så
+         request.base_url returnerar `http://...`. Vi måste explicit
+         läsa X-Forwarded-Proto för att få rätt scheme.
+      3. Fallback: request.base_url (lokal körning utan proxy).
     """
     import os
     explicit = os.environ.get(f"{service.upper()}_OAUTH_REDIRECT_URI", "").strip()
     if explicit:
         return explicit
+
+    forwarded_proto = (
+        request.headers.get("x-forwarded-proto", "").split(",")[0].strip()
+    )
+    forwarded_host = (
+        request.headers.get("x-forwarded-host", "").split(",")[0].strip()
+        or request.headers.get("host", "").strip()
+    )
+    if forwarded_proto and forwarded_host:
+        return f"{forwarded_proto}://{forwarded_host}/api/auth/{service}/callback"
+
     base = str(request.base_url).rstrip("/")
     return f"{base}/api/auth/{service}/callback"
 
