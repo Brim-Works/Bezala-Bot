@@ -174,6 +174,17 @@ export const api = {
       },
     }),
   feedbackStats: () => request('/api/feedback/stats'),
+  // FAS 8.5 — Travel Tinder Matchade-vy
+  matchedPairs: ({ period = '30d', search = '' } = {}) => {
+    const qp = new URLSearchParams({ period });
+    const s = (search || '').trim();
+    if (s) qp.set('search', s);
+    return request(`/api/bezala/matched-pairs?${qp.toString()}`);
+  },
+  unmatchReceipt: (messageId) =>
+    request(`/api/bezala/unmatch/${encodeURIComponent(messageId)}`, {
+      method: 'POST',
+    }),
   // FAS 11.1 — Resor
   tripsSuggestions: () => request('/api/trips/suggestions'),
   tripsActive: () => request('/api/trips/active'),

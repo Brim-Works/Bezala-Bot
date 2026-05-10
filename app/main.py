@@ -1674,6 +1674,9 @@ def match_message_to_bezala(
         row.bezala_transaction_id = bill_line_id
         row.bezala_upload_status = "success"
         row.bezala_error_message = None
+        # FAS 8.5 — för Travel Tinder Matchade-vyn
+        from datetime import datetime as _dt
+        row.matched_at = _dt.utcnow()
         db.commit()
         logger.info(
             "Kortmatchning klar: msg_id=%s → bill_line_id=%s",
@@ -1691,6 +1694,160 @@ def match_message_to_bezala(
         raise HTTPException(status_code=502, detail=f"Bezala attach_file: {exc}") from exc
     finally:
         bezala.close()
+
+
+# --- FAS 8.5 — Travel Tinder: Matchade-vyn -----------------------------
+
+
+_MATCH_TIME_SAVED_MINUTES_PER_PAIR = 10
+
+
+def _matched_pairs_period_cutoff(period: str):
+    """Konvertera 'period'-strängen till ett ISO-cutoff-datetime eller
+    None när period='all'."""
+    from datetime import datetime as _dt, timedelta as _td
+    days = {"7d": 7, "30d": 30, "90d": 90}.get(period)
+    if days is None:
+        return None
+    return _dt.utcnow() - _td(days=days)
+
+
+@app.get("/api/bezala/matched-pairs")
+def get_matched_pairs(
+    period: str = "30d",
+    search: str | None = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Listar redan matchade par (kvitto ↔ Bezala-bill_line) sorterat
+    på matched_at desc.
+
+    OBS: payment-data hämtas inte från Bezala API i denna FAS — vi
+    saknar en endpoint för att hämta info om redan-kopplade bill_lines.
+    Pairs returneras med kvitto-data och `bezala_transaction_id`. UI:t
+    visar receipt-fälten + tx-id; om Bezala-integration utökas med en
+    bill_line-fetch kan payment-objektet fyllas på i en framtida FAS.
+
+    Stats:
+      total_all_time      — antal kvitton som någonsin matchats
+      this_week           — matchade senaste 7 dagarna
+      estimated_minutes_saved — total * 10 min per par (defensiv heuristik)
+    """
+    from datetime import datetime as _dt, timedelta as _td
+
+    q = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.bezala_transaction_id.is_not(None))
+    )
+
+    period_norm = (period or "30d").strip().lower()
+    cutoff = _matched_pairs_period_cutoff(period_norm)
+    if cutoff is not None:
+        # OBS: matched_at saknas på legacy-rader (matchades innan
+        # kolumnen införandes). Sätt period='all' för att se dem.
+        q = q.filter(ProcessedMessage.matched_at >= cutoff)
+
+    needle = (search or "").strip().lower()
+    if needle:
+        like = f"%{needle}%"
+        q = q.filter(func.lower(ProcessedMessage.vendor).like(like))
+
+    rows = (
+        q.order_by(
+            desc(ProcessedMessage.matched_at),
+            desc(ProcessedMessage.id),
+        )
+        .limit(500)
+        .all()
+    )
+
+    pairs: list[dict] = []
+    for r in rows:
+        pairs.append({
+            "message_id": r.message_id,
+            "id": r.id,
+            "receipt": {
+                "vendor": r.vendor,
+                "file_name": r.file_name,
+                "amount": r.amount,
+                "currency": r.currency,
+                "receipt_date": r.receipt_date,
+                "drive_file_id": r.drive_file_id,
+                "drive_link": r.drive_link,
+                "subject": r.subject,
+                "sender": r.sender,
+            },
+            "bezala_transaction_id": r.bezala_transaction_id,
+            "matched_at": r.matched_at.isoformat() if r.matched_at else None,
+        })
+
+    # Stats — alltid mot hela datasetet, inte bara filtrerat
+    total_all_time = (
+        db.query(func.count(ProcessedMessage.id))
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.bezala_transaction_id.is_not(None))
+        .scalar() or 0
+    )
+    week_cutoff = _dt.utcnow() - _td(days=7)
+    this_week = (
+        db.query(func.count(ProcessedMessage.id))
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.bezala_transaction_id.is_not(None))
+        .filter(ProcessedMessage.matched_at >= week_cutoff)
+        .scalar() or 0
+    )
+
+    return {
+        "pairs": pairs,
+        "total": len(pairs),
+        "stats": {
+            "total_all_time": int(total_all_time),
+            "this_week": int(this_week),
+            "estimated_minutes_saved": (
+                int(total_all_time) * _MATCH_TIME_SAVED_MINUTES_PER_PAIR
+            ),
+        },
+    }
+
+
+@app.post("/api/bezala/unmatch/{message_id}")
+def unmatch_receipt(
+    message_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 8.5 — frikoppla ett kvitto från dess Bezala-bill_line.
+
+    Rensar bezala_transaction_id + matched_at + bezala_upload_status så
+    att kvittot dyker upp som AI-förslag igen i Travel Tinder. Bezala-
+    sidan av kopplingen (filen ligger kvar bifogad till bill_line) rörs
+    INTE — användaren kan ta bort den manuellt i Bezala vid behov.
+    """
+    if not message_id or not message_id.strip():
+        raise HTTPException(status_code=400, detail="message_id saknas")
+    msg = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.message_id == message_id)
+        .first()
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    if not msg.bezala_transaction_id:
+        raise HTTPException(
+            status_code=400, detail="Meddelandet är inte kopplat",
+        )
+    old_tx = msg.bezala_transaction_id
+    msg.bezala_transaction_id = None
+    msg.matched_at = None
+    # Återställ status så kvittot dyker upp som okopplat i suggestions
+    msg.bezala_upload_status = "pending"
+    db.commit()
+    logger.info(
+        "Unmatched message_id=%s från bezala_transaction_id=%s",
+        message_id, old_tx,
+    )
+    return {"success": True, "message_id": message_id, "old_bezala_transaction_id": old_tx}
 
 
 class UploadToBezalaPayload(BaseModel):

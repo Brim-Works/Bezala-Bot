@@ -26,11 +26,15 @@ import TinderCard from '../components/travel-tinder/TinderCard.jsx';
 import MatchConfirmModal from '../components/travel-tinder/MatchConfirmModal.jsx';
 import UploadCard from '../components/travel-tinder/UploadCard.jsx';
 import PdfPreviewLightbox from '../components/travel-tinder/PdfPreviewLightbox.jsx';
+import MatchedPairsList from '../components/travel-tinder/MatchedPairsList.jsx';
 import { IconRefresh } from '../icons/index.jsx';
 
 const REFRESH_INTERVAL_MS = 10 * 60 * 1000;
 const LS_KEY = 'tt_state_v1';
 const LS_WIDTH_KEY = 'tt_panel_width';
+const LS_MODE_KEY = 'tt_mode';
+const LS_MATCHED_PERIOD_KEY = 'tt_matched_period';
+const LS_MATCHED_SEARCH_KEY = 'tt_matched_search';
 const PANEL_WIDTH_DEFAULT = 300;
 const PANEL_WIDTH_MIN = 200;
 const PANEL_WIDTH_MAX = 500;
@@ -118,6 +122,38 @@ export default function TravelTinder() {
   const [matching, setMatching] = useState(false);
   const [pdfPreviewMessage, setPdfPreviewMessage] = useState(null);
 
+  // FAS 8.5 — Matchade-vy state. mode persistas separat så användaren
+  // hamnar tillbaka i rätt läge nästa session.
+  const [mode, setMode] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(LS_MODE_KEY);
+      return raw === 'matched' ? 'matched' : 'unmatched';
+    } catch {
+      return 'unmatched';
+    }
+  });
+  const [matchedPeriod, setMatchedPeriod] = useState(() => {
+    try {
+      const raw = window.localStorage.getItem(LS_MATCHED_PERIOD_KEY);
+      return ['7d', '30d', '90d', 'all'].includes(raw) ? raw : '30d';
+    } catch {
+      return '30d';
+    }
+  });
+  const [matchedSearch, setMatchedSearch] = useState(() => {
+    try {
+      return window.localStorage.getItem(LS_MATCHED_SEARCH_KEY) || '';
+    } catch {
+      return '';
+    }
+  });
+  const [matchedData, setMatchedData] = useState({
+    pairs: [],
+    total: 0,
+    stats: { total_all_time: 0, this_week: 0, estimated_minutes_saved: 0 },
+  });
+  const [matchedLoading, setMatchedLoading] = useState(false);
+
   // Resizable splitter — bredd persistas separat (egen LS-nyckel) så
   // den överlever även om huvud-state-objektet byter shape framöver.
   const [panelWidth, setPanelWidth] = useState(() => loadPanelWidth());
@@ -187,6 +223,62 @@ export default function TravelTinder() {
       sortDir,
     });
   }, [searchQuery, statusFilter, dateFilter, currencyFilter, sortBy, sortDir]);
+
+  // FAS 8.5 — Persist Matchade-vy-state separat
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LS_MODE_KEY, mode);
+    } catch {
+      /* ignore */
+    }
+  }, [mode]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LS_MATCHED_PERIOD_KEY, matchedPeriod);
+    } catch {
+      /* ignore */
+    }
+  }, [matchedPeriod]);
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(LS_MATCHED_SEARCH_KEY, matchedSearch);
+    } catch {
+      /* ignore */
+    }
+  }, [matchedSearch]);
+
+  const refreshMatched = useCallback(async () => {
+    setMatchedLoading(true);
+    try {
+      const body = await api.matchedPairs({
+        period: matchedPeriod,
+        search: matchedSearch,
+      });
+      setMatchedData({
+        pairs: body?.pairs || [],
+        total: body?.total || 0,
+        stats: body?.stats || {
+          total_all_time: 0, this_week: 0, estimated_minutes_saved: 0,
+        },
+      });
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      toast.show({
+        kind: 'err',
+        message: `${t.travelTinder.refreshFailed}: ${detail}`,
+      });
+    } finally {
+      setMatchedLoading(false);
+    }
+  }, [matchedPeriod, matchedSearch, t.travelTinder.refreshFailed, toast]);
+
+  // Hämta matchade-data när vi byter till matched-läge eller filter ändras.
+  // Eftersom search/period är localStorage-persistenta är det rimligt att
+  // ladda när användaren öppnar vyn även om den inte aktivt är vald.
+  useEffect(() => {
+    if (mode !== 'matched') return;
+    refreshMatched();
+  }, [mode, refreshMatched]);
 
   const refresh = useCallback(
     async ({ silent = false } = {}) => {
@@ -414,6 +506,10 @@ export default function TravelTinder() {
           matchedCount={matchedCount}
           totalCount={totalCount}
           isLoading={isLoading}
+          mode={mode}
+          onModeChange={setMode}
+          unmatchedCount={missingRows.length}
+          matchedTotalCount={matchedData.stats?.total_all_time ?? 0}
         />
 
         <div
@@ -433,6 +529,44 @@ export default function TravelTinder() {
         </div>
 
         <div className="travel-tinder__right">
+          {mode === 'matched' ? (
+            <MatchedPairsList
+              data={matchedData}
+              isLoading={matchedLoading}
+              search={matchedSearch}
+              setSearch={setMatchedSearch}
+              period={matchedPeriod}
+              setPeriod={setMatchedPeriod}
+              onOpenDrawer={(pair) => openDrawer(
+                {
+                  // Drawer förväntar sig samma shape som ProcessedMessage —
+                  // vi har bara delar i pair.receipt så vi rebygger ett
+                  // minimalt objekt. Drawer-tabbarna laddar resten via API.
+                  id: pair.id,
+                  message_id: pair.message_id,
+                  vendor: pair.receipt?.vendor,
+                  file_name: pair.receipt?.file_name,
+                  amount: pair.receipt?.amount,
+                  currency: pair.receipt?.currency,
+                  receipt_date: pair.receipt?.receipt_date,
+                  drive_file_id: pair.receipt?.drive_file_id,
+                  drive_link: pair.receipt?.drive_link,
+                  subject: pair.receipt?.subject,
+                  sender: pair.receipt?.sender,
+                  bezala_transaction_id: pair.bezala_transaction_id,
+                  bezala_upload_status: 'success',
+                  status: 'saved',
+                },
+                'gmail',
+              )}
+              onChanged={() => {
+                // Refresha både listorna efter unmatch
+                refreshMatched();
+                refresh({ silent: true });
+              }}
+            />
+          ) : null}
+          {mode !== 'matched' ? (
           <OtherReceiptsList
             allMessages={data.all_messages}
             selected={selected}
@@ -489,6 +623,7 @@ export default function TravelTinder() {
             uploadCard={<UploadCard payment={selected?.missing_receipt} />}
             isLoading={isLoading}
           />
+          ) : null}
         </div>
       </div>
 

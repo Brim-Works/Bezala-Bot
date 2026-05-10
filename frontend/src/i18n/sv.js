@@ -680,6 +680,32 @@ export default {
       noSuggestion: 'Ingen AI-match hittad',
       noSuggestionBody: 'Använd sökfältet eller bläddra manuellt',
     },
+    mode: {
+      unmatched: 'Att matcha',
+      matched: 'Matchade',
+    },
+    matched: {
+      leftPanelInfo: 'Visar matchade par i höger panel',
+      statsLine:
+        '📊 {total} matchade · {thisWeek} denna vecka · ⏱ ~{hours} h sparade',
+      matchedAt: 'Matchat {time} sen',
+      matchedEarlier: 'Matchat tidigare',
+      unmatch: 'Frikoppla',
+      unmatchBusy: 'Frikopplar…',
+      unmatchConfirmTitle: 'Frikoppla detta kvitto?',
+      unmatchConfirmText:
+        "Korttransen återgår till 'att matcha'-listan. Filen i Bezala behålls.",
+      unmatchConfirmAction: 'Frikoppla',
+      unmatchSuccess: '✓ Frikopplat',
+      unmatchFailed: 'Kunde inte frikoppla',
+      emptyState: '🎯 Inga matchningar ännu — börja matcha till vänster!',
+      periodLabel: 'Period',
+      period7d: '7 dagar',
+      period30d: '30 dagar',
+      period90d: '90 dagar',
+      periodAll: 'Allt',
+      searchPlaceholder: 'Sök vendor…',
+    },
   },
   trips: {
     title: 'Resor',

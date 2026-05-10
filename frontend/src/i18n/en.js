@@ -679,6 +679,32 @@ export default {
       noSuggestion: 'No AI match found',
       noSuggestionBody: 'Use search or browse manually',
     },
+    mode: {
+      unmatched: 'To match',
+      matched: 'Matched',
+    },
+    matched: {
+      leftPanelInfo: 'Showing matched pairs on the right',
+      statsLine:
+        '📊 {total} matched · {thisWeek} this week · ⏱ ~{hours} h saved',
+      matchedAt: 'Matched {time} ago',
+      matchedEarlier: 'Matched earlier',
+      unmatch: 'Unmatch',
+      unmatchBusy: 'Unmatching…',
+      unmatchConfirmTitle: 'Unmatch this receipt?',
+      unmatchConfirmText:
+        "The card transaction goes back to the 'to match' list. The file in Bezala is kept.",
+      unmatchConfirmAction: 'Unmatch',
+      unmatchSuccess: '✓ Unmatched',
+      unmatchFailed: 'Could not unmatch',
+      emptyState: '🎯 No matches yet — start matching on the left!',
+      periodLabel: 'Period',
+      period7d: '7 days',
+      period30d: '30 days',
+      period90d: '90 days',
+      periodAll: 'All',
+      searchPlaceholder: 'Search vendor…',
+    },
   },
   trips: {
     title: 'Trips',

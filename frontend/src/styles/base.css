@@ -4184,3 +4184,155 @@ html[data-theme='B'] .modal__title {
   height: 22px;
   min-width: 22px;
 }
+
+/* ============================================================
+   FAS 8.5 — Travel Tinder Matchade-vy
+   ============================================================ */
+
+.tt-mode-toggle {
+  display: flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--bg-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 6px;
+}
+
+.tt-mode-toggle__btn {
+  flex: 1;
+  background: transparent;
+  border: 0;
+  padding: 6px 10px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  transition: background 0.12s, color 0.12s;
+}
+
+.tt-mode-toggle__btn:hover {
+  color: var(--text);
+}
+
+.tt-mode-toggle__btn.is-active {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
+}
+
+.tt-mode-toggle__count {
+  font-size: 11.5px;
+  background: rgba(0, 0, 0, 0.12);
+  padding: 1px 6px;
+  border-radius: 999px;
+  min-width: 18px;
+  text-align: center;
+}
+
+.tt-mode-toggle__btn:not(.is-active) .tt-mode-toggle__count {
+  background: var(--surface-3);
+  color: var(--text-2);
+}
+
+.tt-payments__matched-info {
+  font-size: 12.5px;
+  padding: 8px 4px;
+  text-align: center;
+}
+
+/* ---- Höger panel: Matchade ---- */
+
+.tt-matched {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.tt-matched__toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.tt-matched__stats {
+  font-size: 12.5px;
+  padding: 10px 12px;
+  background: color-mix(in oklch, var(--ok) 8%, var(--surface));
+  border: 1px solid color-mix(in oklch, var(--ok) 25%, var(--border));
+  border-radius: var(--radius-sm);
+}
+
+.tt-matched__list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tt-matched__row {
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--ok);
+  border-radius: var(--radius-sm);
+}
+
+.tt-matched__main {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 12px;
+  background: transparent;
+  border: 0;
+  text-align: left;
+  cursor: pointer;
+  color: var(--text);
+}
+
+.tt-matched__main:hover {
+  background: var(--surface-2);
+}
+
+.tt-matched__body {
+  flex: 1;
+  min-width: 0;
+}
+
+.tt-matched__vendor {
+  font-weight: 500;
+  font-size: 13.5px;
+}
+
+.tt-matched__meta,
+.tt-matched__time {
+  font-size: 11.5px;
+  margin-top: 2px;
+}
+
+.tt-matched__time {
+  margin-top: 4px;
+}
+
+.tt-matched__unmatch {
+  margin: 6px 8px;
+  align-self: center;
+  font-size: 12px;
+  padding: 4px 10px;
+}
+
+.tt-matched__unmatch:hover {
+  background: color-mix(in oklch, var(--err) 12%, transparent);
+  color: var(--err);
+  border-color: color-mix(in oklch, var(--err) 30%, transparent);
+}

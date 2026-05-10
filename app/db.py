@@ -39,6 +39,8 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "delete_reason": "VARCHAR(32)",
     # FAS 5.1+ — länk-baserad PDF-hantering
     "pending_link": "VARCHAR(2048)",
+    # FAS 8.5 — tidsstämpel när kvittot kopplades till en Bezala-tx.
+    "matched_at": "TIMESTAMP",
 }
 
 _APP_SETTINGS_ADDITIONS = {
@@ -82,6 +84,12 @@ _INDEXES = [
         "ix_processed_messages_deleted_at",
         "processed_messages",
         "deleted_at",
+    ),
+    # FAS 8.5 — Matchade-vyn sorterar på matched_at desc
+    (
+        "ix_processed_messages_matched_at",
+        "processed_messages",
+        "matched_at",
     ),
     # FAS 11.1 — kompositindex för datum-fönsterfrågor på resor.
     # Postgres/SQLite-syntax är identisk här.

@@ -38,6 +38,10 @@ class ProcessedMessage(Base):
     bezala_transaction_id = Column(String(255), nullable=True)
     bezala_upload_status = Column(String(32), nullable=True)
     bezala_error_message = Column(Text, nullable=True)
+    # FAS 8.5 — tidsstämpel när ett kvitto kopplades till en Bezala-tx.
+    # Sätts av match-to-bezala-endpointen och rensas av unmatch.
+    # NULL för pre-existing rader och avkopplade rader.
+    matched_at = Column(DateTime, nullable=True, index=True)
 
     # Soft-delete (FAS 5.1). deleted_at = NULL → aktiv rad.
     # delete_reason: manual | calendar | spam | misclassified
