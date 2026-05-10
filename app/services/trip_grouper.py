@@ -52,10 +52,12 @@ FLIGHT_VENDOR_TOKENS: tuple[str, ...] = (
     "swiss",
 )
 
-# Resefönster runt en flygbiljett: 2 dagar före (för t.ex. taxi-till-
-# flygplats) och 14 dagar efter (för boende + lokala kostnader).
+# FAS 11.1.1 — Resefönstret bygger primärt på outbound→inbound-flyg.
+# Fall-back när vi inte hittar ett returflyg: outbound + 7 dagar.
+# 2 dagar före outbound tas också med (taxi till flygplats).
 WINDOW_DAYS_BEFORE = 2
-WINDOW_DAYS_AFTER = 14
+WINDOW_DAYS_AFTER_FALLBACK = 7
+RETURN_FLIGHT_LOOKAHEAD_DAYS = 14
 
 # Filter: kvitton dyrare än så här ingår sällan i en resa
 # (datorinköp, kontorsmöbler etc). Gäller alla valutor — vi gör inte
@@ -66,6 +68,29 @@ LARGE_RECEIPT_THRESHOLD = 5000.0
 # förslag ska skapas. < 2 = bara flygbiljett → vi skapar ändå men
 # markerar det med lägre confidence i refine-steget.
 MIN_RECEIPTS_FOR_TRIP = 2
+
+
+# FAS 11.1.1 — endast kvitton vars kategori innehåller någon av dessa
+# tokens räknas som potentiella resekostnader. Listan är medvetet bred
+# (substring-match, case-insensitive) och täcker både svenska, engelska
+# och finska kategori-strängar.
+TRAVEL_CATEGORIES: tuple[str, ...] = (
+    "hotell", "boende", "logi", "hotel",
+    "taxi", "tåg", "tag", "buss", "tunnelbana", "train", "bus",
+    "flyg", "flight",
+    "parkering", "parking",
+    "restaurang", "café", "cafe", "lunch", "middag",
+    "biluthyrning", "hyrbil", "rental",
+    "kollektivtrafik", "transit",
+    "mat",
+)
+
+
+def _is_travel_category(category: str | None) -> bool:
+    if not category:
+        return False
+    needle = category.lower()
+    return any(token in needle for token in TRAVEL_CATEGORIES)
 
 
 @dataclass(frozen=True)
@@ -118,33 +143,83 @@ def find_flight_anchors(
     return [m for m in messages if _is_flight(m)]
 
 
+def _find_return_flight_date(
+    outbound: ProcessedMessage,
+    all_messages: Sequence[ProcessedMessage],
+) -> date | None:
+    """Hitta hemresan: tidigaste flygkvitto efter outbound, inom
+    RETURN_FLIGHT_LOOKAHEAD_DAYS-fönstret. Returnerar None om inget
+    sådant hittas — kallaren använder fallback-fönster."""
+    outbound_d = _msg_date(outbound)
+    if not outbound_d:
+        return None
+    upper = outbound_d + timedelta(days=RETURN_FLIGHT_LOOKAHEAD_DAYS)
+    candidates: list[date] = []
+    for m in all_messages:
+        if m.message_id == outbound.message_id:
+            continue
+        if not _is_flight(m):
+            continue
+        d = _msg_date(m)
+        if not d:
+            continue
+        if outbound_d < d <= upper:
+            candidates.append(d)
+    return min(candidates) if candidates else None
+
+
 def find_related_receipts(
     anchor: ProcessedMessage,
     all_messages: Sequence[ProcessedMessage],
+    *,
+    excluded_patterns: Sequence[str] = (),
 ) -> list[ProcessedMessage]:
     """Hitta kvitton som troligen hör till samma resa som flygbiljetten.
 
-    Heuristik:
-      - inom WINDOW_DAYS_BEFORE/AFTER dagar runt flygets datum
-      - exkludera mycket stora belopp (sannolikt inte resekostnad)
-      - inkludera alltid själva anchor-kvittot
+    FAS 11.1.1 — striktare heuristik:
+      1. Datum-fönstret är outbound→inbound (inte ±14d). När returflyg
+         saknas faller vi tillbaka till outbound + 7d.
+      2. Endast kvitton vars kategori liknar en resekategori
+         (TRAVEL_CATEGORIES). Anchor-flyget är alltid med.
+      3. Vendors i excluded_patterns (SaaS/prenumerationer) tas bort.
+      4. Skälig summa (<5000 EUR).
+      5. Anchor-kvittot är alltid inkluderat.
     """
     anchor_d = _msg_date(anchor)
     if not anchor_d:
         return [anchor]
 
+    return_d = _find_return_flight_date(anchor, all_messages)
+    if return_d is None:
+        return_d = anchor_d + timedelta(days=WINDOW_DAYS_AFTER_FALLBACK)
+
     window_start = anchor_d - timedelta(days=WINDOW_DAYS_BEFORE)
-    window_end = anchor_d + timedelta(days=WINDOW_DAYS_AFTER)
+    # En dags marginal efter sista flyget för t.ex. taxi-hem-kvitto
+    # som kommer dagen efter återresan.
+    window_end = return_d + timedelta(days=1)
+
+    excluded = tuple(p.lower() for p in excluded_patterns if p)
 
     related: list[ProcessedMessage] = [anchor]
     for msg in all_messages:
         if msg.message_id == anchor.message_id:
             continue
+
         d = _msg_date(msg)
         if not d or not (window_start <= d <= window_end):
             continue
+
+        if not _is_travel_category(msg.category):
+            continue
+
         if msg.amount and msg.amount > LARGE_RECEIPT_THRESHOLD:
             continue
+
+        if msg.vendor and excluded:
+            haystack = msg.vendor.lower()
+            if any(p in haystack for p in excluded):
+                continue
+
         related.append(msg)
     return related
 
@@ -457,9 +532,22 @@ def suggest_trips(db: Session, lookback_days: int = 90) -> list[dict]:
     if not anchors:
         return []
 
+    # Hämta SaaS-listan en gång per analys. Defensivt — om tabellen
+    # saknas eller fel uppstår faller vi tillbaka till tom lista.
+    try:
+        from app.services.excluded_vendors import (
+            list_excluded_vendor_patterns,
+        )
+        excluded_patterns = list_excluded_vendor_patterns(db)
+    except Exception:  # noqa: BLE001
+        logger.exception("Kunde inte läsa excluded_vendors — fortsätter utan filter")
+        excluded_patterns = []
+
     proposals: list[TripProposal] = []
     for anchor in anchors:
-        related = find_related_receipts(anchor, candidates)
+        related = find_related_receipts(
+            anchor, candidates, excluded_patterns=excluded_patterns,
+        )
         if len(related) < MIN_RECEIPTS_FOR_TRIP:
             continue
         anchor_d = _msg_date(anchor) or datetime.utcnow().date()
@@ -632,11 +720,21 @@ def recalculate_trip_total(db: Session, trip: Trip) -> None:
 def serialize_trip(db: Session, trip: Trip) -> dict:
     """Returnera Trip + dess kvitton som ett dict redo för JSON-svar.
 
-    FAS 11.1+: applicera reaktivt excluded_vendors-filter — kvitton
-    från exkluderade vendors tas bort ur respons-objektet utan att
-    röra DB-raderna. Cleanup-endpointen tar permanent bort dem."""
-    from app.services.settings_service import get_excluded_vendors
-    excluded = get_excluded_vendors(db)
+    FAS 11.1+: applicera reaktivt excluded_vendors-filter (substring
+    case-insensitive) — kvitton vars vendor matchar någon ExcludedVendor-
+    rad tas bort ur respons-objektet utan att röra DB. Cleanup-endpointen
+    tar permanent bort dem."""
+    try:
+        from app.services.excluded_vendors import (
+            is_vendor_excluded, list_excluded_vendor_patterns,
+        )
+        excluded_patterns = list_excluded_vendor_patterns(db)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "serialize_trip: kunde inte läsa excluded_vendors — fortsätter utan filter",
+        )
+        excluded_patterns = []
+        is_vendor_excluded = lambda *_a, **_kw: False  # noqa: E731
 
     rows = (
         db.query(TripMessage, ProcessedMessage)
@@ -651,7 +749,7 @@ def serialize_trip(db: Session, trip: Trip) -> dict:
     )
     messages = []
     for tm, msg in rows:
-        if msg.vendor and msg.vendor.strip().lower() in excluded:
+        if is_vendor_excluded(msg.vendor, excluded_patterns):
             continue
         messages.append({
             "id": msg.id,
@@ -695,6 +793,23 @@ def serialize_trip(db: Session, trip: Trip) -> dict:
             trip.netvisor_synced_at.isoformat()
             if trip.netvisor_synced_at else None
         ),
+        # FAS 11.5.1 — per diem
+        "destination_country": trip.destination_country,
+        "departure_home_at": (
+            trip.departure_home_at.isoformat()
+            if trip.departure_home_at else None
+        ),
+        "return_home_at": (
+            trip.return_home_at.isoformat()
+            if trip.return_home_at else None
+        ),
+        "trip_route": trip.trip_route,
+        "per_diem_amount": (
+            float(trip.per_diem_amount)
+            if trip.per_diem_amount is not None else None
+        ),
+        "per_diem_currency": trip.per_diem_currency,
+        "per_diem_calculation": trip.per_diem_calculation,
         "messages": messages,
     }
 

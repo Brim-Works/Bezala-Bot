@@ -6,6 +6,7 @@ import GmailTab from './GmailTab.jsx';
 import AiTab from './AiTab.jsx';
 import DriveTab from './DriveTab.jsx';
 import BezalaTab from './BezalaTab.jsx';
+import TripLinkSection from './TripLinkSection.jsx';
 import { IconMail, IconRefresh, IconTrash } from '../icons/index.jsx';
 import { useDeleteFlow } from '../hooks/useDeleteFlow.js';
 import { useTrashCountContext } from '../hooks/TrashCountProvider.jsx';
@@ -278,6 +279,8 @@ export default function PipelineDrawer({ onRefetch }) {
               onClose={closeDrawer}
             />
           ) : null}
+
+          <TripLinkSection message={selectedMessage} />
         </div>
       </aside>
       {dialog}

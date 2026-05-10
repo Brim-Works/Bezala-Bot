@@ -77,7 +77,6 @@ def load_settings(db) -> AppSettings:
         ai_min_confidence_to_save=40,
         link_fetch_senders=list(DEFAULT_LINK_FETCH_SENDERS),
         html_to_pdf_enabled=True,
-        excluded_vendors=[],
     )
     db.add(row)
     db.flush()
@@ -103,7 +102,6 @@ def settings_to_dict(row: AppSettings) -> dict:
         "html_to_pdf_enabled": bool(
             row.html_to_pdf_enabled if row.html_to_pdf_enabled is not None else True
         ),
-        "excluded_vendors": list(getattr(row, "excluded_vendors", []) or []),
         "gmail_auth_required": bool(getattr(row, "gmail_auth_required", False)),
         "drive_auth_required": bool(getattr(row, "drive_auth_required", False)),
         "builtin_senders": list(BUILTIN_INCLUDES),  # read-only i UI
@@ -197,22 +195,3 @@ def sender_matches_link_fetch(sender: str | None, link_fetch_senders: Iterable[s
     return False
 
 
-def get_excluded_vendors(db) -> set[str]:
-    """Returnera AppSettings.excluded_vendors som ett lowercase-set
-    redo för case-insensitive matchning. Tom set vid fel — caller ska
-    behandla det som "ingen exclusion"."""
-    try:
-        row = load_settings(db)
-        raw = list(getattr(row, "excluded_vendors", []) or [])
-        return {str(v).strip().lower() for v in raw if v and str(v).strip()}
-    except Exception:  # noqa: BLE001
-        logger.exception("Kunde inte läsa excluded_vendors")
-        return set()
-
-
-def vendor_is_excluded(vendor: str | None, excluded: set[str]) -> bool:
-    """True om vendor matchar någon i excluded-setet (case-insensitive,
-    trim). None/tom sträng → False."""
-    if not vendor or not excluded:
-        return False
-    return vendor.strip().lower() in excluded

@@ -73,6 +73,16 @@ def _run_once_cleanup_errors() -> None:
         logger.exception("Engångsrensning av error-rader misslyckades.")
 
 
+def _run_once_seed_excluded_vendors() -> None:
+    """FAS 11.1.1 — seed default-listan av exkluderade vendors."""
+    try:
+        from app.services.excluded_vendors import seed_default_vendors
+        with session_scope() as db:
+            seed_default_vendors(db)
+    except Exception:
+        logger.exception("Kunde inte seed:a excluded_vendors-listan.")
+
+
 def _run_once_fix_skipped_bezala() -> None:
     """Migrera sparade-till-Drive-rader med bezala_upload_status='skipped' till
     'pending' så användaren kan ladda upp manuellt. Gammal logik satte
@@ -114,6 +124,7 @@ async def lifespan(app: FastAPI):
     logger.info("Databas initialiserad.")
     _run_once_cleanup_errors()
     _run_once_fix_skipped_bezala()
+    _run_once_seed_excluded_vendors()
     start_scheduler()
     yield
     shutdown_scheduler()
@@ -621,7 +632,6 @@ class SettingsPayload(BaseModel):
     ai_min_confidence_to_save: int = Field(default=40, ge=0, le=100)
     link_fetch_senders: list[str] = Field(default_factory=list)
     html_to_pdf_enabled: bool = True
-    excluded_vendors: list[str] = Field(default_factory=list)
 
 
 @app.get("/api/settings")
@@ -2598,14 +2608,17 @@ def post_cleanup_excluded_vendors(
     _: None = Depends(require_auth),
 ):
     """FAS 11.1+ — permanent städa befintliga trip_messages för vendors
-    som ligger i AppSettings.excluded_vendors. Resor som blir tomma
-    raderas också. Idempotent: andra körningen ger 0/0/0.
+    som matchar någon ExcludedVendor-rad (substring, case-insensitive).
+    Resor som blir tomma raderas också. Idempotent: andra körningen ger
+    0/0/0.
     """
     from app.models import ProcessedMessage, Trip, TripMessage
-    from app.services.settings_service import get_excluded_vendors
+    from app.services.excluded_vendors import (
+        is_vendor_excluded, list_excluded_vendor_patterns,
+    )
 
-    excluded = get_excluded_vendors(db)
-    if not excluded:
+    patterns = list_excluded_vendor_patterns(db)
+    if not patterns:
         return {
             "removed_messages": 0,
             "affected_trips": 0,
@@ -2613,20 +2626,23 @@ def post_cleanup_excluded_vendors(
         }
 
     try:
-        # Joina trip_messages mot processed_messages, matcha lowercase-
-        # vendor mot excluded-setet. Vi listar rader explicit (in_)
-        # istället för en raw SQL-funktion för cross-DB-kompatibilitet
-        # (SQLite + Postgres).
-        rows = (
-            db.query(TripMessage)
+        # Substring-matchning är inte uttryckbar i SQL utan multipla
+        # OR LIKE-klausuler — enklare att läsa kandidater och filtrera
+        # i Python. trip_messages är litet (≤ tusentals rader) så
+        # latency är försumbar.
+        candidate_rows = (
+            db.query(TripMessage, ProcessedMessage)
             .join(
                 ProcessedMessage,
                 ProcessedMessage.message_id == TripMessage.message_id,
             )
-            .filter(func.lower(ProcessedMessage.vendor).in_(excluded))
             .filter(TripMessage.removed_at.is_(None))
             .all()
         )
+        rows = [
+            tm for tm, msg in candidate_rows
+            if is_vendor_excluded(msg.vendor, patterns)
+        ]
         affected_trip_ids = {r.trip_id for r in rows}
         removed_count = len(rows)
         for r in rows:
@@ -2652,8 +2668,8 @@ def post_cleanup_excluded_vendors(
         db.commit()
         logger.info(
             "Cleanup excluded_vendors: removed_messages=%d affected_trips=%d "
-            "deleted_empty_trips=%d excluded=%s",
-            removed_count, len(affected_trip_ids), empty_count, sorted(excluded),
+            "deleted_empty_trips=%d patterns=%s",
+            removed_count, len(affected_trip_ids), empty_count, sorted(patterns),
         )
         return {
             "removed_messages": removed_count,
@@ -2694,6 +2710,455 @@ def post_trip_feedback(
     trip = _trip_or_404(db, trip_id)
     fb = save_trip_feedback(db, trip, payload.feedback_type, payload.details)
     return {"saved": True, "id": fb.id}
+
+
+# --- FAS 11.1.1 — Manuell tagging av kvitton till resor ----------------
+
+
+class LinkMessageToTripPayload(BaseModel):
+    trip_id: int
+
+
+def _processed_message_or_404(db: Session, message_id: str):
+    msg = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.message_id == message_id)
+        .first()
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Meddelande hittades inte")
+    return msg
+
+
+@app.post("/api/messages/{message_id}/link-to-trip")
+def post_link_message_to_trip(
+    message_id: str,
+    payload: LinkMessageToTripPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Koppla ett kvitto manuellt till en resa. Idempotent — om
+    kopplingen redan finns aktivt returneras already_linked=True."""
+    from app.models import TripMessage
+    from app.services.trip_grouper import recalculate_trip_total
+
+    _processed_message_or_404(db, message_id)
+    trip = _trip_or_404(db, payload.trip_id)
+
+    existing = (
+        db.query(TripMessage)
+        .filter(TripMessage.trip_id == trip.id)
+        .filter(TripMessage.message_id == message_id)
+        .first()
+    )
+    already_linked = False
+    if existing is not None:
+        if existing.removed_at is None:
+            already_linked = True
+        else:
+            existing.removed_at = None
+            existing.added_by = "manual"
+    else:
+        db.add(TripMessage(
+            trip_id=trip.id,
+            message_id=message_id,
+            added_by="manual",
+        ))
+
+    db.flush()
+    recalculate_trip_total(db, trip)
+    db.commit()
+    return {"success": True, "already_linked": already_linked}
+
+
+@app.delete("/api/messages/{message_id}/unlink-from-trip/{trip_id}")
+def delete_unlink_message_from_trip(
+    message_id: str,
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Koppla bort ett kvitto från en resa (soft via removed_at)."""
+    from app.models import TripMessage
+    from app.services.trip_grouper import recalculate_trip_total
+    from datetime import datetime as _dt
+
+    trip = _trip_or_404(db, trip_id)
+    tm = (
+        db.query(TripMessage)
+        .filter(TripMessage.trip_id == trip_id)
+        .filter(TripMessage.message_id == message_id)
+        .filter(TripMessage.removed_at.is_(None))
+        .first()
+    )
+    if tm is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Kvittot är inte kopplat till resan",
+        )
+    tm.removed_at = _dt.utcnow()
+    db.flush()
+    recalculate_trip_total(db, trip)
+    db.commit()
+    return {"success": True}
+
+
+@app.get("/api/messages/{message_id}/available-trips")
+def get_available_trips_for_message(
+    message_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Lista aktiva resor som detta kvitto kan kopplas till — filtrerar
+    på datum-fönstret ±14 dagar runt kvittots datum, plus eventuell
+    redan länkad resa."""
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    from app.models import Trip, TripMessage
+
+    msg = _processed_message_or_404(db, message_id)
+
+    msg_date: _date | None = None
+    if msg.receipt_date:
+        try:
+            msg_date = _dt.strptime(msg.receipt_date[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            pass
+    if msg_date is None and msg.received_at:
+        try:
+            msg_date = msg.received_at.date()
+        except Exception:  # noqa: BLE001
+            msg_date = None
+
+    candidate_trips: list[Trip] = []
+    if msg_date is not None:
+        lower = msg_date - _td(days=14)
+        upper = msg_date + _td(days=14)
+        candidate_trips = (
+            db.query(Trip)
+            .filter(Trip.status.in_(["active", "suggested"]))
+            .filter(Trip.start_date <= upper)
+            .filter(Trip.end_date >= lower)
+            .order_by(Trip.start_date.desc())
+            .all()
+        )
+
+    # Inkludera även resor där kvittot redan är länkat (även utanför
+    # datum-fönstret), så användaren kan koppla bort.
+    linked_rows = (
+        db.query(TripMessage)
+        .filter(TripMessage.message_id == message_id)
+        .filter(TripMessage.removed_at.is_(None))
+        .all()
+    )
+    linked_trip_ids = {tm.trip_id for tm in linked_rows}
+    if linked_trip_ids:
+        already_in_candidates = {t.id for t in candidate_trips}
+        extra_ids = linked_trip_ids - already_in_candidates
+        if extra_ids:
+            extra_trips = (
+                db.query(Trip)
+                .filter(Trip.id.in_(extra_ids))
+                .all()
+            )
+            candidate_trips.extend(extra_trips)
+
+    added_by_lookup = {tm.trip_id: tm.added_by for tm in linked_rows}
+
+    return {
+        "trips": [
+            {
+                "id": t.id,
+                "title": t.title,
+                "destination": t.destination,
+                "start_date": t.start_date.isoformat() if t.start_date else None,
+                "end_date": t.end_date.isoformat() if t.end_date else None,
+                "status": t.status,
+                "is_linked": t.id in linked_trip_ids,
+                "added_by": added_by_lookup.get(t.id),
+            }
+            for t in candidate_trips
+        ]
+    }
+
+
+# --- FAS 11.1.1 — Exkluderade vendors (SaaS-lista) ---------------------
+
+
+class AddExcludedVendorPayload(BaseModel):
+    pattern: str
+    description: str | None = None
+
+
+@app.get("/api/excluded-vendors")
+def list_excluded_vendors_endpoint(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.models import ExcludedVendor
+    rows = (
+        db.query(ExcludedVendor)
+        .order_by(ExcludedVendor.added_by.desc(), ExcludedVendor.vendor_pattern)
+        .all()
+    )
+    return {
+        "vendors": [
+            {
+                "id": v.id,
+                "pattern": v.vendor_pattern,
+                "description": v.description,
+                "added_by": v.added_by,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+            for v in rows
+        ]
+    }
+
+
+@app.post("/api/excluded-vendors")
+def add_excluded_vendor_endpoint(
+    payload: AddExcludedVendorPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.excluded_vendors import add_user_vendor
+    if not payload.pattern.strip():
+        raise HTTPException(status_code=400, detail="pattern saknas")
+    try:
+        row, already = add_user_vendor(
+            db, payload.pattern, payload.description,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "id": row.id,
+        "pattern": row.vendor_pattern,
+        "description": row.description,
+        "added_by": row.added_by,
+        "already_exists": already,
+    }
+
+
+@app.delete("/api/excluded-vendors/{vendor_id}")
+def remove_excluded_vendor_endpoint(
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.excluded_vendors import remove_vendor
+    if not remove_vendor(db, vendor_id):
+        raise HTTPException(status_code=404, detail="Vendor finns inte")
+    return {"success": True}
+
+
+# --- FAS 11.5.1 — Per Diem Calculator ----------------------------------
+
+
+def _parse_iso_dt_or_400(raw: str | None, field: str):
+    """Parsa ISO 8601 datetime. None om saknas."""
+    if raw is None:
+        return None
+    from datetime import datetime as _dt
+    s = raw.strip() if isinstance(raw, str) else raw
+    if isinstance(s, str) and s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        return _dt.fromisoformat(s)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} måste vara ISO 8601, fick {raw!r}",
+        )
+
+
+class CalculatePerDiemPayload(BaseModel):
+    departure_home_at: str | None = None
+    return_home_at: str | None = None
+    destination_country: str | None = None
+    meal_toggles: dict[str, bool] | None = None
+    year: int | None = None
+
+
+class UpdatePerDiemPayload(BaseModel):
+    meal_toggles: dict[str, bool] | None = None
+    destination_country: str | None = None
+    departure_home_at: str | None = None
+    return_home_at: str | None = None
+
+
+def _persist_per_diem(trip, calculation: dict) -> None:
+    """Skriv beräkning + summa till trip-objektet (kallaren commit:ar)."""
+    from decimal import Decimal
+    if "error" in calculation:
+        return
+    trip.per_diem_calculation = calculation
+    total = calculation.get("total_amount")
+    if total is not None:
+        try:
+            trip.per_diem_amount = Decimal(str(total))
+        except Exception:  # noqa: BLE001
+            trip.per_diem_amount = None
+    trip.per_diem_currency = calculation.get("currency")
+
+
+@app.post("/api/trips/{trip_id}/extract-flight-times")
+def post_extract_flight_times(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Extrahera AI-förslag för avgångs/hemkomst-tider + destinationsland."""
+    from app.services.flight_time_extractor import (
+        extract_flight_times_from_trip,
+    )
+    trip = _trip_or_404(db, trip_id)
+    return extract_flight_times_from_trip(trip, db)
+
+
+@app.post("/api/trips/{trip_id}/calculate-per-diem")
+def post_calculate_per_diem(
+    trip_id: int,
+    payload: CalculatePerDiemPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Beräkna traktamente för en resa och spara resultatet på trip-objektet."""
+    from app.services.per_diem_calculator import calculate_per_diem
+    trip = _trip_or_404(db, trip_id)
+
+    departure = _parse_iso_dt_or_400(payload.departure_home_at, "departure_home_at")
+    ret = _parse_iso_dt_or_400(payload.return_home_at, "return_home_at")
+
+    if departure is not None:
+        trip.departure_home_at = departure
+    if ret is not None:
+        trip.return_home_at = ret
+    if payload.destination_country is not None:
+        cc = payload.destination_country.strip().upper()
+        if len(cc) != 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"destination_country måste vara 2 bokstäver, fick {payload.destination_country!r}",
+            )
+        trip.destination_country = cc
+
+    if not trip.departure_home_at or not trip.return_home_at:
+        raise HTTPException(
+            status_code=400,
+            detail="Saknar departure_home_at eller return_home_at — skicka i body eller spara först",
+        )
+
+    result = calculate_per_diem(
+        trip, db,
+        year=payload.year,
+        meal_toggles=payload.meal_toggles,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    _persist_per_diem(trip, result)
+    db.commit()
+    return result
+
+
+@app.get("/api/trips/{trip_id}/per-diem")
+def get_per_diem(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Hämta sparad beräkning för en resa."""
+    trip = _trip_or_404(db, trip_id)
+    return {
+        "trip_id": trip.id,
+        "destination_country": trip.destination_country,
+        "departure_home_at": (
+            trip.departure_home_at.isoformat() if trip.departure_home_at else None
+        ),
+        "return_home_at": (
+            trip.return_home_at.isoformat() if trip.return_home_at else None
+        ),
+        "trip_route": trip.trip_route,
+        "per_diem_amount": (
+            float(trip.per_diem_amount) if trip.per_diem_amount is not None else None
+        ),
+        "per_diem_currency": trip.per_diem_currency,
+        "calculation": trip.per_diem_calculation,
+    }
+
+
+@app.patch("/api/trips/{trip_id}/per-diem")
+def patch_per_diem(
+    trip_id: int,
+    payload: UpdatePerDiemPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Uppdatera trip:s per-diem (mat-toggles, country eller tider).
+    Kör om beräkningen och persistera."""
+    from app.services.per_diem_calculator import calculate_per_diem
+    trip = _trip_or_404(db, trip_id)
+
+    if payload.destination_country is not None:
+        cc = payload.destination_country.strip().upper()
+        if len(cc) != 2:
+            raise HTTPException(
+                status_code=400, detail="destination_country måste vara 2 bokstäver",
+            )
+        trip.destination_country = cc
+
+    departure = _parse_iso_dt_or_400(payload.departure_home_at, "departure_home_at")
+    ret = _parse_iso_dt_or_400(payload.return_home_at, "return_home_at")
+    if departure is not None:
+        trip.departure_home_at = departure
+    if ret is not None:
+        trip.return_home_at = ret
+
+    if not trip.departure_home_at or not trip.return_home_at:
+        raise HTTPException(
+            status_code=400,
+            detail="Saknar tider på trip — beräkna först eller skicka i payload",
+        )
+
+    result = calculate_per_diem(
+        trip, db, meal_toggles=payload.meal_toggles,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    _persist_per_diem(trip, result)
+    db.commit()
+    return result
+
+
+@app.get("/api/per-diem-rates")
+def get_per_diem_rates(
+    year: int | None = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Lista alla per-diem-rates. ?year=2026 filtrerar på år."""
+    from app.services.per_diem_calculator import list_supported_countries
+    from app.models import PerDiemRate
+    from datetime import datetime as _dt
+    if year is not None:
+        return {"year": year, "rates": list_supported_countries(db, year)}
+    rows = db.query(PerDiemRate).order_by(
+        PerDiemRate.year.desc(), PerDiemRate.country_name.asc(),
+    ).all()
+    return {
+        "rates": [
+            {
+                "year": r.year,
+                "country_code": r.country_code,
+                "country_name": r.country_name,
+                "full_day_amount": float(r.full_day_amount),
+                "half_day_amount": float(r.half_day_amount),
+                "currency": r.currency,
+                "source": r.source,
+            }
+            for r in rows
+        ]
+    }
 
 
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,

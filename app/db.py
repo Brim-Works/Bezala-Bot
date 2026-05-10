@@ -52,8 +52,6 @@ _APP_SETTINGS_ADDITIONS = {
     # OAuth re-auth flags — sätts till true vid invalid_grant.
     "gmail_auth_required": "BOOLEAN NOT NULL DEFAULT FALSE",
     "drive_auth_required": "BOOLEAN NOT NULL DEFAULT FALSE",
-    # FAS 11.1+ — vendors att exkludera från Resa-grupperingen.
-    "excluded_vendors": "JSON NOT NULL DEFAULT '[]'",
 }
 
 _SCAN_RUNS_ADDITIONS = {
@@ -66,6 +64,17 @@ _AI_FEEDBACK_ADDITIONS = {
     # FAS 8.1.1 — subject sparas på not_a_receipt-rader så AI:n kan
     # skilja olika mail-typer från samma avsändare.
     "subject_context": "VARCHAR(500)",
+}
+
+_TRIPS_ADDITIONS = {
+    # FAS 11.5.1 — per diem (traktamente)
+    "destination_country": "VARCHAR(2)",
+    "departure_home_at": "TIMESTAMP",
+    "return_home_at": "TIMESTAMP",
+    "trip_route": "TEXT",
+    "per_diem_calculation": "JSON",
+    "per_diem_amount": "NUMERIC(10, 2)",
+    "per_diem_currency": "VARCHAR(3)",
 }
 
 _INDEXES = [
@@ -134,6 +143,20 @@ def _apply_schema_migrations() -> None:
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 
+    if "trips" in tables:
+        existing = {col["name"] for col in insp.get_columns("trips")}
+        with engine.begin() as conn:
+            for name, col_type in _TRIPS_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE trips ADD COLUMN {name} {col_type}")
+                    )
+                    logger.info("Lade till kolumn trips.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
     if "ai_feedback" in tables:
         existing = {col["name"] for col in insp.get_columns("ai_feedback")}
         with engine.begin() as conn:
@@ -163,11 +186,55 @@ def _apply_schema_migrations() -> None:
                 logger.exception("Kunde inte skapa index %s", index_name)
 
 
+def _seed_per_diem_rates() -> None:
+    """FAS 11.5.1 — seeda Verohallinto-rates för 2026 om tabellen är tom.
+
+    OBS: dessa siffror behöver verifieras mot Verohallinto innan de
+    används för riktig submission. Marker:as som source='manual' tills
+    vi har en bekräftad källa."""
+    from datetime import datetime
+    from app.models import PerDiemRate
+
+    seed_data = [
+        # year, code, name, full_day, half_day, source
+        (2026, "FI", "Finland", "54.00", "25.00", "verohallinto"),
+        (2026, "SE", "Sverige", "70.00", "35.00", "manual"),
+        (2026, "NO", "Norge", "78.00", "39.00", "manual"),
+        (2026, "LV", "Lettland", "56.00", "28.00", "manual"),
+    ]
+    try:
+        with engine.begin() as conn:
+            existing = conn.execute(
+                text("SELECT year, country_code FROM per_diem_rates")
+            ).fetchall()
+            existing_keys = {(int(r[0]), r[1]) for r in existing}
+            for year, code, name, full_day, half_day, source in seed_data:
+                if (year, code) in existing_keys:
+                    continue
+                conn.execute(
+                    text(
+                        "INSERT INTO per_diem_rates "
+                        "(year, country_code, country_name, full_day_amount, "
+                        "half_day_amount, currency, source, last_updated) "
+                        "VALUES (:y, :c, :n, :f, :h, 'EUR', :s, :t)"
+                    ),
+                    {
+                        "y": year, "c": code, "n": name,
+                        "f": full_day, "h": half_day,
+                        "s": source, "t": datetime.utcnow(),
+                    },
+                )
+                logger.info("Seedade per_diem_rate %d %s", year, code)
+    except Exception:
+        logger.exception("Kunde inte seeda per_diem_rates")
+
+
 def init_db() -> None:
     from app import models  # noqa: F401 — registrerar modeller
 
     Base.metadata.create_all(bind=engine)
     _apply_schema_migrations()
+    _seed_per_diem_rates()
 
 
 @contextmanager

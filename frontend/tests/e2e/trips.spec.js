@@ -115,3 +115,53 @@ test('Tom active-lista visar empty-state', async ({ page }) => {
   await page.goto('/trips');
   await expect(page.getByTestId('trips-active-empty')).toBeVisible();
 });
+
+test('Trip-drawer skiljer AI-förslag från manuellt tillagda kvitton', async ({ page }) => {
+  apiState = await setupApiMocks(page, {
+    tripSuggestions: [],
+    activeTrips: [
+      buildActiveTrip({
+        id: 5,
+        title: 'Stockholm 30 apr',
+        messages: [
+          {
+            id: 100,
+            message_id: 'ai-1',
+            vendor: 'Finnair',
+            amount: 200,
+            currency: 'EUR',
+            receipt_date: '2026-04-30',
+            received_at: '2026-04-29T08:00:00Z',
+            category: 'Flyg',
+            subject: 'Boarding',
+            summary: 'Flyg',
+            added_by: 'ai_suggestion',
+          },
+          {
+            id: 101,
+            message_id: 'manual-1',
+            vendor: 'Restaurant',
+            amount: 32,
+            currency: 'EUR',
+            receipt_date: '2026-05-01',
+            received_at: '2026-05-01T20:00:00Z',
+            category: 'Mat',
+            subject: 'Lunch',
+            summary: 'Lunch',
+            added_by: 'manual',
+          },
+        ],
+      }),
+    ],
+  });
+  await page.goto('/trips');
+  await page.getByTestId('trip-active-5').click();
+  await expect(page.getByTestId('trip-drawer-ai-label')).toBeVisible();
+  await expect(page.getByTestId('trip-drawer-manual-label')).toBeVisible();
+  await expect(
+    page.getByTestId('trip-drawer-receipt-ai-1'),
+  ).toHaveAttribute('data-added-by', 'ai_suggestion');
+  await expect(
+    page.getByTestId('trip-drawer-receipt-manual-1'),
+  ).toHaveAttribute('data-added-by', 'manual');
+});

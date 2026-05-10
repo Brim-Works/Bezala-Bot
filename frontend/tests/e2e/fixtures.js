@@ -423,6 +423,20 @@ export async function setupApiMocks(page, overrides = {}) {
     activeTrips: overrides.activeTrips || [buildActiveTrip()],
     lastTripRequest: null,
     refreshTripsResponse: overrides.refreshTripsResponse || { generated: 1 },
+    // FAS 11.1.1 — manuell tagging + SaaS-lista
+    availableTripsForMessage: overrides.availableTripsForMessage || {},
+    excludedVendors: overrides.excludedVendors || [
+      { id: 1, pattern: 'anthropic', description: 'AI/utveckling',
+        added_by: 'system', created_at: new Date().toISOString() },
+      { id: 2, pattern: 'spotify', description: 'Streaming',
+        added_by: 'system', created_at: new Date().toISOString() },
+      { id: 3, pattern: 'aws', description: 'Cloud/SaaS',
+        added_by: 'system', created_at: new Date().toISOString() },
+    ],
+    nextExcludedId: 100,
+    lastLinkRequest: null,
+    lastUnlinkRequest: null,
+    lastVendorRequest: null,
   };
 
   // --- enklare globala routes ---
@@ -548,6 +562,152 @@ export async function setupApiMocks(page, overrides = {}) {
       return route.fulfill(jsonResponse({ saved: true, id: 99 }));
     }
 
+    // --- FAS 11.5.1 — Per Diem ---
+    const extractMatch = pathname.match(
+      /\/api\/trips\/(\d+)\/extract-flight-times$/,
+    );
+    if (method === 'POST' && extractMatch) {
+      const id = Number(extractMatch[1]);
+      state.lastTripRequest = { kind: 'extract-flight-times', id };
+      return route.fulfill(
+        jsonResponse(
+          state.extractFlightTimesResponse || {
+            departure_home_at: '2026-04-30T06:15:00',
+            return_home_at: '2026-05-02T20:20:00',
+            destination_country_suggestion: 'SE',
+            trip_route: 'Helsinki - Stockholm - Helsinki',
+            flights_extracted: [],
+            warnings: [],
+          },
+        ),
+      );
+    }
+
+    const calcMatch = pathname.match(
+      /\/api\/trips\/(\d+)\/calculate-per-diem$/,
+    );
+    if (method === 'POST' && calcMatch) {
+      const id = Number(calcMatch[1]);
+      const body = request.postDataJSON() || {};
+      state.lastPerDiemRequest = { kind: 'calculate', id, body };
+      // Beräkna mock — en heldag Sverige eller två + deldygn
+      const meals = body.meal_toggles || {};
+      const dygnet = (state.perDiemDygnetMock || [
+        {
+          day_number: 1,
+          start_at: '2026-04-30T06:00:00',
+          end_at: '2026-05-01T06:00:00',
+          hours: 24.0,
+          ends_in_country: 'SE',
+          type: 'full_day_abroad',
+          rate_amount: 70.0,
+          rate_currency: 'EUR',
+          meal_deduction: false,
+          final_amount: 70.0,
+          rule_applied: 'kokopäiväraha_ulkomaa',
+        },
+        {
+          day_number: 2,
+          start_at: '2026-05-01T06:00:00',
+          end_at: '2026-05-02T06:00:00',
+          hours: 24.0,
+          ends_in_country: 'SE',
+          type: 'full_day_abroad',
+          rate_amount: 70.0,
+          rate_currency: 'EUR',
+          meal_deduction: false,
+          final_amount: 70.0,
+          rule_applied: 'kokopäiväraha_ulkomaa',
+        },
+      ]).map((d) => {
+        const meal = !!meals[String(d.day_number)];
+        const final =
+          meal && d.rule_applied !== 'puolikas_ulkomaanpäiväraha_deldygn'
+            ? d.rate_amount * 0.5
+            : d.rate_amount;
+        return { ...d, meal_deduction: meal, final_amount: final };
+      });
+      const total = dygnet.reduce((s, d) => s + d.final_amount, 0);
+      const result = {
+        dygnet,
+        total_amount: total,
+        currency: 'EUR',
+        rules_year: 2026,
+        destination_country: body.destination_country || 'SE',
+        effective_country_used: body.destination_country || 'SE',
+        is_short_foreign_trip: false,
+        calculated_at: new Date().toISOString(),
+        user_edited: !!body.meal_toggles,
+        warnings: [],
+      };
+      // Persistera i mock-trip-state så GET returnerar samma
+      const tripIdx = state.activeTrips.findIndex((t) => t.id === id);
+      if (tripIdx >= 0) {
+        state.activeTrips[tripIdx] = {
+          ...state.activeTrips[tripIdx],
+          per_diem_calculation: result,
+          per_diem_amount: total,
+          per_diem_currency: 'EUR',
+          destination_country: body.destination_country || 'SE',
+          departure_home_at: body.departure_home_at,
+          return_home_at: body.return_home_at,
+        };
+      }
+      return route.fulfill(jsonResponse(result));
+    }
+
+    const perDiemMatch = pathname.match(/\/api\/trips\/(\d+)\/per-diem$/);
+    if (perDiemMatch) {
+      const id = Number(perDiemMatch[1]);
+      const trip =
+        state.activeTrips.find((t) => t.id === id) ||
+        state.tripSuggestions.find((t) => t.id === id);
+      if (!trip) {
+        return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+      }
+      if (method === 'GET') {
+        return route.fulfill(
+          jsonResponse({
+            trip_id: id,
+            destination_country: trip.destination_country || null,
+            departure_home_at: trip.departure_home_at || null,
+            return_home_at: trip.return_home_at || null,
+            trip_route: trip.trip_route || null,
+            per_diem_amount: trip.per_diem_amount || null,
+            per_diem_currency: trip.per_diem_currency || null,
+            calculation: trip.per_diem_calculation || null,
+          }),
+        );
+      }
+      if (method === 'PATCH') {
+        const body = request.postDataJSON() || {};
+        state.lastPerDiemRequest = { kind: 'patch', id, body };
+        const meals = body.meal_toggles || {};
+        const existing = trip.per_diem_calculation || { dygnet: [] };
+        const dygnet = (existing.dygnet || []).map((d) => {
+          const meal = !!meals[String(d.day_number)];
+          const final =
+            meal && d.rule_applied !== 'puolikas_ulkomaanpäiväraha_deldygn'
+              ? d.rate_amount * 0.5
+              : d.rate_amount;
+          return { ...d, meal_deduction: meal, final_amount: final };
+        });
+        const total = dygnet.reduce((s, d) => s + d.final_amount, 0);
+        const result = {
+          ...existing, dygnet, total_amount: total, user_edited: true,
+        };
+        const idx = state.activeTrips.findIndex((t) => t.id === id);
+        if (idx >= 0) {
+          state.activeTrips[idx] = {
+            ...state.activeTrips[idx],
+            per_diem_calculation: result,
+            per_diem_amount: total,
+          };
+        }
+        return route.fulfill(jsonResponse(result));
+      }
+    }
+
     const idMatch = pathname.match(/\/api\/trips\/(\d+)$/);
     if (idMatch) {
       const id = Number(idMatch[1]);
@@ -591,12 +751,128 @@ export async function setupApiMocks(page, overrides = {}) {
     return route.fallback();
   });
 
+  // --- FAS 11.1.1 — Excluded vendors ---
+  await page.route('**/api/excluded-vendors**', async (route) => {
+    const request = route.request();
+    const method = request.method();
+    const url = new URL(request.url());
+    const pathname = url.pathname;
+
+    if (method === 'GET' && pathname.endsWith('/api/excluded-vendors')) {
+      return route.fulfill(jsonResponse({ vendors: state.excludedVendors }));
+    }
+
+    if (method === 'POST' && pathname.endsWith('/api/excluded-vendors')) {
+      const body = request.postDataJSON() || {};
+      state.lastVendorRequest = { kind: 'add', body };
+      const pattern = (body.pattern || '').trim().toLowerCase();
+      if (!pattern) {
+        return route.fulfill(jsonResponse({ detail: 'pattern saknas' }, 400));
+      }
+      const existing = state.excludedVendors.find(
+        (v) => v.pattern === pattern,
+      );
+      if (existing) {
+        return route.fulfill(
+          jsonResponse({
+            id: existing.id,
+            pattern: existing.pattern,
+            description: existing.description,
+            added_by: existing.added_by,
+            already_exists: true,
+          }),
+        );
+      }
+      const row = {
+        id: state.nextExcludedId++,
+        pattern,
+        description: (body.description || '').trim() || null,
+        added_by: 'user',
+        created_at: new Date().toISOString(),
+      };
+      state.excludedVendors.push(row);
+      return route.fulfill(
+        jsonResponse({ ...row, already_exists: false }),
+      );
+    }
+
+    const idMatch = pathname.match(/\/api\/excluded-vendors\/(\d+)$/);
+    if (method === 'DELETE' && idMatch) {
+      const id = Number(idMatch[1]);
+      state.lastVendorRequest = { kind: 'delete', id };
+      const idx = state.excludedVendors.findIndex((v) => v.id === id);
+      if (idx < 0) {
+        return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+      }
+      state.excludedVendors.splice(idx, 1);
+      return route.fulfill(jsonResponse({ success: true }));
+    }
+
+    return route.fallback();
+  });
+
   // --- central dispatcher för /api/messages/** ---
   await page.route('**/api/messages**', async (route) => {
     const request = route.request();
     const method = request.method();
     const url = new URL(request.url());
     const pathname = url.pathname;
+
+    // FAS 11.1.1 — manuell tagging endpoints (måste matchas FÖRE
+    // generella /api/messages/:id-routes nedanför).
+    const availMatch = pathname.match(
+      /\/api\/messages\/([^/]+)\/available-trips$/,
+    );
+    if (method === 'GET' && availMatch) {
+      const messageId = decodeURIComponent(availMatch[1]);
+      const trips =
+        state.availableTripsForMessage[messageId] !== undefined
+          ? state.availableTripsForMessage[messageId]
+          : state.availableTripsForMessage.__default || [];
+      return route.fulfill(jsonResponse({ trips }));
+    }
+
+    const linkMatch = pathname.match(
+      /\/api\/messages\/([^/]+)\/link-to-trip$/,
+    );
+    if (method === 'POST' && linkMatch) {
+      const messageId = decodeURIComponent(linkMatch[1]);
+      const body = request.postDataJSON() || {};
+      state.lastLinkRequest = { messageId, body };
+      const list =
+        state.availableTripsForMessage[messageId] ||
+        state.availableTripsForMessage.__default;
+      if (Array.isArray(list)) {
+        const trip = list.find((t) => t.id === body.trip_id);
+        if (trip) {
+          trip.is_linked = true;
+          trip.added_by = 'manual';
+        }
+      }
+      return route.fulfill(
+        jsonResponse({ success: true, already_linked: false }),
+      );
+    }
+
+    const unlinkMatch = pathname.match(
+      /\/api\/messages\/([^/]+)\/unlink-from-trip\/(\d+)$/,
+    );
+    if (method === 'DELETE' && unlinkMatch) {
+      const messageId = decodeURIComponent(unlinkMatch[1]);
+      const tripId = Number(unlinkMatch[2]);
+      state.lastUnlinkRequest = { messageId, tripId };
+      const list =
+        state.availableTripsForMessage[messageId] ||
+        state.availableTripsForMessage.__default;
+      if (Array.isArray(list)) {
+        const trip = list.find((t) => t.id === tripId);
+        if (trip) {
+          trip.is_linked = false;
+          trip.added_by = null;
+        }
+      }
+      return route.fulfill(jsonResponse({ success: true }));
+    }
 
     // GET /api/messages/trash/count
     if (method === 'GET' && pathname.endsWith('/api/messages/trash/count')) {

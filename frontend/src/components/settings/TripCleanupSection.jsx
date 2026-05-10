@@ -1,18 +1,19 @@
 import { useState } from 'react';
-import ChipEditor from './ChipEditor.jsx';
 import { api, ApiError } from '../../api/client.js';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { useToast } from '../../lib/toast.jsx';
 
-/* Cleanup-PR — Excluded vendors retroaktivt.
+/* Cleanup-PR — "Städa befintliga resor".
  *
- * Två sektioner i en:
- *  1) Chip-editor för excluded_vendors (sparas via SaveBar tillsammans
- *     med övriga inställningar — vi skickar med fältet i payload).
- *  2) "Städa nu"-knappen som POSTar /api/trips/cleanup-excluded-vendors.
- *     Bekräftelse-modal innan anropet eftersom åtgärden inte kan ångras.
+ * Vendor-listan ägs av ExcludedVendorsSection (FAS 11.1.1) och lagras i
+ * `excluded_vendors`-tabellen. Den här sektionen lägger till en
+ * permanent städning-knapp som tar bort kvitton från redan-grupperade
+ * resor när vendor matchar någon excluded-pattern.
+ *
+ * Reaktiv filtrering (när du öppnar Resor-vyn) körs redan automatiskt;
+ * knappen behövs bara för att frigöra DB-rader och radera tomma resor.
  */
-export default function TripCleanupSection({ form, update }) {
+export default function TripCleanupSection() {
   const { t } = useI18n();
   const toast = useToast();
   const [confirming, setConfirming] = useState(false);
@@ -49,15 +50,6 @@ export default function TripCleanupSection({ form, update }) {
         </p>
       </header>
 
-      <ChipEditor
-        label={t.settings.cleanupTrips.vendorsLabel}
-        placeholder={t.settings.cleanupTrips.vendorsPlaceholder}
-        values={form.excluded_vendors || []}
-        onChange={(v) => update({ excluded_vendors: v })}
-        hint={t.settings.cleanupTrips.vendorsHint}
-        testIdPrefix="excluded-vendors"
-      />
-
       <div className="settings-cleanup-row">
         <div className="settings-cleanup-row__text">
           <strong>{t.settings.cleanupTrips.actionTitle}</strong>
@@ -67,7 +59,7 @@ export default function TripCleanupSection({ form, update }) {
           type="button"
           className="btn ghost"
           onClick={() => setConfirming(true)}
-          disabled={busy || !(form.excluded_vendors || []).length}
+          disabled={busy}
           data-testid="trip-cleanup-trigger"
         >
           {t.settings.cleanupTrips.button}

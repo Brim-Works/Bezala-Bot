@@ -10,6 +10,7 @@ import TripDetailDrawer from '../components/trips/TripDetailDrawer.jsx';
 import TripEditModal from '../components/trips/TripEditModal.jsx';
 import TripFeedbackModal from '../components/trips/TripFeedbackModal.jsx';
 import AddReceiptToTripModal from '../components/trips/AddReceiptToTripModal.jsx';
+import PerDiemModal from '../components/per-diem/PerDiemModal.jsx';
 
 /* FAS 11.1 — Resor.
  *
@@ -38,6 +39,7 @@ export default function Trips() {
   const [editTrip, setEditTrip] = useState(null);
   const [feedbackTrip, setFeedbackTrip] = useState(null);
   const [addReceiptTrip, setAddReceiptTrip] = useState(null);
+  const [perDiemTrip, setPerDiemTrip] = useState(null);
 
   const loadAll = useCallback(async () => {
     try {
@@ -292,6 +294,22 @@ export default function Trips() {
           onRemoveReceipt={(msgId) => onRemoveReceipt(detailTrip, msgId)}
           onGoodFeedback={() => onGoodFeedback(detailTrip)}
           onBadFeedback={() => setFeedbackTrip(detailTrip)}
+          onCalculatePerDiem={
+            detailTrip.status === 'active'
+              ? () => setPerDiemTrip(detailTrip)
+              : null
+          }
+        />
+      ) : null}
+
+      {perDiemTrip ? (
+        <PerDiemModal
+          trip={perDiemTrip}
+          onClose={() => setPerDiemTrip(null)}
+          onSaved={() => {
+            setPerDiemTrip(null);
+            loadAll();
+          }}
         />
       ) : null}
 

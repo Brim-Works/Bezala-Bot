@@ -120,12 +120,6 @@ class AppSettings(Base):
     # Skånetrafiken). Default ON.
     html_to_pdf_enabled = Column(Boolean, nullable=False, default=True)
 
-    # FAS 11.1+ — vendors som ska exkluderas från Resa-grupperingen.
-    # Strängar matchas case-insensitive mot ProcessedMessage.vendor.
-    # Tillämpas både vid ny gruppering och som reaktivt filter på
-    # befintliga trips (serialize_trip).
-    excluded_vendors = Column(JSON, nullable=False, default=list)
-
     # Sätts av Gmail/Drive-klienterna när refresh-tokenen är ogiltig
     # (invalid_grant). UI visar varningsbanner + Återanslut-knapp.
     gmail_auth_required = Column(Boolean, nullable=False, default=False)
@@ -258,6 +252,15 @@ class Trip(Base):
 
     user_edited = Column(Boolean, nullable=False, default=False)
 
+    # FAS 11.5.1 — per diem (traktamente)
+    destination_country = Column(String(2), nullable=True)
+    departure_home_at = Column(DateTime, nullable=True)
+    return_home_at = Column(DateTime, nullable=True)
+    trip_route = Column(Text, nullable=True)
+    per_diem_calculation = Column(JSON, nullable=True)
+    per_diem_amount = Column(Numeric(10, 2), nullable=True)
+    per_diem_currency = Column(String(3), nullable=True)
+
 
 Index("idx_trips_dates", Trip.start_date, Trip.end_date)
 
@@ -289,6 +292,35 @@ class TripMessage(Base):
     removed_at = Column(DateTime, nullable=True)
 
 
+class PerDiemRate(Base):
+    """FAS 11.5.1 — Verohallinto-rates per land och år för traktamente.
+
+    full_day_amount = kokopäiväraha (>10h)
+    half_day_amount = osapäiväraha (>6h) eller halv ulkomaanpäiväraha
+    source = 'verohallinto' eller 'manual'
+
+    Seed:as vid första startup för 2026 (FI, SE, NO, LV)."""
+
+    __tablename__ = "per_diem_rates"
+    __table_args__ = (
+        UniqueConstraint("year", "country_code", name="uq_per_diem_year_country"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    year = Column(Integer, nullable=False)
+    country_code = Column(String(2), nullable=False)  # ISO 3166-1
+    country_name = Column(String(100), nullable=False)
+    full_day_amount = Column(Numeric(10, 2), nullable=False)
+    half_day_amount = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="EUR")
+    source = Column(String(50), nullable=True)
+    source_url = Column(String(500), nullable=True)
+    last_updated = Column(DateTime, server_default=func.now(), nullable=True)
+
+
+Index("idx_per_diem_year_country", PerDiemRate.year, PerDiemRate.country_code)
+
+
 class TripFeedback(Base):
     """Loggar användarens beslut (accept/reject/edit/wrong_grouping etc.)
     så Claude kan dra lärdom via few-shot. `details` är ett JSON-objekt
@@ -305,4 +337,29 @@ class TripFeedback(Base):
     )
     feedback_type = Column(String(50), nullable=False)
     details = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ExcludedVendor(Base):
+    """FAS 11.1.1 — vendors som aldrig ska räknas som resekvitton.
+
+    Lagrar substring-mönster (t.ex. 'anthropic', 'spotify') som
+    matchas case-insensitive mot ProcessedMessage.vendor när
+    trip_grouper bygger förslag.
+
+    `added_by` är 'system' (default-listan, seedad vid migration) eller
+    'user' (egna tillägg från Inställningar-vyn). Inga FK-relationer.
+    """
+
+    __tablename__ = "excluded_vendors"
+    __table_args__ = (
+        UniqueConstraint(
+            "vendor_pattern", name="uq_excluded_vendors_pattern",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    vendor_pattern = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    added_by = Column(String(20), nullable=False, default="user")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

@@ -10,6 +10,7 @@ import ScanRulesSection from '../components/settings/ScanRulesSection.jsx';
 import LinkFetchSection from '../components/settings/LinkFetchSection.jsx';
 import TripCleanupSection from '../components/settings/TripCleanupSection.jsx';
 import TrashSection from '../components/settings/TrashSection.jsx';
+import ExcludedVendorsSection from '../components/settings/ExcludedVendorsSection.jsx';
 import SaveBar from '../components/settings/SaveBar.jsx';
 import { useToast } from '../lib/toast.jsx';
 
@@ -29,7 +30,6 @@ const FIELDS_IN_PAYLOAD = [
   'ai_min_confidence_to_save',
   'link_fetch_senders',
   'html_to_pdf_enabled',
-  'excluded_vendors',
 ];
 
 function pickPayload(form) {
@@ -119,7 +119,8 @@ export default function Settings() {
           builtinSenders={form.builtin_senders || baseline?.builtin_senders || []}
         />
         <LinkFetchSection form={form} update={update} />
-        <TripCleanupSection form={form} update={update} />
+        <ExcludedVendorsSection />
+        <TripCleanupSection />
         <TrashSection form={form} update={update} />
       </div>
       <SaveBar dirty={dirty} saving={saving} onSave={onSave} onReset={onReset} />

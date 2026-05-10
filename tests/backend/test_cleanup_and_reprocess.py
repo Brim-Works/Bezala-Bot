@@ -46,7 +46,7 @@ class _BaseEndpointFixture(unittest.TestCase):
         from app import models  # noqa: F401
         from app import main as app_module
         from app.models import (
-            AppSettings, ProcessedMessage, Trip, TripMessage,
+            AppSettings, ExcludedVendor, ProcessedMessage, Trip, TripMessage,
         )
         from fastapi.testclient import TestClient
         from contextlib import contextmanager
@@ -94,6 +94,7 @@ class _BaseEndpointFixture(unittest.TestCase):
         cls.app_module = app_module
         cls.SessionLocal = SessionLocal
         cls.AppSettings = AppSettings
+        cls.ExcludedVendor = ExcludedVendor
         cls.ProcessedMessage = ProcessedMessage
         cls.Trip = Trip
         cls.TripMessage = TripMessage
@@ -107,20 +108,24 @@ class _BaseEndpointFixture(unittest.TestCase):
             db.query(self.TripMessage).delete()
             db.query(self.Trip).delete()
             db.query(self.ProcessedMessage).delete()
+            db.query(self.ExcludedVendor).delete()
             db.query(self.AppSettings).delete()
             db.commit()
 
     def _set_excluded(self, vendors):
+        # FAS 11.1.1 ersatte AppSettings.excluded_vendors med en separat
+        # tabell. Stoppa in patterns som user-rader (system-rader skapas
+        # av seed_default_vendors men vi vill ha kontroll i tester).
         with self.SessionLocal() as db:
-            row = self.AppSettings(
-                id=1,
-                excluded_vendors=list(vendors),
-                include_senders=[],
-                exclude_senders=[],
-                exclude_subjects=[],
-                link_fetch_senders=[],
-            )
-            db.add(row)
+            for v in vendors:
+                pattern = (v or "").strip().lower()
+                if not pattern:
+                    continue
+                db.add(self.ExcludedVendor(
+                    vendor_pattern=pattern,
+                    description=None,
+                    added_by="user",
+                ))
             db.commit()
 
     def _seed_msg(self, message_id, vendor, **over):
