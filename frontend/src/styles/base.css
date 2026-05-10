@@ -3941,9 +3941,15 @@ html[data-theme='B'] .modal__title {
   margin-top: auto;
 }
 
-/* Modal (edit, feedback, add receipt) */
+/* Modal (edit, feedback, add receipt) — wrapper-pattern.
+   .modal-shell wrappar sin .modal-card direkt och centrerar med grid.
+   OBS: kallas INTE .modal-overlay för att inte kollidera med den
+   legacy sibling-pattern-overlayen ovan (z-index 900) som används av
+   t.ex. DeleteReasonDialog. Tidigare hette denna .modal-overlay vilket
+   gjorde att cascade-ordningen lyfte siblings-overlayen till z-index
+   950 och täckte modalens content. */
 
-.modal-overlay {
+.modal-shell {
   position: fixed;
   inset: 0;
   z-index: 950;

@@ -69,7 +69,7 @@ export default function AddReceiptToTripModal({ trip, onClose, onSave }) {
 
   return (
     <div
-      className="modal-overlay"
+      className="modal-shell"
       role="dialog"
       aria-label={t.trips.addReceiptTitle}
       data-testid={`trip-add-receipt-modal-${trip.id}`}

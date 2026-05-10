@@ -29,7 +29,7 @@ export default function TripFeedbackModal({ trip, onClose, onSave }) {
 
   return (
     <div
-      className="modal-overlay"
+      className="modal-shell"
       role="dialog"
       aria-label={t.trips.feedbackTitle}
       data-testid={`trip-feedback-modal-${trip.id}`}

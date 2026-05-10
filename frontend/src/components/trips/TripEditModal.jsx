@@ -28,7 +28,7 @@ export default function TripEditModal({ trip, onClose, onSave }) {
 
   return (
     <div
-      className="modal-overlay"
+      className="modal-shell"
       role="dialog"
       aria-label={t.trips.editTitle}
       data-testid={`trip-edit-modal-${trip.id}`}

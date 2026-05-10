@@ -98,7 +98,7 @@ export default function FeedbackModal({ open, onClose, onSaved, messageId, messa
 
   return (
     <div
-      className="modal-overlay"
+      className="modal-shell"
       data-testid="feedback-modal-overlay"
       onClick={(e) => {
         if (e.target === e.currentTarget) onClose?.();
