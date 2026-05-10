@@ -2761,6 +2761,217 @@ def remove_excluded_vendor_endpoint(
     return {"success": True}
 
 
+# --- FAS 11.5.1 — Per Diem Calculator ----------------------------------
+
+
+def _parse_iso_dt_or_400(raw: str | None, field: str):
+    """Parsa ISO 8601 datetime. None om saknas."""
+    if raw is None:
+        return None
+    from datetime import datetime as _dt
+    s = raw.strip() if isinstance(raw, str) else raw
+    if isinstance(s, str) and s.endswith("Z"):
+        s = s[:-1] + "+00:00"
+    try:
+        return _dt.fromisoformat(s)
+    except (TypeError, ValueError):
+        raise HTTPException(
+            status_code=400,
+            detail=f"{field} måste vara ISO 8601, fick {raw!r}",
+        )
+
+
+class CalculatePerDiemPayload(BaseModel):
+    departure_home_at: str | None = None
+    return_home_at: str | None = None
+    destination_country: str | None = None
+    meal_toggles: dict[str, bool] | None = None
+    year: int | None = None
+
+
+class UpdatePerDiemPayload(BaseModel):
+    meal_toggles: dict[str, bool] | None = None
+    destination_country: str | None = None
+    departure_home_at: str | None = None
+    return_home_at: str | None = None
+
+
+def _persist_per_diem(trip, calculation: dict) -> None:
+    """Skriv beräkning + summa till trip-objektet (kallaren commit:ar)."""
+    from decimal import Decimal
+    if "error" in calculation:
+        return
+    trip.per_diem_calculation = calculation
+    total = calculation.get("total_amount")
+    if total is not None:
+        try:
+            trip.per_diem_amount = Decimal(str(total))
+        except Exception:  # noqa: BLE001
+            trip.per_diem_amount = None
+    trip.per_diem_currency = calculation.get("currency")
+
+
+@app.post("/api/trips/{trip_id}/extract-flight-times")
+def post_extract_flight_times(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Extrahera AI-förslag för avgångs/hemkomst-tider + destinationsland."""
+    from app.services.flight_time_extractor import (
+        extract_flight_times_from_trip,
+    )
+    trip = _trip_or_404(db, trip_id)
+    return extract_flight_times_from_trip(trip, db)
+
+
+@app.post("/api/trips/{trip_id}/calculate-per-diem")
+def post_calculate_per_diem(
+    trip_id: int,
+    payload: CalculatePerDiemPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Beräkna traktamente för en resa och spara resultatet på trip-objektet."""
+    from app.services.per_diem_calculator import calculate_per_diem
+    trip = _trip_or_404(db, trip_id)
+
+    departure = _parse_iso_dt_or_400(payload.departure_home_at, "departure_home_at")
+    ret = _parse_iso_dt_or_400(payload.return_home_at, "return_home_at")
+
+    if departure is not None:
+        trip.departure_home_at = departure
+    if ret is not None:
+        trip.return_home_at = ret
+    if payload.destination_country is not None:
+        cc = payload.destination_country.strip().upper()
+        if len(cc) != 2:
+            raise HTTPException(
+                status_code=400,
+                detail=f"destination_country måste vara 2 bokstäver, fick {payload.destination_country!r}",
+            )
+        trip.destination_country = cc
+
+    if not trip.departure_home_at or not trip.return_home_at:
+        raise HTTPException(
+            status_code=400,
+            detail="Saknar departure_home_at eller return_home_at — skicka i body eller spara först",
+        )
+
+    result = calculate_per_diem(
+        trip, db,
+        year=payload.year,
+        meal_toggles=payload.meal_toggles,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    _persist_per_diem(trip, result)
+    db.commit()
+    return result
+
+
+@app.get("/api/trips/{trip_id}/per-diem")
+def get_per_diem(
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Hämta sparad beräkning för en resa."""
+    trip = _trip_or_404(db, trip_id)
+    return {
+        "trip_id": trip.id,
+        "destination_country": trip.destination_country,
+        "departure_home_at": (
+            trip.departure_home_at.isoformat() if trip.departure_home_at else None
+        ),
+        "return_home_at": (
+            trip.return_home_at.isoformat() if trip.return_home_at else None
+        ),
+        "trip_route": trip.trip_route,
+        "per_diem_amount": (
+            float(trip.per_diem_amount) if trip.per_diem_amount is not None else None
+        ),
+        "per_diem_currency": trip.per_diem_currency,
+        "calculation": trip.per_diem_calculation,
+    }
+
+
+@app.patch("/api/trips/{trip_id}/per-diem")
+def patch_per_diem(
+    trip_id: int,
+    payload: UpdatePerDiemPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Uppdatera trip:s per-diem (mat-toggles, country eller tider).
+    Kör om beräkningen och persistera."""
+    from app.services.per_diem_calculator import calculate_per_diem
+    trip = _trip_or_404(db, trip_id)
+
+    if payload.destination_country is not None:
+        cc = payload.destination_country.strip().upper()
+        if len(cc) != 2:
+            raise HTTPException(
+                status_code=400, detail="destination_country måste vara 2 bokstäver",
+            )
+        trip.destination_country = cc
+
+    departure = _parse_iso_dt_or_400(payload.departure_home_at, "departure_home_at")
+    ret = _parse_iso_dt_or_400(payload.return_home_at, "return_home_at")
+    if departure is not None:
+        trip.departure_home_at = departure
+    if ret is not None:
+        trip.return_home_at = ret
+
+    if not trip.departure_home_at or not trip.return_home_at:
+        raise HTTPException(
+            status_code=400,
+            detail="Saknar tider på trip — beräkna först eller skicka i payload",
+        )
+
+    result = calculate_per_diem(
+        trip, db, meal_toggles=payload.meal_toggles,
+    )
+    if "error" in result:
+        raise HTTPException(status_code=400, detail=result["error"])
+
+    _persist_per_diem(trip, result)
+    db.commit()
+    return result
+
+
+@app.get("/api/per-diem-rates")
+def get_per_diem_rates(
+    year: int | None = None,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Lista alla per-diem-rates. ?year=2026 filtrerar på år."""
+    from app.services.per_diem_calculator import list_supported_countries
+    from app.models import PerDiemRate
+    from datetime import datetime as _dt
+    if year is not None:
+        return {"year": year, "rates": list_supported_countries(db, year)}
+    rows = db.query(PerDiemRate).order_by(
+        PerDiemRate.year.desc(), PerDiemRate.country_name.asc(),
+    ).all()
+    return {
+        "rates": [
+            {
+                "year": r.year,
+                "country_code": r.country_code,
+                "country_name": r.country_name,
+                "full_day_amount": float(r.full_day_amount),
+                "half_day_amount": float(r.half_day_amount),
+                "currency": r.currency,
+                "source": r.source,
+            }
+            for r in rows
+        ]
+    }
+
+
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
 # /api/*, /health) matchas före. Returnerar index.html för alla client-side
 # routes (/review, /log m.fl.) så browser-reload och deep-linking fungerar.

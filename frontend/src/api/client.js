@@ -207,6 +207,19 @@ export const api = {
     request('/api/excluded-vendors', { method: 'POST', body: payload }),
   excludedVendorsRemove: (id) =>
     request(`/api/excluded-vendors/${id}`, { method: 'DELETE' }),
+  // FAS 11.5.1 — Per Diem
+  tripsExtractFlightTimes: (id) =>
+    request(`/api/trips/${id}/extract-flight-times`, { method: 'POST' }),
+  tripsCalculatePerDiem: (id, payload) =>
+    request(`/api/trips/${id}/calculate-per-diem`, {
+      method: 'POST',
+      body: payload,
+    }),
+  tripsGetPerDiem: (id) => request(`/api/trips/${id}/per-diem`),
+  tripsUpdatePerDiem: (id, payload) =>
+    request(`/api/trips/${id}/per-diem`, { method: 'PATCH', body: payload }),
+  perDiemRates: (year) =>
+    request(`/api/per-diem-rates${year ? `?year=${year}` : ''}`),
   logout: async () => {
     await fetch(`${BASE}/logout`, { method: 'POST', credentials: 'include' });
     if (typeof window !== 'undefined') {
