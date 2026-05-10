@@ -562,6 +562,152 @@ export async function setupApiMocks(page, overrides = {}) {
       return route.fulfill(jsonResponse({ saved: true, id: 99 }));
     }
 
+    // --- FAS 11.5.1 — Per Diem ---
+    const extractMatch = pathname.match(
+      /\/api\/trips\/(\d+)\/extract-flight-times$/,
+    );
+    if (method === 'POST' && extractMatch) {
+      const id = Number(extractMatch[1]);
+      state.lastTripRequest = { kind: 'extract-flight-times', id };
+      return route.fulfill(
+        jsonResponse(
+          state.extractFlightTimesResponse || {
+            departure_home_at: '2026-04-30T06:15:00',
+            return_home_at: '2026-05-02T20:20:00',
+            destination_country_suggestion: 'SE',
+            trip_route: 'Helsinki - Stockholm - Helsinki',
+            flights_extracted: [],
+            warnings: [],
+          },
+        ),
+      );
+    }
+
+    const calcMatch = pathname.match(
+      /\/api\/trips\/(\d+)\/calculate-per-diem$/,
+    );
+    if (method === 'POST' && calcMatch) {
+      const id = Number(calcMatch[1]);
+      const body = request.postDataJSON() || {};
+      state.lastPerDiemRequest = { kind: 'calculate', id, body };
+      // Beräkna mock — en heldag Sverige eller två + deldygn
+      const meals = body.meal_toggles || {};
+      const dygnet = (state.perDiemDygnetMock || [
+        {
+          day_number: 1,
+          start_at: '2026-04-30T06:00:00',
+          end_at: '2026-05-01T06:00:00',
+          hours: 24.0,
+          ends_in_country: 'SE',
+          type: 'full_day_abroad',
+          rate_amount: 70.0,
+          rate_currency: 'EUR',
+          meal_deduction: false,
+          final_amount: 70.0,
+          rule_applied: 'kokopäiväraha_ulkomaa',
+        },
+        {
+          day_number: 2,
+          start_at: '2026-05-01T06:00:00',
+          end_at: '2026-05-02T06:00:00',
+          hours: 24.0,
+          ends_in_country: 'SE',
+          type: 'full_day_abroad',
+          rate_amount: 70.0,
+          rate_currency: 'EUR',
+          meal_deduction: false,
+          final_amount: 70.0,
+          rule_applied: 'kokopäiväraha_ulkomaa',
+        },
+      ]).map((d) => {
+        const meal = !!meals[String(d.day_number)];
+        const final =
+          meal && d.rule_applied !== 'puolikas_ulkomaanpäiväraha_deldygn'
+            ? d.rate_amount * 0.5
+            : d.rate_amount;
+        return { ...d, meal_deduction: meal, final_amount: final };
+      });
+      const total = dygnet.reduce((s, d) => s + d.final_amount, 0);
+      const result = {
+        dygnet,
+        total_amount: total,
+        currency: 'EUR',
+        rules_year: 2026,
+        destination_country: body.destination_country || 'SE',
+        effective_country_used: body.destination_country || 'SE',
+        is_short_foreign_trip: false,
+        calculated_at: new Date().toISOString(),
+        user_edited: !!body.meal_toggles,
+        warnings: [],
+      };
+      // Persistera i mock-trip-state så GET returnerar samma
+      const tripIdx = state.activeTrips.findIndex((t) => t.id === id);
+      if (tripIdx >= 0) {
+        state.activeTrips[tripIdx] = {
+          ...state.activeTrips[tripIdx],
+          per_diem_calculation: result,
+          per_diem_amount: total,
+          per_diem_currency: 'EUR',
+          destination_country: body.destination_country || 'SE',
+          departure_home_at: body.departure_home_at,
+          return_home_at: body.return_home_at,
+        };
+      }
+      return route.fulfill(jsonResponse(result));
+    }
+
+    const perDiemMatch = pathname.match(/\/api\/trips\/(\d+)\/per-diem$/);
+    if (perDiemMatch) {
+      const id = Number(perDiemMatch[1]);
+      const trip =
+        state.activeTrips.find((t) => t.id === id) ||
+        state.tripSuggestions.find((t) => t.id === id);
+      if (!trip) {
+        return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+      }
+      if (method === 'GET') {
+        return route.fulfill(
+          jsonResponse({
+            trip_id: id,
+            destination_country: trip.destination_country || null,
+            departure_home_at: trip.departure_home_at || null,
+            return_home_at: trip.return_home_at || null,
+            trip_route: trip.trip_route || null,
+            per_diem_amount: trip.per_diem_amount || null,
+            per_diem_currency: trip.per_diem_currency || null,
+            calculation: trip.per_diem_calculation || null,
+          }),
+        );
+      }
+      if (method === 'PATCH') {
+        const body = request.postDataJSON() || {};
+        state.lastPerDiemRequest = { kind: 'patch', id, body };
+        const meals = body.meal_toggles || {};
+        const existing = trip.per_diem_calculation || { dygnet: [] };
+        const dygnet = (existing.dygnet || []).map((d) => {
+          const meal = !!meals[String(d.day_number)];
+          const final =
+            meal && d.rule_applied !== 'puolikas_ulkomaanpäiväraha_deldygn'
+              ? d.rate_amount * 0.5
+              : d.rate_amount;
+          return { ...d, meal_deduction: meal, final_amount: final };
+        });
+        const total = dygnet.reduce((s, d) => s + d.final_amount, 0);
+        const result = {
+          ...existing, dygnet, total_amount: total, user_edited: true,
+        };
+        const idx = state.activeTrips.findIndex((t) => t.id === id);
+        if (idx >= 0) {
+          state.activeTrips[idx] = {
+            ...state.activeTrips[idx],
+            per_diem_calculation: result,
+            per_diem_amount: total,
+          };
+        }
+        return route.fulfill(jsonResponse(result));
+      }
+    }
+
     const idMatch = pathname.match(/\/api\/trips\/(\d+)$/);
     if (idMatch) {
       const id = Number(idMatch[1]);
