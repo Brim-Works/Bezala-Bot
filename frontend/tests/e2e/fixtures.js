@@ -423,6 +423,20 @@ export async function setupApiMocks(page, overrides = {}) {
     activeTrips: overrides.activeTrips || [buildActiveTrip()],
     lastTripRequest: null,
     refreshTripsResponse: overrides.refreshTripsResponse || { generated: 1 },
+    // FAS 11.1.1 — manuell tagging + SaaS-lista
+    availableTripsForMessage: overrides.availableTripsForMessage || {},
+    excludedVendors: overrides.excludedVendors || [
+      { id: 1, pattern: 'anthropic', description: 'AI/utveckling',
+        added_by: 'system', created_at: new Date().toISOString() },
+      { id: 2, pattern: 'spotify', description: 'Streaming',
+        added_by: 'system', created_at: new Date().toISOString() },
+      { id: 3, pattern: 'aws', description: 'Cloud/SaaS',
+        added_by: 'system', created_at: new Date().toISOString() },
+    ],
+    nextExcludedId: 100,
+    lastLinkRequest: null,
+    lastUnlinkRequest: null,
+    lastVendorRequest: null,
   };
 
   // --- enklare globala routes ---
@@ -591,12 +605,128 @@ export async function setupApiMocks(page, overrides = {}) {
     return route.fallback();
   });
 
+  // --- FAS 11.1.1 — Excluded vendors ---
+  await page.route('**/api/excluded-vendors**', async (route) => {
+    const request = route.request();
+    const method = request.method();
+    const url = new URL(request.url());
+    const pathname = url.pathname;
+
+    if (method === 'GET' && pathname.endsWith('/api/excluded-vendors')) {
+      return route.fulfill(jsonResponse({ vendors: state.excludedVendors }));
+    }
+
+    if (method === 'POST' && pathname.endsWith('/api/excluded-vendors')) {
+      const body = request.postDataJSON() || {};
+      state.lastVendorRequest = { kind: 'add', body };
+      const pattern = (body.pattern || '').trim().toLowerCase();
+      if (!pattern) {
+        return route.fulfill(jsonResponse({ detail: 'pattern saknas' }, 400));
+      }
+      const existing = state.excludedVendors.find(
+        (v) => v.pattern === pattern,
+      );
+      if (existing) {
+        return route.fulfill(
+          jsonResponse({
+            id: existing.id,
+            pattern: existing.pattern,
+            description: existing.description,
+            added_by: existing.added_by,
+            already_exists: true,
+          }),
+        );
+      }
+      const row = {
+        id: state.nextExcludedId++,
+        pattern,
+        description: (body.description || '').trim() || null,
+        added_by: 'user',
+        created_at: new Date().toISOString(),
+      };
+      state.excludedVendors.push(row);
+      return route.fulfill(
+        jsonResponse({ ...row, already_exists: false }),
+      );
+    }
+
+    const idMatch = pathname.match(/\/api\/excluded-vendors\/(\d+)$/);
+    if (method === 'DELETE' && idMatch) {
+      const id = Number(idMatch[1]);
+      state.lastVendorRequest = { kind: 'delete', id };
+      const idx = state.excludedVendors.findIndex((v) => v.id === id);
+      if (idx < 0) {
+        return route.fulfill(jsonResponse({ detail: 'Not found' }, 404));
+      }
+      state.excludedVendors.splice(idx, 1);
+      return route.fulfill(jsonResponse({ success: true }));
+    }
+
+    return route.fallback();
+  });
+
   // --- central dispatcher för /api/messages/** ---
   await page.route('**/api/messages**', async (route) => {
     const request = route.request();
     const method = request.method();
     const url = new URL(request.url());
     const pathname = url.pathname;
+
+    // FAS 11.1.1 — manuell tagging endpoints (måste matchas FÖRE
+    // generella /api/messages/:id-routes nedanför).
+    const availMatch = pathname.match(
+      /\/api\/messages\/([^/]+)\/available-trips$/,
+    );
+    if (method === 'GET' && availMatch) {
+      const messageId = decodeURIComponent(availMatch[1]);
+      const trips =
+        state.availableTripsForMessage[messageId] !== undefined
+          ? state.availableTripsForMessage[messageId]
+          : state.availableTripsForMessage.__default || [];
+      return route.fulfill(jsonResponse({ trips }));
+    }
+
+    const linkMatch = pathname.match(
+      /\/api\/messages\/([^/]+)\/link-to-trip$/,
+    );
+    if (method === 'POST' && linkMatch) {
+      const messageId = decodeURIComponent(linkMatch[1]);
+      const body = request.postDataJSON() || {};
+      state.lastLinkRequest = { messageId, body };
+      const list =
+        state.availableTripsForMessage[messageId] ||
+        state.availableTripsForMessage.__default;
+      if (Array.isArray(list)) {
+        const trip = list.find((t) => t.id === body.trip_id);
+        if (trip) {
+          trip.is_linked = true;
+          trip.added_by = 'manual';
+        }
+      }
+      return route.fulfill(
+        jsonResponse({ success: true, already_linked: false }),
+      );
+    }
+
+    const unlinkMatch = pathname.match(
+      /\/api\/messages\/([^/]+)\/unlink-from-trip\/(\d+)$/,
+    );
+    if (method === 'DELETE' && unlinkMatch) {
+      const messageId = decodeURIComponent(unlinkMatch[1]);
+      const tripId = Number(unlinkMatch[2]);
+      state.lastUnlinkRequest = { messageId, tripId };
+      const list =
+        state.availableTripsForMessage[messageId] ||
+        state.availableTripsForMessage.__default;
+      if (Array.isArray(list)) {
+        const trip = list.find((t) => t.id === tripId);
+        if (trip) {
+          trip.is_linked = false;
+          trip.added_by = null;
+        }
+      }
+      return route.fulfill(jsonResponse({ success: true }));
+    }
 
     // GET /api/messages/trash/count
     if (method === 'GET' && pathname.endsWith('/api/messages/trash/count')) {

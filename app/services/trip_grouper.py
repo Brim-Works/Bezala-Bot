@@ -52,10 +52,12 @@ FLIGHT_VENDOR_TOKENS: tuple[str, ...] = (
     "swiss",
 )
 
-# Resefönster runt en flygbiljett: 2 dagar före (för t.ex. taxi-till-
-# flygplats) och 14 dagar efter (för boende + lokala kostnader).
+# FAS 11.1.1 — Resefönstret bygger primärt på outbound→inbound-flyg.
+# Fall-back när vi inte hittar ett returflyg: outbound + 7 dagar.
+# 2 dagar före outbound tas också med (taxi till flygplats).
 WINDOW_DAYS_BEFORE = 2
-WINDOW_DAYS_AFTER = 14
+WINDOW_DAYS_AFTER_FALLBACK = 7
+RETURN_FLIGHT_LOOKAHEAD_DAYS = 14
 
 # Filter: kvitton dyrare än så här ingår sällan i en resa
 # (datorinköp, kontorsmöbler etc). Gäller alla valutor — vi gör inte
@@ -66,6 +68,29 @@ LARGE_RECEIPT_THRESHOLD = 5000.0
 # förslag ska skapas. < 2 = bara flygbiljett → vi skapar ändå men
 # markerar det med lägre confidence i refine-steget.
 MIN_RECEIPTS_FOR_TRIP = 2
+
+
+# FAS 11.1.1 — endast kvitton vars kategori innehåller någon av dessa
+# tokens räknas som potentiella resekostnader. Listan är medvetet bred
+# (substring-match, case-insensitive) och täcker både svenska, engelska
+# och finska kategori-strängar.
+TRAVEL_CATEGORIES: tuple[str, ...] = (
+    "hotell", "boende", "logi", "hotel",
+    "taxi", "tåg", "tag", "buss", "tunnelbana", "train", "bus",
+    "flyg", "flight",
+    "parkering", "parking",
+    "restaurang", "café", "cafe", "lunch", "middag",
+    "biluthyrning", "hyrbil", "rental",
+    "kollektivtrafik", "transit",
+    "mat",
+)
+
+
+def _is_travel_category(category: str | None) -> bool:
+    if not category:
+        return False
+    needle = category.lower()
+    return any(token in needle for token in TRAVEL_CATEGORIES)
 
 
 @dataclass(frozen=True)
@@ -118,33 +143,83 @@ def find_flight_anchors(
     return [m for m in messages if _is_flight(m)]
 
 
+def _find_return_flight_date(
+    outbound: ProcessedMessage,
+    all_messages: Sequence[ProcessedMessage],
+) -> date | None:
+    """Hitta hemresan: tidigaste flygkvitto efter outbound, inom
+    RETURN_FLIGHT_LOOKAHEAD_DAYS-fönstret. Returnerar None om inget
+    sådant hittas — kallaren använder fallback-fönster."""
+    outbound_d = _msg_date(outbound)
+    if not outbound_d:
+        return None
+    upper = outbound_d + timedelta(days=RETURN_FLIGHT_LOOKAHEAD_DAYS)
+    candidates: list[date] = []
+    for m in all_messages:
+        if m.message_id == outbound.message_id:
+            continue
+        if not _is_flight(m):
+            continue
+        d = _msg_date(m)
+        if not d:
+            continue
+        if outbound_d < d <= upper:
+            candidates.append(d)
+    return min(candidates) if candidates else None
+
+
 def find_related_receipts(
     anchor: ProcessedMessage,
     all_messages: Sequence[ProcessedMessage],
+    *,
+    excluded_patterns: Sequence[str] = (),
 ) -> list[ProcessedMessage]:
     """Hitta kvitton som troligen hör till samma resa som flygbiljetten.
 
-    Heuristik:
-      - inom WINDOW_DAYS_BEFORE/AFTER dagar runt flygets datum
-      - exkludera mycket stora belopp (sannolikt inte resekostnad)
-      - inkludera alltid själva anchor-kvittot
+    FAS 11.1.1 — striktare heuristik:
+      1. Datum-fönstret är outbound→inbound (inte ±14d). När returflyg
+         saknas faller vi tillbaka till outbound + 7d.
+      2. Endast kvitton vars kategori liknar en resekategori
+         (TRAVEL_CATEGORIES). Anchor-flyget är alltid med.
+      3. Vendors i excluded_patterns (SaaS/prenumerationer) tas bort.
+      4. Skälig summa (<5000 EUR).
+      5. Anchor-kvittot är alltid inkluderat.
     """
     anchor_d = _msg_date(anchor)
     if not anchor_d:
         return [anchor]
 
+    return_d = _find_return_flight_date(anchor, all_messages)
+    if return_d is None:
+        return_d = anchor_d + timedelta(days=WINDOW_DAYS_AFTER_FALLBACK)
+
     window_start = anchor_d - timedelta(days=WINDOW_DAYS_BEFORE)
-    window_end = anchor_d + timedelta(days=WINDOW_DAYS_AFTER)
+    # En dags marginal efter sista flyget för t.ex. taxi-hem-kvitto
+    # som kommer dagen efter återresan.
+    window_end = return_d + timedelta(days=1)
+
+    excluded = tuple(p.lower() for p in excluded_patterns if p)
 
     related: list[ProcessedMessage] = [anchor]
     for msg in all_messages:
         if msg.message_id == anchor.message_id:
             continue
+
         d = _msg_date(msg)
         if not d or not (window_start <= d <= window_end):
             continue
+
+        if not _is_travel_category(msg.category):
+            continue
+
         if msg.amount and msg.amount > LARGE_RECEIPT_THRESHOLD:
             continue
+
+        if msg.vendor and excluded:
+            haystack = msg.vendor.lower()
+            if any(p in haystack for p in excluded):
+                continue
+
         related.append(msg)
     return related
 
@@ -457,9 +532,22 @@ def suggest_trips(db: Session, lookback_days: int = 90) -> list[dict]:
     if not anchors:
         return []
 
+    # Hämta SaaS-listan en gång per analys. Defensivt — om tabellen
+    # saknas eller fel uppstår faller vi tillbaka till tom lista.
+    try:
+        from app.services.excluded_vendors import (
+            list_excluded_vendor_patterns,
+        )
+        excluded_patterns = list_excluded_vendor_patterns(db)
+    except Exception:  # noqa: BLE001
+        logger.exception("Kunde inte läsa excluded_vendors — fortsätter utan filter")
+        excluded_patterns = []
+
     proposals: list[TripProposal] = []
     for anchor in anchors:
-        related = find_related_receipts(anchor, candidates)
+        related = find_related_receipts(
+            anchor, candidates, excluded_patterns=excluded_patterns,
+        )
         if len(related) < MIN_RECEIPTS_FOR_TRIP:
             continue
         anchor_d = _msg_date(anchor) or datetime.utcnow().date()

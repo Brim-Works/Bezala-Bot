@@ -300,3 +300,28 @@ class TripFeedback(Base):
     feedback_type = Column(String(50), nullable=False)
     details = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class ExcludedVendor(Base):
+    """FAS 11.1.1 — vendors som aldrig ska räknas som resekvitton.
+
+    Lagrar substring-mönster (t.ex. 'anthropic', 'spotify') som
+    matchas case-insensitive mot ProcessedMessage.vendor när
+    trip_grouper bygger förslag.
+
+    `added_by` är 'system' (default-listan, seedad vid migration) eller
+    'user' (egna tillägg från Inställningar-vyn). Inga FK-relationer.
+    """
+
+    __tablename__ = "excluded_vendors"
+    __table_args__ = (
+        UniqueConstraint(
+            "vendor_pattern", name="uq_excluded_vendors_pattern",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    vendor_pattern = Column(String(200), nullable=False)
+    description = Column(Text, nullable=True)
+    added_by = Column(String(20), nullable=False, default="user")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)

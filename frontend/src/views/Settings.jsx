@@ -9,6 +9,7 @@ import FilterSection from '../components/settings/FilterSection.jsx';
 import ScanRulesSection from '../components/settings/ScanRulesSection.jsx';
 import LinkFetchSection from '../components/settings/LinkFetchSection.jsx';
 import TrashSection from '../components/settings/TrashSection.jsx';
+import ExcludedVendorsSection from '../components/settings/ExcludedVendorsSection.jsx';
 import SaveBar from '../components/settings/SaveBar.jsx';
 import { useToast } from '../lib/toast.jsx';
 
@@ -118,6 +119,7 @@ export default function Settings() {
         />
         <LinkFetchSection form={form} update={update} />
         <TrashSection form={form} update={update} />
+        <ExcludedVendorsSection />
       </div>
       <SaveBar dirty={dirty} saving={saving} onSave={onSave} onReset={onReset} />
     </>
