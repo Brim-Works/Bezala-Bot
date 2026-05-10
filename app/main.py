@@ -73,6 +73,16 @@ def _run_once_cleanup_errors() -> None:
         logger.exception("Engångsrensning av error-rader misslyckades.")
 
 
+def _run_once_seed_excluded_vendors() -> None:
+    """FAS 11.1.1 — seed default-listan av exkluderade vendors."""
+    try:
+        from app.services.excluded_vendors import seed_default_vendors
+        with session_scope() as db:
+            seed_default_vendors(db)
+    except Exception:
+        logger.exception("Kunde inte seed:a excluded_vendors-listan.")
+
+
 def _run_once_fix_skipped_bezala() -> None:
     """Migrera sparade-till-Drive-rader med bezala_upload_status='skipped' till
     'pending' så användaren kan ladda upp manuellt. Gammal logik satte
@@ -114,6 +124,7 @@ async def lifespan(app: FastAPI):
     logger.info("Databas initialiserad.")
     _run_once_cleanup_errors()
     _run_once_fix_skipped_bezala()
+    _run_once_seed_excluded_vendors()
     start_scheduler()
     yield
     shutdown_scheduler()
@@ -2371,6 +2382,244 @@ def post_trip_feedback(
     trip = _trip_or_404(db, trip_id)
     fb = save_trip_feedback(db, trip, payload.feedback_type, payload.details)
     return {"saved": True, "id": fb.id}
+
+
+# --- FAS 11.1.1 — Manuell tagging av kvitton till resor ----------------
+
+
+class LinkMessageToTripPayload(BaseModel):
+    trip_id: int
+
+
+def _processed_message_or_404(db: Session, message_id: str):
+    msg = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.message_id == message_id)
+        .first()
+    )
+    if msg is None:
+        raise HTTPException(status_code=404, detail="Meddelande hittades inte")
+    return msg
+
+
+@app.post("/api/messages/{message_id}/link-to-trip")
+def post_link_message_to_trip(
+    message_id: str,
+    payload: LinkMessageToTripPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Koppla ett kvitto manuellt till en resa. Idempotent — om
+    kopplingen redan finns aktivt returneras already_linked=True."""
+    from app.models import TripMessage
+    from app.services.trip_grouper import recalculate_trip_total
+
+    _processed_message_or_404(db, message_id)
+    trip = _trip_or_404(db, payload.trip_id)
+
+    existing = (
+        db.query(TripMessage)
+        .filter(TripMessage.trip_id == trip.id)
+        .filter(TripMessage.message_id == message_id)
+        .first()
+    )
+    already_linked = False
+    if existing is not None:
+        if existing.removed_at is None:
+            already_linked = True
+        else:
+            existing.removed_at = None
+            existing.added_by = "manual"
+    else:
+        db.add(TripMessage(
+            trip_id=trip.id,
+            message_id=message_id,
+            added_by="manual",
+        ))
+
+    db.flush()
+    recalculate_trip_total(db, trip)
+    db.commit()
+    return {"success": True, "already_linked": already_linked}
+
+
+@app.delete("/api/messages/{message_id}/unlink-from-trip/{trip_id}")
+def delete_unlink_message_from_trip(
+    message_id: str,
+    trip_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Koppla bort ett kvitto från en resa (soft via removed_at)."""
+    from app.models import TripMessage
+    from app.services.trip_grouper import recalculate_trip_total
+    from datetime import datetime as _dt
+
+    trip = _trip_or_404(db, trip_id)
+    tm = (
+        db.query(TripMessage)
+        .filter(TripMessage.trip_id == trip_id)
+        .filter(TripMessage.message_id == message_id)
+        .filter(TripMessage.removed_at.is_(None))
+        .first()
+    )
+    if tm is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Kvittot är inte kopplat till resan",
+        )
+    tm.removed_at = _dt.utcnow()
+    db.flush()
+    recalculate_trip_total(db, trip)
+    db.commit()
+    return {"success": True}
+
+
+@app.get("/api/messages/{message_id}/available-trips")
+def get_available_trips_for_message(
+    message_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Lista aktiva resor som detta kvitto kan kopplas till — filtrerar
+    på datum-fönstret ±14 dagar runt kvittots datum, plus eventuell
+    redan länkad resa."""
+    from datetime import date as _date, datetime as _dt, timedelta as _td
+    from app.models import Trip, TripMessage
+
+    msg = _processed_message_or_404(db, message_id)
+
+    msg_date: _date | None = None
+    if msg.receipt_date:
+        try:
+            msg_date = _dt.strptime(msg.receipt_date[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            pass
+    if msg_date is None and msg.received_at:
+        try:
+            msg_date = msg.received_at.date()
+        except Exception:  # noqa: BLE001
+            msg_date = None
+
+    candidate_trips: list[Trip] = []
+    if msg_date is not None:
+        lower = msg_date - _td(days=14)
+        upper = msg_date + _td(days=14)
+        candidate_trips = (
+            db.query(Trip)
+            .filter(Trip.status.in_(["active", "suggested"]))
+            .filter(Trip.start_date <= upper)
+            .filter(Trip.end_date >= lower)
+            .order_by(Trip.start_date.desc())
+            .all()
+        )
+
+    # Inkludera även resor där kvittot redan är länkat (även utanför
+    # datum-fönstret), så användaren kan koppla bort.
+    linked_rows = (
+        db.query(TripMessage)
+        .filter(TripMessage.message_id == message_id)
+        .filter(TripMessage.removed_at.is_(None))
+        .all()
+    )
+    linked_trip_ids = {tm.trip_id for tm in linked_rows}
+    if linked_trip_ids:
+        already_in_candidates = {t.id for t in candidate_trips}
+        extra_ids = linked_trip_ids - already_in_candidates
+        if extra_ids:
+            extra_trips = (
+                db.query(Trip)
+                .filter(Trip.id.in_(extra_ids))
+                .all()
+            )
+            candidate_trips.extend(extra_trips)
+
+    added_by_lookup = {tm.trip_id: tm.added_by for tm in linked_rows}
+
+    return {
+        "trips": [
+            {
+                "id": t.id,
+                "title": t.title,
+                "destination": t.destination,
+                "start_date": t.start_date.isoformat() if t.start_date else None,
+                "end_date": t.end_date.isoformat() if t.end_date else None,
+                "status": t.status,
+                "is_linked": t.id in linked_trip_ids,
+                "added_by": added_by_lookup.get(t.id),
+            }
+            for t in candidate_trips
+        ]
+    }
+
+
+# --- FAS 11.1.1 — Exkluderade vendors (SaaS-lista) ---------------------
+
+
+class AddExcludedVendorPayload(BaseModel):
+    pattern: str
+    description: str | None = None
+
+
+@app.get("/api/excluded-vendors")
+def list_excluded_vendors_endpoint(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.models import ExcludedVendor
+    rows = (
+        db.query(ExcludedVendor)
+        .order_by(ExcludedVendor.added_by.desc(), ExcludedVendor.vendor_pattern)
+        .all()
+    )
+    return {
+        "vendors": [
+            {
+                "id": v.id,
+                "pattern": v.vendor_pattern,
+                "description": v.description,
+                "added_by": v.added_by,
+                "created_at": v.created_at.isoformat() if v.created_at else None,
+            }
+            for v in rows
+        ]
+    }
+
+
+@app.post("/api/excluded-vendors")
+def add_excluded_vendor_endpoint(
+    payload: AddExcludedVendorPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.excluded_vendors import add_user_vendor
+    if not payload.pattern.strip():
+        raise HTTPException(status_code=400, detail="pattern saknas")
+    try:
+        row, already = add_user_vendor(
+            db, payload.pattern, payload.description,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {
+        "id": row.id,
+        "pattern": row.vendor_pattern,
+        "description": row.description,
+        "added_by": row.added_by,
+        "already_exists": already,
+    }
+
+
+@app.delete("/api/excluded-vendors/{vendor_id}")
+def remove_excluded_vendor_endpoint(
+    vendor_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.excluded_vendors import remove_vendor
+    if not remove_vendor(db, vendor_id):
+        raise HTTPException(status_code=404, detail="Vendor finns inte")
+    return {"success": True}
 
 
 # SPA-fallback — måste ligga sist så specifika routes (/, /settings, /login,
