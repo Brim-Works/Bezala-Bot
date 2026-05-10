@@ -252,6 +252,15 @@ class Trip(Base):
 
     user_edited = Column(Boolean, nullable=False, default=False)
 
+    # FAS 11.5.1 — per diem (traktamente)
+    destination_country = Column(String(2), nullable=True)
+    departure_home_at = Column(DateTime, nullable=True)
+    return_home_at = Column(DateTime, nullable=True)
+    trip_route = Column(Text, nullable=True)
+    per_diem_calculation = Column(JSON, nullable=True)
+    per_diem_amount = Column(Numeric(10, 2), nullable=True)
+    per_diem_currency = Column(String(3), nullable=True)
+
 
 Index("idx_trips_dates", Trip.start_date, Trip.end_date)
 
@@ -281,6 +290,35 @@ class TripMessage(Base):
     added_by = Column(String(20), nullable=False)  # 'ai_suggestion' | 'manual'
     added_at = Column(DateTime, server_default=func.now(), nullable=False)
     removed_at = Column(DateTime, nullable=True)
+
+
+class PerDiemRate(Base):
+    """FAS 11.5.1 — Verohallinto-rates per land och år för traktamente.
+
+    full_day_amount = kokopäiväraha (>10h)
+    half_day_amount = osapäiväraha (>6h) eller halv ulkomaanpäiväraha
+    source = 'verohallinto' eller 'manual'
+
+    Seed:as vid första startup för 2026 (FI, SE, NO, LV)."""
+
+    __tablename__ = "per_diem_rates"
+    __table_args__ = (
+        UniqueConstraint("year", "country_code", name="uq_per_diem_year_country"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    year = Column(Integer, nullable=False)
+    country_code = Column(String(2), nullable=False)  # ISO 3166-1
+    country_name = Column(String(100), nullable=False)
+    full_day_amount = Column(Numeric(10, 2), nullable=False)
+    half_day_amount = Column(Numeric(10, 2), nullable=False)
+    currency = Column(String(3), nullable=False, default="EUR")
+    source = Column(String(50), nullable=True)
+    source_url = Column(String(500), nullable=True)
+    last_updated = Column(DateTime, server_default=func.now(), nullable=True)
+
+
+Index("idx_per_diem_year_country", PerDiemRate.year, PerDiemRate.country_code)
 
 
 class TripFeedback(Base):

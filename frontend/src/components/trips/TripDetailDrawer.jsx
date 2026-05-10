@@ -10,6 +10,7 @@ export default function TripDetailDrawer({
   onRemoveReceipt,
   onGoodFeedback,
   onBadFeedback,
+  onCalculatePerDiem,
 }) {
   const { t, lang } = useI18n();
   const totalLabel = fmtAmount(
@@ -17,6 +18,14 @@ export default function TripDetailDrawer({
     trip.base_currency || 'EUR',
     lang,
   );
+  const perDiemLabel =
+    trip.per_diem_amount != null
+      ? fmtAmount(
+          trip.per_diem_amount,
+          trip.per_diem_currency || 'EUR',
+          lang,
+        )
+      : null;
 
   return (
     <div
@@ -51,6 +60,15 @@ export default function TripDetailDrawer({
         </header>
 
         <div className="trip-drawer__totals mono">{totalLabel}</div>
+
+        {perDiemLabel ? (
+          <div
+            className="trip-drawer__per-diem mono"
+            data-testid="trip-drawer-per-diem-amount"
+          >
+            🌍 {t.perDiem.title}: {perDiemLabel}
+          </div>
+        ) : null}
 
         {trip.description ? (
           <p className="trip-drawer__description">{trip.description}</p>
@@ -153,6 +171,16 @@ export default function TripDetailDrawer({
               >
                 + {t.trips.addReceipt}
               </button>
+              {onCalculatePerDiem ? (
+                <button
+                  type="button"
+                  className="btn"
+                  onClick={onCalculatePerDiem}
+                  data-testid="trip-drawer-per-diem"
+                >
+                  🌍 {t.perDiem.button}
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="btn ghost"

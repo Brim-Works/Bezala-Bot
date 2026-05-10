@@ -771,6 +771,23 @@ def serialize_trip(db: Session, trip: Trip) -> dict:
             trip.netvisor_synced_at.isoformat()
             if trip.netvisor_synced_at else None
         ),
+        # FAS 11.5.1 — per diem
+        "destination_country": trip.destination_country,
+        "departure_home_at": (
+            trip.departure_home_at.isoformat()
+            if trip.departure_home_at else None
+        ),
+        "return_home_at": (
+            trip.return_home_at.isoformat()
+            if trip.return_home_at else None
+        ),
+        "trip_route": trip.trip_route,
+        "per_diem_amount": (
+            float(trip.per_diem_amount)
+            if trip.per_diem_amount is not None else None
+        ),
+        "per_diem_currency": trip.per_diem_currency,
+        "per_diem_calculation": trip.per_diem_calculation,
         "messages": messages,
     }
 
