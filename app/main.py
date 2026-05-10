@@ -323,22 +323,139 @@ def oauth_start(
 
 
 _OAUTH_RESULT_PAGE = """<!doctype html>
-<html lang="sv"><head><meta charset="utf-8">
-<title>{title}</title>
+<html lang="sv"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} — Bezala Bot</title>
 <style>
- body {{ font-family: system-ui, sans-serif; background: #111; color: #eee;
-        display: grid; place-items: center; min-height: 100vh; margin: 0; }}
- .card {{ background: #1a1a1a; padding: 2rem; border-radius: 8px; max-width: 480px;
-        text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,.4); }}
- .ok {{ color: #6cf07a; }} .err {{ color: #f66; }}
- h1 {{ margin: 0 0 .8rem; font-size: 1.2rem; }}
- a {{ color: #3a82f6; }}
-</style></head><body>
-<div class="card">
- <h1 class="{kind}">{title}</h1>
- <p>{body}</p>
- <p><a href="/settings">Tillbaka till Inställningar</a></p>
-</div></body></html>
+  /* Speglar Bezala Bots designtokens från frontend/src/styles/tokens.css.
+     Inlinas eftersom denna sida renderas utanför SPA-bundlen. */
+  :root {{
+    --bg: #f7f7f4; --surface: #ffffff; --surface-2: #f3f3ee;
+    --border: #e4e3db; --border-strong: #cfcec2;
+    --text: #111412; --text-2: #4b524c; --muted: #8a8f88;
+    --accent: oklch(48% 0.09 165); --accent-ink: #ffffff;
+    --ok: oklch(52% 0.10 160); --err: oklch(52% 0.16 25);
+    --radius: 8px; --radius-lg: 12px;
+    --shadow-md: 0 2px 6px rgba(20, 40, 30, 0.06);
+    --font-sans: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+    --font-display: 'Instrument Serif', Georgia, serif;
+  }}
+  html[data-theme='B'] {{
+    --bg: #12221c; --surface: #1a2d26; --surface-2: #203830;
+    --border: #264037; --border-strong: #35574a;
+    --text: #f1ead8; --text-2: #b5b09c; --muted: #7d8078;
+    --accent: oklch(80% 0.13 90); --accent-ink: #12221c;
+    --ok: oklch(78% 0.13 160); --err: oklch(70% 0.16 25);
+  }}
+  * {{ box-sizing: border-box; }}
+  body {{
+    margin: 0; min-height: 100vh;
+    font-family: var(--font-sans);
+    background: var(--bg); color: var(--text);
+    display: grid; place-items: center; padding: 20px;
+  }}
+  .oauth-card {{
+    width: 100%; max-width: 440px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 32px 28px;
+    box-shadow: var(--shadow-md);
+    text-align: center;
+  }}
+  .oauth-icon {{
+    width: 64px; height: 64px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    margin: 0 auto 18px;
+    font-size: 32px; font-weight: 600;
+    background: color-mix(in oklch, var(--ok) 12%, transparent);
+    color: var(--ok);
+    border: 2px solid color-mix(in oklch, var(--ok) 40%, transparent);
+  }}
+  .oauth-icon--err {{
+    background: color-mix(in oklch, var(--err) 12%, transparent);
+    color: var(--err);
+    border-color: color-mix(in oklch, var(--err) 40%, transparent);
+  }}
+  h1 {{
+    margin: 0 0 10px;
+    font-family: var(--font-display);
+    font-weight: 500;
+    font-size: 24px;
+    letter-spacing: -0.01em;
+  }}
+  p {{
+    margin: 0 0 20px;
+    color: var(--text-2);
+    font-size: 14px;
+    line-height: 1.5;
+  }}
+  .oauth-redirect-note {{
+    color: var(--muted);
+    font-size: 12px;
+    margin: 14px 0 0;
+  }}
+  .oauth-btn {{
+    display: inline-block;
+    padding: 10px 20px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    border: 0; border-radius: var(--radius);
+    font: inherit; font-weight: 500; font-size: 14px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: filter 0.12s;
+  }}
+  .oauth-btn:hover {{ filter: brightness(1.06); }}
+  .oauth-btn--ghost {{
+    background: transparent;
+    color: var(--text);
+    border: 1px solid var(--border-strong);
+  }}
+  .oauth-btn--ghost:hover {{ background: var(--surface-2); }}
+</style>
+</head><body>
+<main class="oauth-card" data-testid="oauth-result-card">
+  <div class="oauth-icon {icon_class}" aria-hidden="true">{icon}</div>
+  <h1>{title}</h1>
+  <p>{body}</p>
+  <a href="/settings" class="oauth-btn" data-testid="oauth-back-btn">{back_label}</a>
+  {auto_redirect_block}
+</main>
+<script>
+  // Speglar SPA-temat: läs samma localStorage-nyckel som ThemeProvider
+  // sätter ('bb_variant'), default = 'A' (ljust).
+  try {{
+    var v = window.localStorage.getItem('bb_variant');
+    if (v === 'A' || v === 'B') {{
+      document.documentElement.setAttribute('data-theme', v);
+    }}
+  }} catch (e) {{ /* ignorera om localStorage är blockerad */ }}
+  {redirect_script}
+</script>
+</body></html>
+"""
+
+
+_AUTO_REDIRECT_BLOCK = (
+    '<p class="oauth-redirect-note" data-testid="oauth-redirect-note">'
+    'Tar dig tillbaka till Inställningar om <span id="oauth-countdown">3</span>&nbsp;s…'
+    "</p>"
+)
+
+_AUTO_REDIRECT_SCRIPT = """
+  var seconds = 3;
+  var el = document.getElementById('oauth-countdown');
+  var timer = setInterval(function () {
+    seconds -= 1;
+    if (el) el.textContent = String(seconds);
+    if (seconds <= 0) {
+      clearInterval(timer);
+      window.location.href = '/settings';
+    }
+  }, 1000);
 """
 
 
@@ -351,8 +468,14 @@ def _oauth_result_html(*, ok: bool, service: str, message: str) -> HTMLResponse:
     return HTMLResponse(
         _OAUTH_RESULT_PAGE.format(
             title=title,
-            kind="ok" if ok else "err",
+            icon="✓" if ok else "!",
+            icon_class="" if ok else "oauth-icon--err",
             body=message,
+            back_label="Tillbaka till Inställningar",
+            # Auto-redirect bara vid framgång — vid fel vill användaren
+            # läsa felmeddelandet i lugn och ro innan de går vidare.
+            auto_redirect_block=_AUTO_REDIRECT_BLOCK if ok else "",
+            redirect_script=_AUTO_REDIRECT_SCRIPT if ok else "",
         ),
         status_code=200 if ok else 400,
     )
