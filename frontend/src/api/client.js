@@ -130,6 +130,13 @@ export const api = {
     request(`/api/messages/${id}/fetch-pdf`, { method: 'POST' }),
   reprocessMessage: (id) =>
     request(`/api/messages/${id}/reprocess`, { method: 'POST' }),
+  reprocessMessageFull: (id, { force = false } = {}) =>
+    request(
+      `/api/messages/${id}/reprocess-full${force ? '?force=true' : ''}`,
+      { method: 'POST' },
+    ),
+  cleanupExcludedVendors: () =>
+    request('/api/trips/cleanup-excluded-vendors', { method: 'POST' }),
   messageBody: (id) => request(`/api/messages/${id}/body`),
   fetchPdfFromUrl: (id, url) =>
     request(`/api/messages/${id}/fetch-pdf-from-url`, {

@@ -47,6 +47,15 @@ export default {
     tabsLabel: 'Pipeline-steg',
     delete: 'Ta bort',
     deleteLabel: 'Ta bort mail',
+    reprocess: {
+      button: 'Bearbeta om',
+      confirmCoupled:
+        'Detta kvitto är kopplat till Bezala. Vill du fortsätta?',
+      confirmAction: 'Bearbeta om ändå',
+      loading: 'Bearbetar om…',
+      success: 'Klart — bearbetar om i bakgrunden',
+      error: 'Bearbetning misslyckades: {error}',
+    },
     tabs: {
       gmail: 'Gmail',
       ai: 'AI',
@@ -301,6 +310,25 @@ export default {
       label: 'Avsändare / domäner som kräver länk-fetch',
       placeholder: 'noreply@arlandaexpress.se',
       hint: 'Bezala Bot ignorerar bilagor från dessa och letar efter en kvitto-länk i mail-bodyn istället.',
+    },
+    cleanupTrips: {
+      title: 'Exkluderade leverantörer',
+      lead:
+        'Lista vendors som aldrig ska grupperas i resor (t.ex. SaaS-prenumerationer som Anthropic eller OpenAI).',
+      vendorsLabel: 'Vendors att exkludera',
+      vendorsPlaceholder: 'Anthropic',
+      vendorsHint:
+        'Matchas case-insensitive mot kvittots vendor-fält. Filtrerar ut nya och befintliga gruppringar.',
+      actionTitle: 'Städa befintliga resor',
+      helpText: 'Tar bort kvitton från resor om vendor finns i listan ovan.',
+      button: 'Städa nu',
+      busy: 'Städar…',
+      confirmTitle: 'Städa befintliga resor?',
+      confirmText:
+        'Detta tar bort kvitton från redan grupperade resor. Resor som blir tomma raderas. Kan inte ångras.',
+      confirmAction: 'Städa',
+      successToast: '{count} kvitton borttagna från {trips} resor',
+      failed: 'Städning misslyckades',
     },
     toast: {
       saved: 'Inställningar sparade',

@@ -120,6 +120,12 @@ class AppSettings(Base):
     # Skånetrafiken). Default ON.
     html_to_pdf_enabled = Column(Boolean, nullable=False, default=True)
 
+    # FAS 11.1+ — vendors som ska exkluderas från Resa-grupperingen.
+    # Strängar matchas case-insensitive mot ProcessedMessage.vendor.
+    # Tillämpas både vid ny gruppering och som reaktivt filter på
+    # befintliga trips (serialize_trip).
+    excluded_vendors = Column(JSON, nullable=False, default=list)
+
     # Sätts av Gmail/Drive-klienterna när refresh-tokenen är ogiltig
     # (invalid_grant). UI visar varningsbanner + Återanslut-knapp.
     gmail_auth_required = Column(Boolean, nullable=False, default=False)

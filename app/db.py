@@ -52,6 +52,8 @@ _APP_SETTINGS_ADDITIONS = {
     # OAuth re-auth flags — sätts till true vid invalid_grant.
     "gmail_auth_required": "BOOLEAN NOT NULL DEFAULT FALSE",
     "drive_auth_required": "BOOLEAN NOT NULL DEFAULT FALSE",
+    # FAS 11.1+ — vendors att exkludera från Resa-grupperingen.
+    "excluded_vendors": "JSON NOT NULL DEFAULT '[]'",
 }
 
 _SCAN_RUNS_ADDITIONS = {

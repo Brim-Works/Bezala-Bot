@@ -47,6 +47,15 @@ export default {
     tabsLabel: 'Pipeline steps',
     delete: 'Delete',
     deleteLabel: 'Delete mail',
+    reprocess: {
+      button: 'Reprocess',
+      confirmCoupled:
+        'This receipt is linked to Bezala. Continue anyway?',
+      confirmAction: 'Reprocess anyway',
+      loading: 'Reprocessing…',
+      success: 'Done — reprocessing in the background',
+      error: 'Reprocess failed: {error}',
+    },
     tabs: {
       gmail: 'Gmail',
       ai: 'AI',
@@ -292,6 +301,25 @@ export default {
     builtinSenders: {
       title: 'Built-in senders (always active)',
       hint: 'These addresses are always scanned. Contact support to change.',
+    },
+    cleanupTrips: {
+      title: 'Excluded vendors',
+      lead:
+        'Vendors that should never be grouped into trips (e.g. SaaS subscriptions like Anthropic or OpenAI).',
+      vendorsLabel: 'Vendors to exclude',
+      vendorsPlaceholder: 'Anthropic',
+      vendorsHint:
+        'Matched case-insensitively against the receipt vendor field. Filters new and existing groupings.',
+      actionTitle: 'Clean up existing trips',
+      helpText: 'Removes receipts from trips when the vendor is in the list above.',
+      button: 'Clean up now',
+      busy: 'Cleaning up…',
+      confirmTitle: 'Clean up existing trips?',
+      confirmText:
+        'Removes receipts from already-grouped trips. Trips that become empty are deleted. Cannot be undone.',
+      confirmAction: 'Clean up',
+      successToast: '{count} receipts removed from {trips} trips',
+      failed: 'Cleanup failed',
     },
     linkFetch: {
       title: 'Vendors with link-based receipts',

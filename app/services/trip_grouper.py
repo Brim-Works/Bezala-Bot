@@ -630,7 +630,14 @@ def recalculate_trip_total(db: Session, trip: Trip) -> None:
 
 
 def serialize_trip(db: Session, trip: Trip) -> dict:
-    """Returnera Trip + dess kvitton som ett dict redo för JSON-svar."""
+    """Returnera Trip + dess kvitton som ett dict redo för JSON-svar.
+
+    FAS 11.1+: applicera reaktivt excluded_vendors-filter — kvitton
+    från exkluderade vendors tas bort ur respons-objektet utan att
+    röra DB-raderna. Cleanup-endpointen tar permanent bort dem."""
+    from app.services.settings_service import get_excluded_vendors
+    excluded = get_excluded_vendors(db)
+
     rows = (
         db.query(TripMessage, ProcessedMessage)
         .join(
@@ -644,6 +651,8 @@ def serialize_trip(db: Session, trip: Trip) -> dict:
     )
     messages = []
     for tm, msg in rows:
+        if msg.vendor and msg.vendor.strip().lower() in excluded:
+            continue
         messages.append({
             "id": msg.id,
             "message_id": msg.message_id,
@@ -678,6 +687,9 @@ def serialize_trip(db: Session, trip: Trip) -> dict:
         "ai_confidence": trip.ai_confidence,
         "description": trip.description,
         "user_edited": bool(trip.user_edited),
+        # message_count reflekterar antalet kvitton EFTER excluded_vendors-
+        # filtreringen — frontend kan visa "0 kvitton" eller dölja resan.
+        "message_count": len(messages),
         "netvisor_trip_id": trip.netvisor_trip_id,
         "netvisor_synced_at": (
             trip.netvisor_synced_at.isoformat()
