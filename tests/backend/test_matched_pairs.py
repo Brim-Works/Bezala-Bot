@@ -247,6 +247,90 @@ class UnmatchEndpointTest(_Base):
         resp = self.client.post("/api/bezala/unmatch/m-1")
         self.assertEqual(resp.status_code, 400)
 
+    def test_unmatch_clears_payment_snapshot(self):
+        """unmatch ska rensa hela bezala_payment_*-snapshotten."""
+        self._seed(
+            message_id="m-snap",
+            bezala_transaction_id="bz-1",
+            bezala_upload_status="success",
+            matched_at=datetime.utcnow(),
+            bezala_payment_merchant="FINNAIR HEL",
+            bezala_payment_amount=503.0,
+            bezala_payment_currency="EUR",
+            bezala_payment_date="2026-04-30",
+        )
+        resp = self.client.post("/api/bezala/unmatch/m-snap")
+        self.assertEqual(resp.status_code, 200)
+        with self.SessionLocal() as db:
+            row = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="m-snap")
+                .first()
+            )
+            self.assertIsNone(row.bezala_payment_merchant)
+            self.assertIsNone(row.bezala_payment_amount)
+            self.assertIsNone(row.bezala_payment_currency)
+            self.assertIsNone(row.bezala_payment_date)
+
+
+class MatchedPairsPaymentSnapshotTest(_Base):
+    def test_response_includes_payment_object(self):
+        self._seed(
+            message_id="m-snap",
+            bezala_transaction_id="bz-99",
+            bezala_upload_status="success",
+            matched_at=datetime.utcnow(),
+            bezala_payment_merchant="MIKKO: FINNAIR, VANTAA, FI",
+            bezala_payment_amount=503.0,
+            bezala_payment_currency="EUR",
+            bezala_payment_date="2026-04-30",
+        )
+        body = self.client.get(
+            "/api/bezala/matched-pairs?period=all"
+        ).json()
+        pair = next(p for p in body["pairs"] if p["message_id"] == "m-snap")
+        self.assertEqual(pair["payment"]["merchant"], "MIKKO: FINNAIR, VANTAA, FI")
+        self.assertEqual(pair["payment"]["amount"], 503.0)
+        self.assertEqual(pair["payment"]["currency"], "EUR")
+        self.assertEqual(pair["payment"]["date"], "2026-04-30")
+        self.assertEqual(pair["payment"]["id"], "bz-99")
+
+    def test_payment_object_null_fields_when_no_snapshot(self):
+        """Legacy-rader matchade innan snapshot infördes har bara
+        bezala_transaction_id. Payment-objektet ska ändå exponeras med
+        merchant/amount/currency/date som null."""
+        self._seed(
+            message_id="m-legacy",
+            bezala_transaction_id="bz-old",
+            bezala_upload_status="success",
+            matched_at=datetime.utcnow(),
+        )
+        body = self.client.get(
+            "/api/bezala/matched-pairs?period=all"
+        ).json()
+        pair = next(p for p in body["pairs"] if p["message_id"] == "m-legacy")
+        self.assertEqual(pair["payment"]["id"], "bz-old")
+        self.assertIsNone(pair["payment"]["merchant"])
+        self.assertIsNone(pair["payment"]["amount"])
+        self.assertIsNone(pair["payment"]["currency"])
+        self.assertIsNone(pair["payment"]["date"])
+
+    def test_search_matches_payment_merchant(self):
+        """Sök ska träffa bezala_payment_merchant lika väl som vendor."""
+        self._seed(
+            message_id="m-1",
+            vendor="Some Receipt Vendor",
+            bezala_transaction_id="bz-1",
+            matched_at=datetime.utcnow(),
+            bezala_payment_merchant="ARLANDA EXPRESS, STOCKHOLM",
+            bezala_payment_amount=320.0,
+        )
+        body = self.client.get(
+            "/api/bezala/matched-pairs?period=all&search=arlanda"
+        ).json()
+        ids = [p["message_id"] for p in body["pairs"]]
+        self.assertEqual(ids, ["m-1"])
+
 
 class MatchToBezalaSetsMatchedAtTest(_Base):
     def test_match_to_bezala_sets_matched_at(self):
@@ -262,6 +346,7 @@ class MatchToBezalaSetsMatchedAtTest(_Base):
         fake_attach = MagicMock()
         fake_attach.attachment_id = "att-1"
         fake_bezala.attach_file.return_value = fake_attach
+        fake_bezala.list_missing_receipts.return_value = []
 
         # Hitta numerisk DB-id
         with self.SessionLocal() as db:
@@ -281,6 +366,95 @@ class MatchToBezalaSetsMatchedAtTest(_Base):
             self.assertLess(
                 (datetime.utcnow() - row.matched_at).total_seconds(), 60,
             )
+
+    def test_match_to_bezala_captures_payment_snapshot(self):
+        """När bill_line finns i Bezalas missing_receipts-lista ska
+        merchant/amount/currency/date snapshotas på raden."""
+        self._seed(
+            message_id="m-snap",
+            file_name="m-snap.pdf",
+            drive_file_id="drv-snap",
+        )
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+
+        fake_bezala = MagicMock()
+        fake_attach = MagicMock()
+        fake_attach.attachment_id = "att-snap"
+        fake_bezala.attach_file.return_value = fake_attach
+        # Bezala-svar: bill_line med matchande id 42
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 42,
+                "description": "MIKKO: FINNAIR HEL-ARN, VANTAA, FI 503.00 EUR",
+                "amount": 503.0,
+                "currency": "EUR",
+                "date": "2026-04-30",
+            },
+        ]
+
+        with self.SessionLocal() as db:
+            mid = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="m-snap").first().id
+            )
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(
+                f"/api/messages/{mid}/match-to-bezala",
+                json={"missing_receipt_id": 42},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        with self.SessionLocal() as db:
+            row = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="m-snap").first()
+            )
+            self.assertEqual(row.bezala_payment_amount, 503.0)
+            self.assertEqual(row.bezala_payment_currency, "EUR")
+            self.assertEqual(row.bezala_payment_date, "2026-04-30")
+            self.assertIn("FINNAIR", (row.bezala_payment_merchant or ""))
+
+    def test_match_to_bezala_continues_when_snapshot_fails(self):
+        """Om Bezalas list_missing_receipts kastar BezalaError ska match-
+        flödet fortsätta utan snapshot — matched_at sätts ändå."""
+        from app.services.bezala_client import BezalaError
+        self._seed(
+            message_id="m-snap-fail",
+            file_name="m-snap-fail.pdf",
+            drive_file_id="drv-snap-fail",
+        )
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+        fake_bezala = MagicMock()
+        fake_attach = MagicMock()
+        fake_attach.attachment_id = "att"
+        fake_bezala.attach_file.return_value = fake_attach
+        fake_bezala.list_missing_receipts.side_effect = BezalaError("offline")
+
+        with self.SessionLocal() as db:
+            mid = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="m-snap-fail").first().id
+            )
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(
+                f"/api/messages/{mid}/match-to-bezala",
+                json={"missing_receipt_id": 99},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        with self.SessionLocal() as db:
+            row = (
+                db.query(self.ProcessedMessage)
+                .filter_by(message_id="m-snap-fail").first()
+            )
+            self.assertIsNotNone(row.matched_at)
+            self.assertIsNone(row.bezala_payment_merchant)
 
 
 class MigrationIdempotenceTest(unittest.TestCase):

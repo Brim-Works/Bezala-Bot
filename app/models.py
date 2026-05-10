@@ -43,6 +43,15 @@ class ProcessedMessage(Base):
     # NULL för pre-existing rader och avkopplade rader.
     matched_at = Column(DateTime, nullable=True, index=True)
 
+    # Snapshot av Bezala bill_line vid match-tillfället (för Matchade-vyn).
+    # Sätts av match-to-bezala om bill_line kunde slås upp. Rensas av
+    # unmatch. Tillåter UI att visa merchant/amount/date utan att fråga
+    # Bezala API på nytt vid varje page-load.
+    bezala_payment_merchant = Column(String(255), nullable=True)
+    bezala_payment_amount = Column(Float, nullable=True)
+    bezala_payment_currency = Column(String(16), nullable=True)
+    bezala_payment_date = Column(String(32), nullable=True)
+
     # Soft-delete (FAS 5.1). deleted_at = NULL → aktiv rad.
     # delete_reason: manual | calendar | spam | misclassified
     deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)

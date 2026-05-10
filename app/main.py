@@ -1759,6 +1759,24 @@ def match_message_to_bezala(
     except BezalaError as exc:
         raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
 
+    # Snapshot bill_line-metadata FÖR attach (medan raden ännu finns kvar
+    # i Bezalas missing_receipts-lista). Failsafe — om Bezala är nere
+    # eller listan är tom kör vi vidare utan snapshot, matched_at sätts
+    # ändå nedan.
+    bill_line_snapshot: dict | None = None
+    try:
+        for raw in bezala.list_missing_receipts() or []:
+            normalized = _normalize_missing_receipt(raw)
+            if str(normalized.get("id")) == bill_line_id:
+                bill_line_snapshot = normalized
+                break
+    except BezalaError:
+        logger.warning(
+            "match-to-bezala: kunde inte snapshot:a bill_line_id=%s "
+            "(fortsätter utan snapshot)",
+            bill_line_id,
+        )
+
     try:
         pdf_bytes = drive.download_pdf(row.drive_file_id)
         logger.info(
@@ -1786,6 +1804,22 @@ def match_message_to_bezala(
         # FAS 8.5 — för Travel Tinder Matchade-vyn
         from datetime import datetime as _dt
         row.matched_at = _dt.utcnow()
+        # Snapshot av Bezala bill_line för Matchade-vyns "payment"-sida
+        if bill_line_snapshot:
+            merchant = bill_line_snapshot.get("description")
+            row.bezala_payment_merchant = (
+                str(merchant)[:255] if merchant else None
+            )
+            amt = bill_line_snapshot.get("amount")
+            row.bezala_payment_amount = (
+                float(amt) if amt is not None else None
+            )
+            cur = bill_line_snapshot.get("currency")
+            row.bezala_payment_currency = (
+                str(cur)[:16] if cur else None
+            )
+            d = bill_line_snapshot.get("date")
+            row.bezala_payment_date = str(d)[:32] if d else None
         db.commit()
         logger.info(
             "Kortmatchning klar: msg_id=%s → bill_line_id=%s",
@@ -1860,7 +1894,15 @@ def get_matched_pairs(
     needle = (search or "").strip().lower()
     if needle:
         like = f"%{needle}%"
-        q = q.filter(func.lower(ProcessedMessage.vendor).like(like))
+        # Sök på både kvitto-vendor OCH bill_line-merchant-snapshot,
+        # eftersom de ofta ser olika ut ("Finnair Oyj" vs
+        # "MIKKO: FINNAIR HEL-ARN, VANTAA, FI").
+        q = q.filter(
+            or_(
+                func.lower(ProcessedMessage.vendor).like(like),
+                func.lower(ProcessedMessage.bezala_payment_merchant).like(like),
+            )
+        )
 
     rows = (
         q.order_by(
@@ -1886,6 +1928,13 @@ def get_matched_pairs(
                 "drive_link": r.drive_link,
                 "subject": r.subject,
                 "sender": r.sender,
+            },
+            "payment": {
+                "id": r.bezala_transaction_id,
+                "merchant": r.bezala_payment_merchant,
+                "amount": r.bezala_payment_amount,
+                "currency": r.bezala_payment_currency,
+                "date": r.bezala_payment_date,
             },
             "bezala_transaction_id": r.bezala_transaction_id,
             "matched_at": r.matched_at.isoformat() if r.matched_at else None,
@@ -1951,6 +2000,11 @@ def unmatch_receipt(
     msg.matched_at = None
     # Återställ status så kvittot dyker upp som okopplat i suggestions
     msg.bezala_upload_status = "pending"
+    # Rensa Bezala bill_line-snapshot
+    msg.bezala_payment_merchant = None
+    msg.bezala_payment_amount = None
+    msg.bezala_payment_currency = None
+    msg.bezala_payment_date = None
     db.commit()
     logger.info(
         "Unmatched message_id=%s från bezala_transaction_id=%s",

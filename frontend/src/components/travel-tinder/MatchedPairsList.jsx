@@ -170,6 +170,39 @@ export default function MatchedPairsList({
                         )
                       : ''}
                   </div>
+                  {p.payment && (
+                    p.payment.merchant ||
+                    p.payment.amount != null ||
+                    p.payment.date
+                  ) ? (
+                    <div
+                      className="tt-matched__payment mono muted"
+                      data-testid={`tt-matched-payment-${p.message_id}`}
+                    >
+                      {'↔ '}
+                      {p.payment.merchant ? (
+                        <span className="tt-matched__payment-merchant">
+                          {p.payment.merchant}
+                        </span>
+                      ) : null}
+                      {p.payment.amount != null ? (
+                        <>
+                          {p.payment.merchant ? ' · ' : ''}
+                          {fmtAmount(
+                            p.payment.amount, p.payment.currency, lang,
+                          )}
+                        </>
+                      ) : null}
+                      {p.payment.date ? (
+                        <>
+                          {(p.payment.merchant || p.payment.amount != null)
+                            ? ' · '
+                            : ''}
+                          {p.payment.date}
+                        </>
+                      ) : null}
+                    </div>
+                  ) : null}
                   <div className="tt-matched__time muted">
                     {relativeTime(p.matched_at, t)}
                     {p.bezala_transaction_id ? (
