@@ -646,6 +646,11 @@ def persist_suggestions(
                 message_id=msg_id,
                 added_by="ai_suggestion",
             ))
+        # Flush så recalculate_trip_total ser de nyligen tillagda
+        # trip_messages-raderna. SessionLocal kör med autoflush=False
+        # så pending-objekten är annars osynliga för JOIN-queryn —
+        # totalen blev 0.00 EUR oavsett kvitton.
+        db.flush()
         recalculate_trip_total(db, trip)
         saved.append(trip)
     if saved:
