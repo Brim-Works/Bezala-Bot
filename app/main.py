@@ -1548,13 +1548,16 @@ def get_match_suggestions(
             .order_by(desc(ProcessedMessage.received_at))
             .limit(1000)
         )
-        # Suggestion-matchningen ska bara köra mot okopplade kandidater
-        # (samma logik som default-shapen) — annars skulle gamla kopplade
-        # rader stjäla AI-förslagen.
+        # Suggestion-matchningen ska bara köra mot okopplade kandidater.
+        # Bezala_transaction_id är den definitiva källan för "kopplad"-
+        # status (kan vara satt även när bezala_upload_status inte är
+        # 'success', t.ex. legacy-rader). Båda filtren tillämpas:
+        # belt-and-suspenders.
         candidate_dicts = [
             _serialize_message(r)
             for r in all_q.all()
             if r.bezala_upload_status != "success"
+            and r.bezala_transaction_id is None
         ]
     else:
         # Bakåtkompatibel shape: ingen all_messages, candidates filtreras strikt.
@@ -1563,6 +1566,7 @@ def get_match_suggestions(
             .filter(ProcessedMessage.deleted_at.is_(None))
             .filter(ProcessedMessage.status == "saved")
             .filter(ProcessedMessage.bezala_upload_status != "success")
+            .filter(ProcessedMessage.bezala_transaction_id.is_(None))
             .order_by(desc(ProcessedMessage.received_at))
             .limit(500)
         )
