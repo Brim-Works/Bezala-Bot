@@ -41,6 +41,13 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "pending_link": "VARCHAR(2048)",
     # FAS 8.5 — tidsstämpel när kvittot kopplades till en Bezala-tx.
     "matched_at": "TIMESTAMP",
+    # Travel Tinder Matchade-vyn — snapshot av Bezala bill_line vid
+    # match-tillfället så UI kan visa merchant/amount/date utan extra
+    # Bezala-anrop. Sätts av match-to-bezala om Bezala är tillgängligt.
+    "bezala_payment_merchant": "VARCHAR(255)",
+    "bezala_payment_amount": "FLOAT",
+    "bezala_payment_currency": "VARCHAR(16)",
+    "bezala_payment_date": "VARCHAR(32)",
 }
 
 _APP_SETTINGS_ADDITIONS = {
