@@ -650,7 +650,7 @@ export default {
     actionSkip: 'Skip',
     actionInfo: 'Mer info',
     actionMatch: 'Match',
-    matched: '✓ Matchat: {vendor}',
+    matchSuccess: '✓ Matchat: {vendor}',
     matchFailed: 'Kunde inte koppla',
     skipped: 'Hoppade över förslag',
     noMoreSuggestions: 'Ingen AI-match — välj manuellt',

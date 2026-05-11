@@ -421,7 +421,7 @@ export default function TravelTinder() {
       });
       toast.show({
         kind: 'ok',
-        message: t.travelTinder.matched.replace(
+        message: t.travelTinder.matchSuccess.replace(
           '{vendor}',
           pendingMatch.message.vendor || pendingMatch.message.file_name || '',
         ),
@@ -452,7 +452,7 @@ export default function TravelTinder() {
     selectedPaymentId,
     refresh,
     sendMatchFeedback,
-    t.travelTinder.matched,
+    t.travelTinder.matchSuccess,
     t.travelTinder.matchFailed,
     toast,
   ]);
