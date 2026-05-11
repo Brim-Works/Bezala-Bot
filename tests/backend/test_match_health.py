@@ -222,6 +222,95 @@ class MatchHealthPureFunctionTest(unittest.TestCase):
         self.assertGreaterEqual(score, 50)
         self.assertEqual(row["verdict"]["category"], "match_algorithm_failed")
 
+    # ----- Match Health respekterar html_only_senders -----
+    # När vendor matchar en html-only-pattern: gmail_status får INTE
+    # vara "filtered" (det vore missvisande — pipelinen plockar upp dem
+    # via andra-passet utan has:attachment).
+    def test_gmail_status_skanetrafiken_is_found_when_html_only(self):
+        from datetime import datetime
+        gmail = MagicMock()
+        gmail.list_candidate_message_ids.return_value = ["msg-1", "msg-2"]
+        status = self.svc._gmail_status_for_bill_line(
+            gmail, "SKANETRAFIKEN", datetime(2026, 4, 20),
+            html_only_patterns=["skanetrafiken", "moovy"],
+        )
+        self.assertEqual(status["category"], "found")
+        self.assertTrue(status["via_html_only_pipeline"])
+        self.assertEqual(status["hits_without_attachment"], 2)
+        # has-attachment-queryn ska INTE ha körts (vi sparar Gmail-quota)
+        self.assertEqual(gmail.list_candidate_message_ids.call_count, 1)
+        self.assertIn("html-only", status["details"].lower())
+
+    def test_gmail_status_html_only_no_hits(self):
+        from datetime import datetime
+        gmail = MagicMock()
+        gmail.list_candidate_message_ids.return_value = []
+        status = self.svc._gmail_status_for_bill_line(
+            gmail, "SKANETRAFIKEN", datetime(2026, 4, 20),
+            html_only_patterns=["skanetrafiken"],
+        )
+        self.assertEqual(status["category"], "no_hits")
+        self.assertTrue(status["via_html_only_pipeline"])
+
+    def test_gmail_status_non_html_only_still_filtered_regression(self):
+        """Regression: en vendor som INTE finns i html_only_patterns ska
+        fortfarande få 'filtered'-klassningen som tidigare."""
+        from datetime import datetime
+        gmail = MagicMock()
+        gmail.list_candidate_message_ids.side_effect = lambda query, max_results=20: (
+            [] if "has:attachment" in query else ["a", "b", "c"]
+        )
+        status = self.svc._gmail_status_for_bill_line(
+            gmail, "UNKNOWN_VENDOR", datetime(2026, 4, 20),
+            html_only_patterns=["skanetrafiken"],
+        )
+        self.assertEqual(status["category"], "filtered")
+        self.assertFalse(status["via_html_only_pipeline"])
+        self.assertEqual(status["would_match_without_attachment_filter"], 3)
+
+    def test_verdict_html_only_found_classifies_as_matched(self):
+        """Ny verdict-gren: html-only + Gmail 'found' + 0 fuzzy + ingen
+        kandidat → 'matched_correctly' (mailen är på väg via pipelinen)."""
+        verdict = self.svc._classify_verdict(
+            best_match=None,
+            fuzzy={
+                "by_amount_window_10pct": 0,
+                "by_date_window_7d": 0,
+                "by_vendor_fuzzy": 0,
+            },
+            gmail={
+                "category": "found",
+                "via_html_only_pipeline": True,
+                "hits_without_attachment": 2,
+                "would_match_without_attachment_filter": 0,
+            },
+            vendor_name="Skanetrafiken",
+        )
+        self.assertEqual(verdict["category"], "matched_correctly")
+        # Suggested action ska nämna att de plockas upp vid nästa scan
+        self.assertIn("scan", verdict["suggested_action"].lower())
+
+    def test_verdict_gmail_miss_action_now_recommends_html_only_setting(self):
+        """Gamla gmail_miss-grenen ska INTE längre föreslå link_fetch_senders
+        — i stället peka mot HTML-only avsändare-inställningen (PR #20)."""
+        verdict = self.svc._classify_verdict(
+            best_match=None,
+            fuzzy={
+                "by_amount_window_10pct": 0,
+                "by_date_window_7d": 0,
+                "by_vendor_fuzzy": 0,
+            },
+            gmail={
+                "category": "filtered",
+                "via_html_only_pipeline": False,
+                "would_match_without_attachment_filter": 4,
+            },
+            vendor_name="NewVendor",
+        )
+        self.assertEqual(verdict["category"], "gmail_miss")
+        action = verdict["suggested_action"]
+        self.assertIn("HTML-only", action)
+
     # ----- 7: Gmail-query bygger med datum-fönster + has:attachment -----
     def test_gmail_query_format(self):
         from datetime import datetime

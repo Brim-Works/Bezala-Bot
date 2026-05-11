@@ -167,13 +167,26 @@ def _count_fuzzy_candidates(
 
 def _gmail_status_for_bill_line(
     gmail_client, vendor: str | None, bill_date: datetime | None,
+    *, html_only_patterns: list[str] | None = None,
 ) -> dict:
     """Hämta Gmail-trafik runt vendor + datum-fönster, med/utan attachment.
 
     Cancellerar tyst om gmail_client saknas (t.ex. OAuth ej klart). Vid
     fel: returnera category='gmail_error' så frontend kan visa varning
     men inte krascha.
+
+    `html_only_patterns`: aktiva html-only-senders. Om vendor matchar
+    någon av dem → pipeline hämtar mailen via andra-passet UTAN
+    has:attachment-filter. Då är "filtered"-klassificeringen MISSVISANDE
+    (mailen plockas faktiskt upp). Vi använder då utan-attachment-queryn
+    som primär och rapporterar 'found'/'no_hits' istället.
     """
+    from app.services.html_only_senders import is_html_only_sender
+
+    via_html_only = is_html_only_sender(
+        vendor, html_only_patterns or [],
+    )
+
     if vendor is None:
         return {
             "category": "not_searched",
@@ -182,6 +195,7 @@ def _gmail_status_for_bill_line(
             "would_match_without_attachment_filter": 0,
             "hits_with_attachment": 0,
             "hits_without_attachment": 0,
+            "via_html_only_pipeline": False,
         }
     if gmail_client is None:
         return {
@@ -191,6 +205,7 @@ def _gmail_status_for_bill_line(
             "would_match_without_attachment_filter": 0,
             "hits_with_attachment": 0,
             "hits_without_attachment": 0,
+            "via_html_only_pipeline": via_html_only,
         }
 
     q_with = _build_gmail_query_for_vendor(
@@ -207,15 +222,24 @@ def _gmail_status_for_bill_line(
             "would_match_without_attachment_filter": 0,
             "hits_with_attachment": 0,
             "hits_without_attachment": 0,
+            "via_html_only_pipeline": via_html_only,
         }
 
     try:
-        hits_with = gmail_client.list_candidate_message_ids(
-            query=q_with, max_results=20,
-        )
-        hits_without = gmail_client.list_candidate_message_ids(
-            query=q_without, max_results=20,
-        )
+        # För html-only-senders sparar vi ett Gmail-anrop genom att bara
+        # köra utan-attachment-queryn (det är vad pipeline gör).
+        if via_html_only:
+            hits_with: list = []
+            hits_without = gmail_client.list_candidate_message_ids(
+                query=q_without, max_results=20,
+            )
+        else:
+            hits_with = gmail_client.list_candidate_message_ids(
+                query=q_with, max_results=20,
+            )
+            hits_without = gmail_client.list_candidate_message_ids(
+                query=q_without, max_results=20,
+            )
     except Exception as exc:  # noqa: BLE001 — vi vill se exakt vad Gmail gav
         logger.warning(
             "Gmail-sökning misslyckades för vendor=%r: %s", vendor, exc,
@@ -223,46 +247,71 @@ def _gmail_status_for_bill_line(
         return {
             "category": "gmail_error",
             "details": f"Gmail API-fel: {exc}",
-            "search_query_used": q_with,
+            "search_query_used": q_without if via_html_only else q_with,
             "would_match_without_attachment_filter": 0,
             "hits_with_attachment": 0,
             "hits_without_attachment": 0,
+            "via_html_only_pipeline": via_html_only,
         }
 
     n_with = len(hits_with)
     n_without = len(hits_without)
     extra_without = max(0, n_without - n_with)
 
-    if n_without == 0:
-        category = "no_hits"
-        details = (
-            f"Inga Gmail-mail från {vendor!r} i ±{GMAIL_WINDOW_DAYS}d-fönstret"
-        )
-    elif n_with == 0 and n_without > 0:
-        category = "filtered"
-        details = (
-            f"Hittade {n_without} mail från {vendor!r} men 0 hade "
-            f"has:attachment — has:attachment-filtret döljer alla"
-        )
-    elif extra_without > 0:
-        category = "found"
-        details = (
-            f"Hittade {n_with} med attachment, {extra_without} ytterligare "
-            f"utan — fortfarande inom 'found'"
-        )
+    if via_html_only:
+        # html-only-senders: pipelinen tar in mail via passet utan
+        # attachment. "Filtered" är aldrig en korrekt klassning här.
+        if n_without == 0:
+            category = "no_hits"
+            details = (
+                f"Inga Gmail-mail från {vendor!r} i "
+                f"±{GMAIL_WINDOW_DAYS}d-fönstret (html-only-pass)"
+            )
+        else:
+            category = "found"
+            details = (
+                f"Hittade {n_without} mail från {vendor!r} via "
+                f"html-only-pipelinen (has:attachment-filter skippas "
+                f"för denna vendor)"
+            )
+        # Den effektivt använda queryn är utan-attachment-varianten.
+        primary_query = q_without
     else:
-        category = "found"
-        details = (
-            f"Hittade {n_with} mail från {vendor!r} (alla med attachment)"
-        )
+        if n_without == 0:
+            category = "no_hits"
+            details = (
+                f"Inga Gmail-mail från {vendor!r} i "
+                f"±{GMAIL_WINDOW_DAYS}d-fönstret"
+            )
+        elif n_with == 0 and n_without > 0:
+            category = "filtered"
+            details = (
+                f"Hittade {n_without} mail från {vendor!r} men 0 hade "
+                f"has:attachment — has:attachment-filtret döljer alla"
+            )
+        elif extra_without > 0:
+            category = "found"
+            details = (
+                f"Hittade {n_with} med attachment, {extra_without} ytterligare "
+                f"utan — fortfarande inom 'found'"
+            )
+        else:
+            category = "found"
+            details = (
+                f"Hittade {n_with} mail från {vendor!r} (alla med attachment)"
+            )
+        primary_query = q_with
 
     return {
         "category": category,
         "details": details,
-        "search_query_used": q_with,
-        "would_match_without_attachment_filter": extra_without,
+        "search_query_used": primary_query,
+        "would_match_without_attachment_filter": (
+            0 if via_html_only else extra_without
+        ),
         "hits_with_attachment": n_with,
         "hits_without_attachment": n_without,
+        "via_html_only_pipeline": via_html_only,
     }
 
 
@@ -312,10 +361,27 @@ def _classify_verdict(
             "category": "gmail_miss",
             "confidence": "high",
             "suggested_action": (
-                f"Lägg till {vendor_name or '<vendor>'} i link_fetch_senders "
-                f"så Bezala Bot hämtar PDF från länk istället för bilaga "
+                f"Lägg till {vendor_name or '<vendor>'} i HTML-only "
+                f"avsändare i Inställningar — Bezala Bot kommer då plocka "
+                f"upp dem via html_to_pdf-pipelinen "
                 f"({gmail['would_match_without_attachment_filter']} sådana "
                 f"mail finns)."
+            ),
+        }
+
+    # html-only-pipeline har redan plockat upp mailen — om Gmail "found"
+    # men inget ProcessedMessage ännu så är det väntat (nästa scan-cykel
+    # processar dem) eller html_to_pdf failade.
+    if not has_fuzzy and gmail.get("via_html_only_pipeline") \
+            and gmail["category"] == "found":
+        return {
+            "category": "matched_correctly",
+            "confidence": "medium",
+            "suggested_action": (
+                f"{gmail['hits_without_attachment']} mail från "
+                f"{vendor_name or '<vendor>'} finns i Gmail — html-only-"
+                f"pipelinen plockar upp dem vid nästa scan. Om de fortfarande "
+                f"saknas efter scan: kolla html_to_pdf-loggar för fel."
             ),
         }
 
@@ -427,6 +493,16 @@ def build_match_health_report(
     )
     candidate_dicts = [serialize_message(r) for r in candidates_q.all()]
 
+    # 3. Hämta aktiva html_only_senders så Gmail-status-byggaren kan
+    # respektera samma logik som scan-pipelinen (skip has:attachment).
+    # Säker att kalla även om tabellen inte finns (gör catch).
+    try:
+        from app.services.html_only_senders import list_active_patterns
+        html_only_patterns = list_active_patterns(db)
+    except Exception:  # noqa: BLE001 — får aldrig krascha hela rapporten
+        logger.exception("html_only_senders fetch misslyckades — fortsätter utan")
+        html_only_patterns = []
+
     rows: list[dict] = []
     stats = {
         "total": 0,
@@ -462,6 +538,7 @@ def build_match_health_report(
         fuzzy = _count_fuzzy_candidates(missing, candidate_dicts)
         gmail = _gmail_status_for_bill_line(
             gmail_client, vendor_name, bill_date,
+            html_only_patterns=html_only_patterns,
         )
         verdict = _classify_verdict(
             best_match=best_match,
