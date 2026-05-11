@@ -14,7 +14,7 @@ from starlette.middleware.sessions import SessionMiddleware
 
 from app.config import get_settings
 from app.db import get_db, init_db, session_scope
-from app.models import MaintenanceTask, ProcessedMessage, ScanRun
+from app.models import MaintenanceTask, ProcessedMessage, SavedFile, ScanRun
 from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
 from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.bezala_field_mapper import build_receipt_params
@@ -1538,6 +1538,370 @@ def _safe_bezala_list(fn, label: str) -> dict:
     except BezalaError as exc:
         logger.warning("Bezala metadata %s misslyckades: %s", label, exc)
         return {"count": 0, "rows": [], "error": f"{exc.status_code}: {exc.body or str(exc)}"}
+
+
+# === DELETE-MIG-EFTER-VERIFIERING ===========================================
+# Tillfälliga diagnostik-endpoints (Moovy-dubbletter + mapping-trace).
+# Båda är read-only och rör ALDRIG Bezala-skrivande operationer — de bara
+# läser DB + Bezala-metadata för att verifiera hypoteser i C5-diagnos-
+# rapporten. Tas bort när vi har data och kan rikta fixarna.
+
+_MOOVY_RECEIPT_DATES = ("2026-04-15", "2026-04-13")
+
+
+def _serialize_processed_message_full(row: ProcessedMessage) -> dict:
+    """Plocka ut samtliga kolumner från en ProcessedMessage som JSON-vänligt
+    dict. Inkluderar fält som vanliga `_serialize_message` döljer (raw
+    error, deleted_at etc) — eftersom det här är ett diagnostik-svar."""
+    def _iso(v):
+        return v.isoformat() if hasattr(v, "isoformat") else v
+    return {
+        "id": row.id,
+        "message_id": row.message_id,
+        "thread_id": row.thread_id,
+        "sender": row.sender,
+        "subject": row.subject,
+        "received_at": _iso(row.received_at),
+        "processed_at": _iso(row.processed_at),
+        "file_name": row.file_name,
+        "drive_file_id": row.drive_file_id,
+        "drive_link": row.drive_link,
+        "status": row.status,
+        "error_message": row.error_message,
+        "vendor": row.vendor,
+        "amount": row.amount,
+        "currency": row.currency,
+        "receipt_date": row.receipt_date,
+        "category": row.category,
+        "summary": row.summary,
+        "ai_confidence": row.ai_confidence,
+        "bezala_transaction_id": row.bezala_transaction_id,
+        "bezala_upload_status": row.bezala_upload_status,
+        "bezala_error_message": row.bezala_error_message,
+        "matched_at": _iso(row.matched_at),
+        "bezala_payment_merchant": row.bezala_payment_merchant,
+        "bezala_payment_amount": row.bezala_payment_amount,
+        "bezala_payment_currency": row.bezala_payment_currency,
+        "bezala_payment_date": row.bezala_payment_date,
+        "deleted_at": _iso(row.deleted_at),
+        "delete_reason": row.delete_reason,
+        "pending_link": row.pending_link,
+    }
+
+
+@app.get("/api/debug/moovy-diagnostics")
+def debug_moovy_diagnostics(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """**TILLFÄLLIG** — verifierar C5-diagnos om 4 Moovy-dubbletter 15/4.
+
+    Returnerar:
+      - processed_messages: alla rader där vendor ILIKE '%moovy%' och
+        receipt_date är 2026-04-15 eller 2026-04-13
+      - saved_files: alla rader där file_name ILIKE '%moovy%'
+      - duplicates_per_pair: räknat per (vendor, receipt_date)
+      - duplicates_per_filename_filedate: räknat per (file_name, file_date)
+        i saved_files — visar om lager-3-dedupen faktiskt utlöste eller
+        släppte alla rader igenom
+
+    Read-only. Tas bort när data är inhämtad.
+    """
+    moovy_msgs = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.vendor.ilike("%moovy%"))
+        .filter(ProcessedMessage.receipt_date.in_(_MOOVY_RECEIPT_DATES))
+        .order_by(ProcessedMessage.receipt_date, ProcessedMessage.received_at)
+        .all()
+    )
+    moovy_files = (
+        db.query(SavedFile)
+        .filter(SavedFile.file_name.ilike("%moovy%"))
+        .order_by(SavedFile.file_date, SavedFile.created_at)
+        .all()
+    )
+
+    from collections import Counter
+    pair_counts: Counter = Counter()
+    for r in moovy_msgs:
+        pair_counts[(r.vendor or "", r.receipt_date or "")] += 1
+    file_pair_counts: Counter = Counter()
+    for f in moovy_files:
+        file_pair_counts[(f.file_name or "", f.file_date or "")] += 1
+
+    logger.info(
+        "moovy-diagnostics: processed_messages=%d saved_files=%d "
+        "unique_(vendor,date)-pairs=%d",
+        len(moovy_msgs), len(moovy_files), len(pair_counts),
+    )
+
+    return {
+        "processed_messages": [
+            _serialize_processed_message_full(r) for r in moovy_msgs
+        ],
+        "saved_files": [
+            {
+                "id": f.id,
+                "file_name": f.file_name,
+                "file_date": f.file_date,
+                "drive_file_id": f.drive_file_id,
+                "created_at": (
+                    f.created_at.isoformat()
+                    if hasattr(f.created_at, "isoformat") else f.created_at
+                ),
+            }
+            for f in moovy_files
+        ],
+        "duplicates_per_pair": [
+            {"vendor": v, "receipt_date": d, "count": c}
+            for (v, d), c in sorted(pair_counts.items())
+        ],
+        "duplicates_per_filename_filedate": [
+            {"file_name": n, "file_date": d, "count": c}
+            for (n, d), c in sorted(file_pair_counts.items())
+        ],
+        "filter": {
+            "vendor_ilike": "%moovy%",
+            "receipt_dates": list(_MOOVY_RECEIPT_DATES),
+        },
+    }
+
+
+@app.get("/api/debug/bezala-mapping-trace")
+def debug_bezala_mapping_trace(
+    message_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """**TILLFÄLLIG** — kör HELA mapping-kedjan för en specifik
+    ProcessedMessage UTAN att skriva något till Bezala. Returnerar
+    JSON-spår med varje mellansteg så vi kan se exakt var rätt eller
+    fel hamnar.
+
+    `message_id` accepteras som antingen:
+      - numeriskt sträng → tolkat som processed_messages.id (PK)
+      - icke-numerisk sträng → tolkat som processed_messages.message_id
+        (Gmail-ID)
+
+    Spårar:
+      1. Raden själv (category, vendor, sender, amount, currency, …)
+      2. get_account_id_for_category(category) → konto-ID + (om mappning
+         saknas) varför fallback användes
+      3. sender_to_country(sender, vendor) → 'fi' | 'eu' | 'non-eu'
+      4. Bezala-metadata: list_accounts + list_cost_centers + list_vat_rates
+         (read-only). Om Bezala inte kan kontaktas: error i svaret men
+         själva spårningen fortsätter.
+      5. select_account(accounts, category) → vilket konto valdes,
+         default_vat_id på det
+      6. select_default_cost_center(cost_centers) → vilken VIS valdes
+      7. build_vat_lines_attributes(...) → list (kan vara tom)
+      8. COUNTRY_DEFAULT_VAT[country] → vilken procent fallback skulle gett
+      9. Sammanfattande verdict: "would_send_vat_lines" true/false
+
+    Hela kedjan är side-effect-fri. Tas bort när data är inhämtad.
+    """
+    from app.services.bezala_field_mapper import (
+        COUNTRY_DEFAULT_VAT,
+        DEFAULT_ACCOUNT_ID,
+        DEFAULT_CREDIT_ACCOUNT_ID,
+        build_vat_lines_attributes,
+        get_account_id_for_category,
+        get_default_vat_for_country,
+        select_account,
+        select_default_cost_center,
+        sender_to_country,
+        tax_percentage_for_vat_code,
+    )
+
+    # 1. Slå upp raden — stöd både PK-int och Gmail-message_id-sträng.
+    q = db.query(ProcessedMessage)
+    if message_id.isdigit():
+        row = q.filter(ProcessedMessage.id == int(message_id)).first()
+        lookup_mode = "id (PK)"
+    else:
+        row = q.filter(ProcessedMessage.message_id == message_id).first()
+        lookup_mode = "message_id (Gmail)"
+    if row is None:
+        raise HTTPException(
+            status_code=404,
+            detail=(f"Hittade ingen ProcessedMessage för {lookup_mode}="
+                    f"{message_id!r}"),
+        )
+
+    trace: dict = {
+        "lookup": {
+            "input": message_id,
+            "mode": lookup_mode,
+            "matched_row_pk": row.id,
+        },
+        "row": {
+            "id": row.id,
+            "message_id": row.message_id,
+            "sender": row.sender,
+            "vendor": row.vendor,
+            "category": row.category,
+            "amount": row.amount,
+            "currency": row.currency,
+            "receipt_date": row.receipt_date,
+            "file_name": row.file_name,
+            "bezala_upload_status": row.bezala_upload_status,
+            "bezala_transaction_id": row.bezala_transaction_id,
+            "bezala_error_message": row.bezala_error_message,
+        },
+    }
+
+    # 2. Kategori → konto-ID via tabellen (utan Bezala-anrop)
+    resolved_account_id = get_account_id_for_category(row.category)
+    trace["category_lookup"] = {
+        "input_category": row.category,
+        "resolved_account_id": resolved_account_id,
+        "default_account_id_constant": DEFAULT_ACCOUNT_ID,
+        "fell_back_to_default": resolved_account_id == DEFAULT_ACCOUNT_ID,
+    }
+
+    # 3. Country-detection
+    country = sender_to_country(row.sender, row.vendor)
+    trace["country_detection"] = {
+        "sender": row.sender,
+        "vendor": row.vendor,
+        "resolved_country": country,
+    }
+
+    # 4. Bezala-metadata (read-only; behandla nätverksfel mjukt)
+    accounts: list[dict] = []
+    cost_centers: list[dict] = []
+    vat_rates: list[dict] = []
+    bezala_errors: dict = {}
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        bezala_errors["client_init"] = str(exc)
+        bezala = None
+    if bezala is not None:
+        try:
+            accounts = bezala.list_accounts()
+        except BezalaError as exc:
+            bezala_errors["accounts"] = f"{exc.status_code}: {exc.body or exc}"
+        try:
+            cost_centers = bezala.list_cost_centers()
+        except BezalaError as exc:
+            bezala_errors["cost_centers"] = f"{exc.status_code}: {exc.body or exc}"
+        try:
+            vat_rates = bezala.list_vat_rates()
+        except BezalaError as exc:
+            bezala_errors["vat_rates"] = f"{exc.status_code}: {exc.body or exc}"
+        finally:
+            bezala.close()
+
+    trace["bezala_metadata"] = {
+        "accounts_count": len(accounts),
+        "cost_centers_count": len(cost_centers),
+        "vat_rates_count": len(vat_rates),
+        "errors": bezala_errors,
+        "resolved_account_id_in_accounts_list": any(
+            (a.get("id") == resolved_account_id
+             or a.get("account_id") == resolved_account_id)
+            for a in accounts
+        ),
+    }
+
+    # 5. select_account mot live-metadata
+    account = select_account(accounts, row.category)
+    trace["selected_account"] = (
+        {
+            "id": account.get("id") or account.get("account_id"),
+            "name": account.get("name") or account.get("title")
+                    or account.get("label"),
+            "default_vat_id": account.get("default_vat_id"),
+            "matched_resolved_id": (
+                (account.get("id") or account.get("account_id"))
+                == resolved_account_id
+            ),
+        }
+        if account else None
+    )
+
+    # 6. cost_center-default
+    cost_center = select_default_cost_center(cost_centers)
+    trace["selected_cost_center"] = (
+        {
+            "id": cost_center.get("id") or cost_center.get("cost_center_id"),
+            "name": cost_center.get("name") or cost_center.get("title")
+                    or cost_center.get("label"),
+            "is_default": (
+                cost_center.get("default") is True
+                or cost_center.get("is_default") is True
+            ),
+        }
+        if cost_center else None
+    )
+
+    # 7. build_vat_lines_attributes — den centrala funktionen
+    vat_lines = build_vat_lines_attributes(
+        amount=row.amount,
+        currency=row.currency,
+        account=account,
+        cost_center=cost_center,
+        vat_rate=None,  # speglar upload-flödet när account.default_vat_id finns
+    )
+    trace["vat_lines_attributes"] = {
+        "result": vat_lines,
+        "is_empty": len(vat_lines) == 0,
+        "would_be_sent_in_PUT": bool(vat_lines),
+        "explanation": (
+            "Bezala får INGA vat_lines (defaultar konto/moms-själv)"
+            if not vat_lines
+            else "Bezala får full payload"
+        ),
+    }
+
+    # 8. Country-default-fallback (vad vi SKULLE använda om vi körde
+    # tax_percentage_for_vat_code med None)
+    country_default_pct = get_default_vat_for_country(country)
+    trace["country_default_vat"] = {
+        "country": country,
+        "fallback_tax_percentage": country_default_pct,
+        "fi_default": COUNTRY_DEFAULT_VAT["fi"],
+        "tax_pct_for_None_vat_code": tax_percentage_for_vat_code(
+            None, country=country,
+        ),
+    }
+
+    # 9. Sammanfattande verdict
+    trace["verdict"] = {
+        "would_send_vat_lines": bool(vat_lines),
+        "credit_account_id_hardcoded": DEFAULT_CREDIT_ACCOUNT_ID,
+        "likely_root_cause": (
+            "Account hittades men default_vat_id är None och vat_rates "
+            "är tom → vat_lines = [] → Bezala fyller egna defaults"
+            if account is not None
+            and account.get("default_vat_id") is None
+            and not vat_rates
+            else (
+                "Account saknas (varken ID-match eller namnmatch i Bezalas "
+                "/accounts-svar) → vat_lines = []"
+                if account is None and accounts
+                else (
+                    "Bezala-metadata kunde inte hämtas → kan inte avgöra "
+                    "rotorsak utan att kunna se accounts-listan"
+                    if bezala_errors
+                    else None
+                )
+            )
+        ),
+    }
+
+    logger.info(
+        "bezala-mapping-trace: msg_pk=%s category=%r resolved_account_id=%s "
+        "country=%s vat_lines_count=%d account_default_vat_id=%s",
+        row.id, row.category, resolved_account_id, country,
+        len(vat_lines),
+        (account or {}).get("default_vat_id"),
+    )
+    return trace
+
+
+# === SLUT DELETE-MIG-EFTER-VERIFIERING ======================================
 
 
 _MISSING_AMOUNT_RE = __import__("re").compile(
