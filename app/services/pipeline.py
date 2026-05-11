@@ -183,6 +183,15 @@ def run_scan(max_results: int = 50) -> ScanResult:
             html_only_patterns,
             done_label=DONE_LABEL,
         )
+        # DIAGNOSTIK: Mikko har sett att html-only-passet inte verkar
+        # köra i prod. Logga full state innan något körs.
+        logger.info(
+            "[html-only-diag] active_patterns_count=%d patterns=%s "
+            "query_built=%s",
+            len(html_only_patterns),
+            html_only_patterns,
+            html_only_gmail_query,
+        )
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
@@ -245,20 +254,40 @@ def run_scan(max_results: int = 50) -> ScanResult:
     html_only_ids: list[str] = []
     if html_only_gmail_query:
         try:
+            logger.info(
+                "[html-only-diag] kör Gmail-query: %s",
+                html_only_gmail_query,
+            )
             raw_html_only = gmail.list_candidate_message_ids(
                 query=html_only_gmail_query, max_results=max_results,
+            )
+            logger.info(
+                "[html-only-diag] Gmail returned %d raw IDs: %s",
+                len(raw_html_only),
+                list(raw_html_only)[:10],
             )
             seen = set(message_ids)
             for mid in raw_html_only:
                 if mid not in seen:
                     html_only_ids.append(mid)
                     seen.add(mid)
+            logger.info(
+                "[html-only-diag] after dedup vs standard pass: %d nya IDs %s",
+                len(html_only_ids),
+                html_only_ids[:10],
+            )
         except Exception as exc:  # noqa: BLE001 — html-only-pass får inte
             # krascha hela scan-loopen. Vi loggar och fortsätter med
             # standard-passet, sen markerar runet som "ok" ändå.
             logger.exception(
                 "html-only Gmail-query misslyckades — hoppar passet: %s", exc,
             )
+    else:
+        logger.info(
+            "[html-only-diag] html_only_gmail_query=None → "
+            "passet hoppas helt (active_patterns=%s)",
+            html_only_patterns,
+        )
 
     result.found = len(message_ids) + len(html_only_ids)
     logger.info(
