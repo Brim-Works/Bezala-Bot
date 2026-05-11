@@ -2,6 +2,7 @@ import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Literal
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -1538,6 +1539,176 @@ def _safe_bezala_list(fn, label: str) -> dict:
     except BezalaError as exc:
         logger.warning("Bezala metadata %s misslyckades: %s", label, exc)
         return {"count": 0, "rows": [], "error": f"{exc.status_code}: {exc.body or str(exc)}"}
+
+
+# === DELETE-MIG-EFTER-FAS-A =================================================
+# Tillfällig diagnostik-endpoint (PR 2, FAS A). När vi vet vilken metod
+# Bezala accepterar för bill_line-metadata tas hela detta block bort. Se
+# PR #16 för full kontext.
+
+# Minimal 1-sids-PDF för A1-strategin. Bezala (och vår client) verifierar
+# bara att bytes börjar med b"%PDF" — denna räcker.
+_FAS_A_MINIMAL_PDF: bytes = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Count 1/Kids[3 0 R]>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]"
+    b"/Resources<<>>>>endobj\n"
+    b"xref\n0 4\n"
+    b"0000000000 65535 f \n"
+    b"0000000010 00000 n \n"
+    b"0000000053 00000 n \n"
+    b"0000000099 00000 n \n"
+    b"trailer<</Size 4/Root 1 0 R>>\nstartxref\n173\n%%EOF\n"
+)
+
+
+class TestMatchStrategyPayload(BaseModel):
+    """Body till POST /api/debug/test-match-strategies (FAS A, tillfällig)."""
+
+    bill_line_id: int | str
+    strategy: Literal["A1", "A2", "A3"]
+    expense_account_id: int = 67100        # Matkaliput (verifierad i prod)
+    cost_center_id: int = 927151           # VIS128 Visma HRM Sverige AB
+    vat_code_id: int = 1355                # FI 25,5%
+    tax_percentage: str = "0.255"
+    amount: str = "10.00"
+    currency: str = "EUR"
+    description: str = "FAS A test (Bezala Bot)"
+
+
+@app.post("/api/debug/test-match-strategies")
+def debug_test_match_strategies(
+    payload: TestMatchStrategyPayload,
+    _: None = Depends(require_auth),
+):
+    """**TILLFÄLLIG** — FAS A i PR 2 (match-flödes-metadata).
+
+    Testar en av tre kandidatmetoder för att sätta metadata på en
+    bill_line i Bezala. Returnerar HELA Bezala-svaret (status + raw body
+    + parsed JSON om möjligt). Inga retries, ingen error-handling som
+    döljer detaljer — vi vill se sanningen.
+
+    Strategier:
+      A1: POST /attachments multipart med Rails-style nested
+          bill_line[vat_lines_attributes][0][...] + PDF + draft=1
+      A2: PUT  /bill_lines/{id} med JSON {bill_line: {vat_lines_attributes:[...]}}
+      A3: PATCH /bill_lines/{id} med samma JSON som A2
+
+    VARNING: muterar produktionsdata i Bezala. A1 bifogar en tom PDF;
+    A2/A3 skriver över bill_line-metadata.
+
+    Tas BORT när vi vet vilken metod som fungerar — sök DELETE-MIG-EFTER-FAS-A.
+    """
+    from app.services.bezala_client import FILE_FIELD_NAME, _safe_body_snippet
+
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        logger.exception("FAS A: Bezala-klient kunde inte initialiseras")
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+
+    bill_line_id = str(payload.bill_line_id)
+    strategy = payload.strategy
+
+    logger.info(
+        "FAS A debug: strategy=%s bill_line_id=%s expense_account_id=%s "
+        "cost_center_id=%s vat_code_id=%s tax_percentage=%s amount=%s currency=%s",
+        strategy, bill_line_id, payload.expense_account_id,
+        payload.cost_center_id, payload.vat_code_id, payload.tax_percentage,
+        payload.amount, payload.currency,
+    )
+
+    request_meta: dict = {
+        "strategy": strategy,
+        "bill_line_id": bill_line_id,
+        "expense_account_id": payload.expense_account_id,
+        "cost_center_id": payload.cost_center_id,
+        "vat_code_id": payload.vat_code_id,
+        "tax_percentage": payload.tax_percentage,
+        "amount": payload.amount,
+        "currency": payload.currency,
+    }
+
+    try:
+        if strategy == "A1":
+            prefix = "bill_line[vat_lines_attributes][0]"
+            form: dict[str, str] = {
+                "draft": "1",
+                "bill_line_id": bill_line_id,
+                "description": payload.description,
+                f"{prefix}[expense_account_id]": str(payload.expense_account_id),
+                f"{prefix}[cost_center_ids][]": str(payload.cost_center_id),
+                f"{prefix}[vat_code_id]": str(payload.vat_code_id),
+                f"{prefix}[tax_percentage]": payload.tax_percentage,
+                f"{prefix}[taxable]": payload.amount,
+                f"{prefix}[currency]": payload.currency,
+            }
+            request_meta["http_method"] = "POST"
+            request_meta["http_path"] = "/attachments"
+            request_meta["form_keys"] = sorted(form.keys())
+            resp = bezala._request(
+                "POST",
+                "/attachments",
+                files={FILE_FIELD_NAME: (
+                    "fas_a_test.pdf",
+                    _FAS_A_MINIMAL_PDF,
+                    "application/pdf",
+                )},
+                data=form,
+            )
+        else:
+            body = {
+                "bill_line": {
+                    "vat_lines_attributes": [
+                        {
+                            "expense_account_id": payload.expense_account_id,
+                            "cost_center_ids": [payload.cost_center_id],
+                            "vat_code_id": payload.vat_code_id,
+                            "tax_percentage": payload.tax_percentage,
+                            "taxable": payload.amount,
+                            "currency": payload.currency,
+                        }
+                    ]
+                }
+            }
+            method = "PUT" if strategy == "A2" else "PATCH"
+            path = f"/bill_lines/{bill_line_id}"
+            request_meta["http_method"] = method
+            request_meta["http_path"] = path
+            request_meta["json_body"] = body
+            resp = bezala._request(method, path, json=body)
+    finally:
+        bezala.close()
+
+    raw_body = _safe_body_snippet(resp)
+    try:
+        parsed_json = resp.json()
+    except ValueError:
+        parsed_json = None
+
+    result = {
+        "request": request_meta,
+        "http_status": resp.status_code,
+        "ok": 200 <= resp.status_code < 300,
+        "response_body": raw_body,
+        "response_json": parsed_json,
+        "response_headers": {
+            k: v for k, v in resp.headers.items()
+            if k.lower() in (
+                "content-type", "x-request-id", "x-correlation-id",
+                "retry-after",
+            )
+        },
+    }
+    logger.info(
+        "FAS A debug result: strategy=%s status=%s ok=%s body_len=%s",
+        strategy, resp.status_code, result["ok"], len(raw_body),
+    )
+    return result
+
+
+# === SLUT DELETE-MIG-EFTER-FAS-A ============================================
 
 
 _MISSING_AMOUNT_RE = __import__("re").compile(
