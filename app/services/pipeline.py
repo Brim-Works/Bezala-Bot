@@ -160,7 +160,6 @@ def run_scan(max_results: int = 50) -> ScanResult:
 
     with session_scope() as db:
         app_settings = load_settings(db)
-        gmail_query = build_gmail_query(app_settings, done_label=DONE_LABEL)
         excluded_subjects = list(app_settings.exclude_subjects or [])
         ai_enabled = bool(app_settings.ai_naming_enabled)
         auto_upload = bool(app_settings.auto_upload_enabled)
@@ -173,18 +172,25 @@ def run_scan(max_results: int = 50) -> ScanResult:
         # (matchar default i models.py + settings_to_dict-tolkningen).
         _htmlpdf_raw = getattr(app_settings, "html_to_pdf_enabled", None)
         html_to_pdf_enabled = True if _htmlpdf_raw is None else bool(_htmlpdf_raw)
-        # HTML-only-senders (Skånetrafiken, Moovy, Cursor m.fl.) — andra
-        # passet kör en separat query UTAN has:attachment så html_to_pdf
-        # kan plocka upp kvittot ur mail-bodyn.
+        # HTML-only-senders (Skånetrafiken, Moovy, Cursor m.fl.) — hämta
+        # FÖRE byggen så standard-queryn kan exkludera dem och html-only-
+        # passet (utan has:attachment) blir ENDA platsen de hämtas.
+        # Bugg fångad i prod: tidigare hämtades samma mail-IDs av BÅDA
+        # passen, sen deduperades html-only-IDs bort och processades aldrig.
         from app.services.html_only_senders import list_active_patterns
         html_only_patterns = list_active_patterns(db)
+        gmail_query = build_gmail_query(
+            app_settings,
+            done_label=DONE_LABEL,
+            html_only_patterns=html_only_patterns,
+        )
         html_only_gmail_query = build_gmail_query_html_only(
             app_settings,
             html_only_patterns,
             done_label=DONE_LABEL,
         )
-        # DIAGNOSTIK: Mikko har sett att html-only-passet inte verkar
-        # köra i prod. Logga full state innan något körs.
+        # DIAGNOSTIK: behåll [html-only-diag]-prefix så Mikko kan verifiera
+        # i Railway-loggarna att fixen tog effekt.
         logger.info(
             "[html-only-diag] active_patterns_count=%d patterns=%s "
             "query_built=%s",
