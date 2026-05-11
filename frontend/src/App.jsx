@@ -13,6 +13,7 @@ import Match from './views/Match.jsx';
 import TravelTinder from './views/TravelTinder.jsx';
 import Trips from './views/Trips.jsx';
 import Log from './views/Log.jsx';
+import MatchHealth from './views/MatchHealth.jsx';
 import Settings from './views/Settings.jsx';
 import Trash from './views/Trash.jsx';
 import NotFound from './views/NotFound.jsx';
@@ -58,6 +59,12 @@ function ViewForRoute() {
       return (
         <ViewErrorBoundary viewKey="log">
           <Log />
+        </ViewErrorBoundary>
+      );
+    case 'matchHealth':
+      return (
+        <ViewErrorBoundary viewKey="matchHealth">
+          <MatchHealth />
         </ViewErrorBoundary>
       );
     case 'settings':

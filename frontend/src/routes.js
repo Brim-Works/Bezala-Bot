@@ -9,6 +9,7 @@ export const ROUTES = {
   travelTinder: '/travel-tinder',
   trips: '/trips',
   log: '/log',
+  matchHealth: '/match-health',
   settings: '/settings',
   trash: '/trash',
 };
@@ -31,6 +32,8 @@ export function viewForPath(path) {
       return 'trips';
     case '/log':
       return 'log';
+    case '/match-health':
+      return 'matchHealth';
     case '/settings':
       return 'settings';
     case '/trash':

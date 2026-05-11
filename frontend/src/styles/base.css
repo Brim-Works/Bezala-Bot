@@ -4365,3 +4365,51 @@ html[data-theme='B'] .modal__title {
   color: var(--err);
   border-color: color-mix(in oklch, var(--err) 30%, transparent);
 }
+
+/* ---------- Match Health (analysverktyg) ---------- */
+/* Färgkodning per verdict — håller sig till CSS-variabler så Skog+Ljust
+ * tema fungerar identiskt. color-mix säkerställer mjuk bakgrund (12%
+ * mättnad mot transparent) och tydlig hover (20%). */
+.mh-row {
+  transition: background-color 120ms ease;
+}
+.mh-row:hover {
+  background: var(--surface-2);
+}
+.mh-row--matched_correctly {
+  background: color-mix(in oklch, var(--ok) 8%, transparent);
+}
+.mh-row--matched_correctly:hover {
+  background: color-mix(in oklch, var(--ok) 16%, transparent);
+}
+.mh-row--gmail_miss {
+  background: color-mix(in oklch, var(--warn) 10%, transparent);
+}
+.mh-row--gmail_miss:hover {
+  background: color-mix(in oklch, var(--warn) 18%, transparent);
+}
+.mh-row--ai_extraction_wrong,
+.mh-row--match_algorithm_failed {
+  background: color-mix(in oklch, var(--err) 8%, transparent);
+}
+.mh-row--ai_extraction_wrong:hover,
+.mh-row--match_algorithm_failed:hover {
+  background: color-mix(in oklch, var(--err) 16%, transparent);
+}
+.mh-row--no_receipt_exists {
+  background: color-mix(in oklch, var(--muted) 8%, transparent);
+}
+.mh-row--no_receipt_exists:hover {
+  background: color-mix(in oklch, var(--muted) 16%, transparent);
+}
+.mh-row--gmail_error {
+  background: color-mix(in oklch, var(--warn) 12%, transparent);
+}
+.mh-details {
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+}
+.mh-details h4 {
+  margin-top: 0.75rem;
+  margin-bottom: 0.25rem;
+}

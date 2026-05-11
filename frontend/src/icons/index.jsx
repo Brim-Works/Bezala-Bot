@@ -173,6 +173,32 @@ export function IconGlobe(props) {
   );
 }
 
+export function IconActivity(props) {
+  // EKG/puls-linje: signalerar "match health monitoring".
+  return (
+    <IconBase {...props}>
+      <path d="M2 10h3l2-5 3 10 2-6 2 3h4" />
+    </IconBase>
+  );
+}
+
+export function IconCopy(props) {
+  return (
+    <IconBase {...props}>
+      <rect x="6" y="6" width="11" height="11" rx="1.5" />
+      <path d="M14 6V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h2" />
+    </IconBase>
+  );
+}
+
+export function IconChevronRight(props) {
+  return (
+    <IconBase {...props}>
+      <path d="M7 4l6 6-6 6" />
+    </IconBase>
+  );
+}
+
 export const NAV_ICONS = {
   dashboard: IconDashboard,
   review: IconReview,
@@ -180,6 +206,7 @@ export const NAV_ICONS = {
   travelTinder: IconPlane,
   trips: IconGlobe,
   log: IconLog,
+  matchHealth: IconActivity,
   settings: IconSettings,
   trash: IconTrash,
 };
