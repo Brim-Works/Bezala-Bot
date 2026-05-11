@@ -523,6 +523,13 @@ class BezalaClient:
             files={FILE_FIELD_NAME: (filename, pdf_bytes, "application/pdf")},
             data=form,
         )
+        # Förbereder för PR 2 — logga Bezalas svar så vi kan diagnostisera
+        # vilka fält som faktiskt sätts på bill_line:n (cost_center, account,
+        # vat_code etc). _safe_body_snippet trimmar till 500 tecken.
+        logger.info(
+            "BEZALA RESPONSE attach_file: status=%s body=%s",
+            resp.status_code, _safe_body_snippet(resp),
+        )
         if resp.status_code >= 400:
             raise BezalaError(
                 f"Bezala attach_file: {resp.status_code}",

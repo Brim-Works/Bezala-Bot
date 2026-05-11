@@ -1793,6 +1793,16 @@ def match_message_to_bezala(
         description = row.file_name
         if description.lower().endswith(".pdf"):
             description = description[:-4]
+        # Förbereder för PR 2 (återinför metadata i match-flödet) — logga
+        # den effektiva payload som skickas idag så vi kan jämföra mot
+        # framtida varianter. Mikko kontrollerar denna rad i prod-logs.
+        logger.info(
+            "MATCH-TO-BEZALA payload: message_id=%s bill_line_id=%s "
+            "description=%r vendor=%r category=%r amount=%s currency=%s "
+            "receipt_date=%s sender=%r",
+            msg_id, bill_line_id, description, row.vendor, row.category,
+            row.amount, row.currency, row.receipt_date, row.sender,
+        )
         bezala.attach_file(
             bill_line_id, row.file_name, pdf_bytes,
             description=description,
@@ -2145,6 +2155,17 @@ def upload_message_to_bezala(
             accounts=metadata["accounts"],
             cost_centers=metadata["cost_centers"],
             vat_rates=metadata["vat_rates"],
+        )
+        # Förbereder för PR 2 (mappnings-jämförelse) — logga komplett
+        # params-payload så vi kan se exakt vad Bezala får i upload-flödet.
+        import json as _json
+        try:
+            payload_dump = _json.dumps(params, default=str, ensure_ascii=False)
+        except Exception:  # noqa: BLE001 — log-bara, aldrig kraschar uploaden
+            payload_dump = repr(params)
+        logger.info(
+            "UPLOAD-TO-BEZALA payload: message_id=%s params=%s",
+            msg_id, payload_dump,
         )
         # OBS: vat_lines kan vara [] — Bezala plockar default moms från
         # kontot själv när default_vat_id är null. Vi blockerar INTE här.

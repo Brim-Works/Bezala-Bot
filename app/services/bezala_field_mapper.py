@@ -23,58 +23,69 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Kategori → Bezala konto-ID (live-verifierade från produktionens metadata)
+# Kategori → Bezala konto-ID
 # ---------------------------------------------------------------------------
+#
+# Bezala-konto-IDs är live-verifierade från produktionens metadata-endpoint
+# (GET /api/bezala/metadata). Nya kategorier som lagts till efter den
+# initiala verifieringen har None-värden tills Mikko bekräftar mot
+# `scripts/list_bezala_metadata.py`. Lookup-funktionen `get_account_id_for_category`
+# faller tillbaka till "annat"-kontot när None påträffas.
 
-# Fallback-konto när kategorin är okänd eller inget matchar.
+# Fallback-konto när kategorin är okänd eller inte är mappad ännu.
 DEFAULT_ACCOUNT_ID = 67110  # Muut matkakulut
 
-CATEGORY_TO_ACCOUNT_ID: dict[str, int] = {
-    # Flyg & långresor → Matkaliput (7800)
-    "flyg": 67100,
-    "resa": 67100,
-    "transport": 67100,
-    "tåg": 67100,
-    "tag": 67100,
-    "buss": 67100,
-    "kollektivtrafik": 67100,
 
-    # Taxi → Taksikulut (7810)
-    "taxi": 67101,
+# Mapper för svenska → finska Bezala-kontonamn (referens i kommentarer).
+# Källa: Mikkos facit + Bezala-prod-metadata.
+CATEGORY_TO_ACCOUNT_ID: dict[str, int | None] = {
+    # --- Resekategorier (alla mappar mot Matkaliput utom Taxi/Hotell/Mat) ---
+    "flyg": 67100,                   # Matkaliput — verifierat
+    "tåg": 67100,                    # Matkaliput — verifierat (delar konto)
+    "tag": 67100,                    # alias utan diakritik
+    "kollektivtrafik": 67100,        # Matkaliput — verifierat
+    "buss": 67100,                   # alias → Matkaliput
+    "transport": 67100,              # alias → Matkaliput
+    "resa": 67100,                   # alias → Matkaliput
+    "taxi": 67101,                   # Taksikulut — verifierat
+    "bilhyra": None,                 # TODO: Mikko verifierar — sannolikt 67110 (Muut matkakulut)
+    "parkering": 67113,              # Paikoituskulut — verifierat (Moovy, EasyPark)
+    "parking": 67113,                # alias
+    "pysakointi": 67113,             # finsk alias
+    "hotell": 67102,                 # Hotelli- ym. majoitus — verifierat
+    "hotel": 67102,                  # alias
+    "boende": 67102,                 # alias
+    "mat": 148404,                   # Ruokailut matkalla — verifierat
+    "matkalla": 148404,              # alias
 
-    # Parkering → Paikoituskulut (7850) — Moovy, p-hus m.fl.
-    "parkering": 67113,
-    "parking": 67113,
+    # --- IT / Mjukvara ---
+    "ai-verktyg": 166648,            # AI työkalut — verifierat (Anthropic/OpenAI etc.)
+    "ai": 166648,                    # alias för bakåtkompatibilitet
+    "mjukvara": 82612,               # Atk-ohjelmistot, päivitykset ja yp — verifierat
+    "programvara": 82612,            # alias
+    "saas": 82612,                   # alias
+    "software": 82612,               # alias
+    "it": 82612,                     # alias
+    "telefon": None,                 # TODO: Mikko verifierar — Puhelinkulut
+    "puhelin": None,                 # finsk alias
+    "datakommunikation": None,       # TODO: Mikko verifierar — Datasiirtokulut
+    "tiedonsiirto": None,            # finsk alias
 
-    # Hotell / boende → Hotelli-ym. majoitus (7820)
-    "hotell": 67102,
-    "hotel": 67102,
-    "boende": 67102,
+    # --- Övrigt ---
+    "böcker": None,                  # TODO: Mikko verifierar — Ammattikirjallisuus, lehdet, kirjat
+    "bocker": None,                  # alias utan diakritik
+    "kirjat": None,                  # finsk alias
+    "utbildning": None,              # TODO: Mikko verifierar — Henkilökunnan koulutus
+    "koulutus": None,                # finsk alias
+    "representation": 67097,         # Edustuskulut — verifierat
+    "kontorsmaterial": 67107,        # Toimistotarvikkeet — verifierat
+    "kontor": 67107,                 # alias
 
-    # AI-tjänster → "AI työkalut" (dedikerad kontorad för Anthropic/OpenAI/etc.)
-    "ai": 166648,
-
-    # Allmän programvara / SaaS → Atk-ohjelmistot, päivitykset ja yp (7660)
-    "programvara": 82612,
-    "saas": 82612,
-    "software": 82612,
-    "it": 82612,
-
-    # Representation / gäster → Edustuskulut (7990)
-    "representation": 67097,
-
-    # Mat på resa → Ruokailut matkalla (7830)
-    "mat": 148404,
-    "matkalla": 148404,
-
-    # Kontorsmaterial → Toimistotarvikkeet (8620)
-    "kontor": 67107,
-    "kontorsmaterial": 67107,
-
-    # Övrigt/Annat → Muut matkakulut (7860)
-    "annat": 67110,
-    "övrigt": 67110,
-    "ovrigt": 67110,
+    # --- Fallback ---
+    "annat": 67110,                  # Muut matkakulut — verifierat
+    "övrigt": 67110,                 # alias
+    "ovrigt": 67110,                 # alias utan diakritik
+    "muut": 67110,                   # finsk alias
 }
 
 # Env-override för default-kostnadsställe (så olika användare kan ha olika).
@@ -89,28 +100,94 @@ DEFAULT_ACCOUNT_NAME = "Muut matkakulut"
 
 CATEGORY_TO_ACCOUNT: dict[str, str] = {
     "flyg": "Matkaliput",
+    "tåg": "Matkaliput",
+    "tag": "Matkaliput",
+    "kollektivtrafik": "Matkaliput",
+    "buss": "Matkaliput",
     "resa": "Matkaliput",
     "transport": "Matkaliput",
     "taxi": "Taksikulut",
+    "bilhyra": "Muut matkakulut",
     "parkering": "Paikoituskulut",
+    "parking": "Paikoituskulut",
     "hotell": "Hotelli-ym. majoitus",
+    "hotel": "Hotelli-ym. majoitus",
     "boende": "Hotelli-ym. majoitus",
-    "programvara": "Atk-ohjelmistot, päivitykset ja yp",
-    "ai": "AI työkalut",
-    "software": "Atk-ohjelmistot, päivitykset ja yp",
-    "representation": "Edustuskulut",
     "mat": "Ruokailut matkalla",
+    "matkalla": "Ruokailut matkalla",
+    "ai-verktyg": "AI työkalut",
+    "ai": "AI työkalut",
+    "mjukvara": "Atk-ohjelmistot, päivitykset ja yp",
+    "programvara": "Atk-ohjelmistot, päivitykset ja yp",
+    "software": "Atk-ohjelmistot, päivitykset ja yp",
+    "saas": "Atk-ohjelmistot, päivitykset ja yp",
+    "it": "Atk-ohjelmistot, päivitykset ja yp",
+    "telefon": "Puhelinkulut",
+    "datakommunikation": "Datasiirtokulut",
+    "böcker": "Ammattikirjallisuus, lehdet, kirjat",
+    "bocker": "Ammattikirjallisuus, lehdet, kirjat",
+    "utbildning": "Henkilökunnan koulutus",
+    "representation": "Edustuskulut",
+    "kontorsmaterial": "Toimistotarvikkeet",
     "kontor": "Toimistotarvikkeet",
     "annat": "Muut matkakulut",
+    "övrigt": "Muut matkakulut",
+    "ovrigt": "Muut matkakulut",
 }
 
 
-def category_to_account_id(category: str | None) -> int:
-    """Bezala Bot-kategori → Bezala konto-ID (case-insensitive).
-    Okänd / None / tom → DEFAULT_ACCOUNT_ID (Muut matkakulut)."""
+def _normalize_category_key(category: str | None) -> str | None:
+    """Normalisera kategori-strängen för uppslagning i CATEGORY_TO_ACCOUNT_ID.
+
+    Returnerar lowercase + trimmad sträng. None om tom input.
+    Bibehåller diakritik (ÅÄÖ) — tabellen har egna alias för icke-diakritik.
+    """
     if not category:
+        return None
+    s = str(category).strip().lower()
+    return s or None
+
+
+def get_account_id_for_category(category: str | None) -> int:
+    """FAS 11.x — public lookup för AI-kategori → Bezala konto-ID.
+
+    Beteende:
+      1. Normaliserar (lowercase, strip) — accepterar bl.a. 'Parkering'
+         och 'parkering' likvärdigt.
+      2. Slår upp i CATEGORY_TO_ACCOUNT_ID. Mappar har None för kategorier
+         som inte är verifierade mot prod-Bezala ännu.
+      3. Om värdet är None eller saknas: faller tillbaka till
+         DEFAULT_ACCOUNT_ID (Muut matkakulut) och loggar en INFO-rad
+         så vi kan tracka i prod-loggar vilka mappningar som saknas.
+
+    Garanterar att returvärdet alltid är ett giltigt int — kallaren
+    behöver inte handskas med None.
+    """
+    key = _normalize_category_key(category)
+    if not key:
         return DEFAULT_ACCOUNT_ID
-    return CATEGORY_TO_ACCOUNT_ID.get(category.strip().lower(), DEFAULT_ACCOUNT_ID)
+    if key not in CATEGORY_TO_ACCOUNT_ID:
+        logger.info(
+            "category_to_account_id: okänd kategori=%r, använder fallback %d",
+            category, DEFAULT_ACCOUNT_ID,
+        )
+        return DEFAULT_ACCOUNT_ID
+    mapped = CATEGORY_TO_ACCOUNT_ID[key]
+    if mapped is None:
+        logger.info(
+            "category_to_account_id: kategori=%r saknar verifierat konto-ID — "
+            "använder fallback %d (Muut matkakulut). Mikko: kör "
+            "scripts/list_bezala_metadata.py för att fylla i.",
+            category, DEFAULT_ACCOUNT_ID,
+        )
+        return DEFAULT_ACCOUNT_ID
+    return mapped
+
+
+def category_to_account_id(category: str | None) -> int:
+    """Bakåtkompatibel wrapper. Ny kod ska kalla
+    `get_account_id_for_category` direkt."""
+    return get_account_id_for_category(category)
 
 
 def category_to_account_name(category: str | None) -> str:
@@ -441,14 +518,96 @@ def build_vat_lines(
 
 
 # ---------------------------------------------------------------------------
-# Bezala vat_code_id → tax_percentage-decimalsträng (live-verifierad från docs)
+# Bezala vat_code_id → tax_percentage-decimalsträng
 # ---------------------------------------------------------------------------
+#
+# Verifierade FI-koder (live från prod): 1355, 864, 1.
+# Resterande IDs är platshållare (None) tills Mikko kör
+# `scripts/list_bezala_metadata.py` mot prod-Bezala och fyller i.
+# `tax_percentage_for_vat_code` faller tillbaka till country-baserat
+# default via `get_default_vat_for_country` när None påträffas.
+#
+# Korrekta dec-strängar att använda när IDs är kända:
+#   FI: 25.5% → "0.255", 14% → "0.14", 10% → "0.10", 0% → "0.0"
+#   SE: 25%   → "0.25",  12% → "0.12", 6%  → "0.06", 0% → "0.0"
+#   NO: 25%   → "0.25",  15% → "0.15", 12% → "0.12", 0% → "0.0"
+#   Purchases Abroad (EU/Non-EU): "0.0"
 
-VAT_PERCENTAGE_BY_CODE: dict[int, str] = {
-    1355: "0.255",  # Finland standard 25,5%
-    864:  "0.14",   # Finland reducerad 14%
-    1:    "0.0",    # 0% (representation / skattefritt)
+# `None` = okänt prod-ID; fylls i efter diagnostik. `str` = verifierat.
+VAT_PERCENTAGE_BY_CODE: dict[int, str | None] = {
+    # --- Finland — VERIFIERADE ---
+    1355: "0.255",   # FI standard 25,5% (efter sep 2024)
+    864:  "0.14",    # FI reducerad 14%
+    1:    "0.0",     # FI 0% (representation / skattefritt)
+    # --- Finland — placeholders för 10% och övriga ---
+    # När Mikko levererar prod-metadata: lägg till t.ex.
+    #   <id>: "0.10",  # FI reducerad 10%
+    # --- Sverige — placeholders ---
+    # <id>: "0.25",   # SE standard 25%
+    # <id>: "0.12",   # SE reducerad 12% (livsmedel, hotell)
+    # <id>: "0.06",   # SE reducerad 6% (böcker, kollektivtrafik)
+    # <id>: "0.0",    # SE 0%
+    # --- Norge — placeholders ---
+    # <id>: "0.25",   # NO standard 25%
+    # <id>: "0.15",   # NO reducerad 15% (livsmedel)
+    # <id>: "0.12",   # NO reducerad 12% (transport, hotell)
+    # <id>: "0.0",    # NO 0%
+    # --- Purchases Abroad (Bezalas EU/Non-EU-konton) ---
+    # <id>: "0.0",    # Purchases Abroad (EU)
+    # <id>: "0.0",    # Purchases Abroad (Non-EU)
 }
+
+
+# ---------------------------------------------------------------------------
+# Country → default VAT-procent
+# ---------------------------------------------------------------------------
+#
+# Fallback när vi har country-detektion men inget vat_code_id från Bezala.
+# Används också av `tax_percentage_for_vat_code` när uppslagen kod är None
+# eller saknas.
+
+COUNTRY_DEFAULT_VAT: dict[str, str] = {
+    "fi": "0.255",       # FI standard 25,5%
+    "se": "0.25",        # SE standard 25%
+    "no": "0.25",        # NO standard 25%
+    "dk": "0.25",        # DK standard 25%
+    "ee": "0.22",        # EE standard 22%
+    "lv": "0.21",        # LV standard 21%
+    "lt": "0.21",        # LT standard 21%
+    "de": "0.19",        # DE standard 19%
+    "nl": "0.21",        # NL standard 21%
+    "fr": "0.20",        # FR standard 20%
+    "eu_other": "0.0",   # Purchases Abroad (EU)
+    "non_eu": "0.0",     # Purchases Abroad (Non-EU)
+}
+
+# Mappning från `sender_to_country()`-värden till COUNTRY_DEFAULT_VAT-nycklar.
+# sender_to_country returnerar 'fi' | 'eu' | 'non-eu' — vi översätter till
+# 'fi' / 'eu_other' / 'non_eu'.
+_SENDER_COUNTRY_TO_VAT_KEY: dict[str, str] = {
+    "fi": "fi",
+    "eu": "eu_other",
+    "non-eu": "non_eu",
+}
+
+
+def get_default_vat_for_country(country_code: str | None) -> str:
+    """Returnera default tax_percentage-sträng för ett land.
+
+    Accepterar både:
+      - ISO-koder 'fi', 'se', 'no', 'dk' etc.
+      - `sender_to_country`-värden 'fi', 'eu', 'non-eu'.
+
+    Okänt land → 'fi'-default (Mikkos primära land) snarare än '0.0',
+    eftersom 0% skulle skicka 0-moms till Bezala vilket är farligare än
+    en hög default.
+    """
+    if not country_code:
+        return COUNTRY_DEFAULT_VAT["fi"]
+    key = str(country_code).strip().lower()
+    if key in _SENDER_COUNTRY_TO_VAT_KEY:
+        key = _SENDER_COUNTRY_TO_VAT_KEY[key]
+    return COUNTRY_DEFAULT_VAT.get(key, COUNTRY_DEFAULT_VAT["fi"])
 
 
 # credit_account_id = BETALNINGSMETODEN (kreditkort), inte utgiftskategorin.
@@ -462,17 +621,44 @@ DEFAULT_CREDIT_ACCOUNT_ID = int(
 )
 
 
-def tax_percentage_for_vat_code(vat_code_id: int | str | None) -> str:
-    """Slår upp tax_percentage-sträng från vat_code_id. Default '0.255'
-    (FI standard) om okänt — Bezala kommer korrigera via default_vat_id
-    på kontot om värdet är fel."""
+def tax_percentage_for_vat_code(
+    vat_code_id: int | str | None,
+    *,
+    country: str | None = None,
+) -> str:
+    """Slår upp tax_percentage-sträng från vat_code_id.
+
+    Fallback-ordning:
+      1. Direkt match i VAT_PERCENTAGE_BY_CODE → använd det värdet.
+      2. Match men värdet är None (placeholder för icke-verifierat ID) →
+         country-baserat default.
+      3. Ingen match alls (okänt ID) → country-baserat default.
+      4. Inget country angivet → FI standard (25,5%) som sista fallback.
+
+    `country` kan vara ISO-kod ('fi'/'se') eller `sender_to_country`-värde
+    ('fi'/'eu'/'non-eu').
+    """
+    fallback = (
+        get_default_vat_for_country(country) if country
+        else COUNTRY_DEFAULT_VAT["fi"]
+    )
     if vat_code_id is None:
-        return "0.255"
+        return fallback
     try:
         key = int(vat_code_id)
     except (TypeError, ValueError):
-        return "0.255"
-    return VAT_PERCENTAGE_BY_CODE.get(key, "0.255")
+        return fallback
+    mapped = VAT_PERCENTAGE_BY_CODE.get(key)
+    if mapped is None:
+        # Antingen okänt ID, eller känt-men-icke-verifierat (None i tabellen)
+        if key not in VAT_PERCENTAGE_BY_CODE:
+            logger.info(
+                "tax_percentage_for_vat_code: okänt vat_code_id=%s, "
+                "använder country-default %s (country=%r)",
+                key, fallback, country,
+            )
+        return fallback
+    return mapped
 
 
 def build_vat_lines_attributes(
