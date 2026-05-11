@@ -11,6 +11,7 @@ import LinkFetchSection from '../components/settings/LinkFetchSection.jsx';
 import TripCleanupSection from '../components/settings/TripCleanupSection.jsx';
 import TrashSection from '../components/settings/TrashSection.jsx';
 import ExcludedVendorsSection from '../components/settings/ExcludedVendorsSection.jsx';
+import HtmlOnlySendersSection from '../components/settings/HtmlOnlySendersSection.jsx';
 import SaveBar from '../components/settings/SaveBar.jsx';
 import { useToast } from '../lib/toast.jsx';
 
@@ -120,6 +121,7 @@ export default function Settings() {
         />
         <LinkFetchSection form={form} update={update} />
         <ExcludedVendorsSection />
+        <HtmlOnlySendersSection />
         <TripCleanupSection />
         <TrashSection form={form} update={update} />
       </div>

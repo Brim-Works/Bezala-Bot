@@ -227,6 +227,17 @@ export const api = {
     request('/api/excluded-vendors', { method: 'POST', body: payload }),
   excludedVendorsRemove: (id) =>
     request(`/api/excluded-vendors/${id}`, { method: 'DELETE' }),
+  htmlOnlySendersList: () => request('/api/settings/html-only-senders'),
+  htmlOnlySendersAdd: (payload) =>
+    request('/api/settings/html-only-senders', {
+      method: 'POST', body: payload,
+    }),
+  htmlOnlySendersRemove: (id) =>
+    request(`/api/settings/html-only-senders/${id}`, { method: 'DELETE' }),
+  htmlOnlySendersToggle: (id, isActive) =>
+    request(`/api/settings/html-only-senders/${id}`, {
+      method: 'PATCH', body: { is_active: isActive },
+    }),
   // FAS 11.5.1 — Per Diem
   tripsExtractFlightTimes: (id) =>
     request(`/api/trips/${id}/extract-flight-times`, { method: 'POST' }),
