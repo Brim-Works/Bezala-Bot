@@ -376,3 +376,30 @@ class ExcludedVendor(Base):
     description = Column(Text, nullable=True)
     added_by = Column(String(20), nullable=False, default="user")
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class HtmlOnlySender(Base):
+    """HTML-only senders: avsändare som skickar kvittot i mail-bodyn
+    istället för som PDF-bilaga (Skånetrafiken, Moovy notifieringar,
+    Cursor, Airport LRS m.fl.).
+
+    För dessa avsändare hoppar pipeline över has:attachment-filtret och
+    låter html_to_pdf-konverteraren producera en PDF av mail-bodyn.
+
+    `sender_pattern` är substring-match (case-insensitive) mot Gmail
+    from-fältet. `is_active=False` deaktiverar utan att radera
+    (möjliggör snabb on/off utan att tappa beskrivning + historik).
+    """
+
+    __tablename__ = "html_only_senders"
+    __table_args__ = (
+        UniqueConstraint(
+            "sender_pattern", name="uq_html_only_senders_pattern",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    sender_pattern = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)

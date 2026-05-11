@@ -174,6 +174,77 @@ def build_gmail_query(row: AppSettings, done_label: str) -> str:
     return " ".join(parts)
 
 
+def build_gmail_query_html_only(
+    row: AppSettings,
+    html_only_patterns: Iterable[str],
+    *,
+    done_label: str,
+) -> str | None:
+    """Bygg en SEPARAT Gmail-query som matchar BARA html-only-avsändarna.
+
+    Den vanliga build_gmail_query använder `has:attachment` som ett
+    hårt filter — det blockerar t.ex. Skånetrafiken som skickar
+    biljetten som HTML i mail-bodyn. Den här queryn skippar
+    `has:attachment` men sätter en strikt `from:`-OR-clause så vi inte
+    råkar dra in alla notify-mail.
+
+    Returnerar None om html_only_patterns är tom — då hoppar pipelinen
+    helt över andra passet.
+
+    Behåller övriga base-filters (label, spam, trash, datum-fönster +
+    user excludes) så samma städlogik gäller.
+    """
+    patterns = _clean_list(html_only_patterns)
+    if not patterns:
+        return None
+
+    parts: list[str] = [
+        f'-label:"{done_label}"',
+        "-in:spam",
+        "-in:trash",
+        "after:2026/03/21",
+    ]
+    # OBS: ingen has:attachment här — det är hela poängen med passet.
+    # Behåll övriga "kategori"-filter så vi inte plockar in spam-mail
+    # från samma avsändare som råkar matcha mönstret.
+    if row.exclude_promotions:
+        parts.append("-category:promotions")
+    if row.exclude_social:
+        parts.append("-category:social")
+    if row.exclude_calendar:
+        parts.append("-filename:ics")
+
+    # User-exkluderingar tillämpas också här — om Mikko har exkluderat
+    # en specifik avsändare ska den inte komma in via html-only-passet.
+    for sender in _clean_list(row.exclude_senders):
+        parts.append(f"-from:{sender}")
+    for subj in _clean_list(row.exclude_subjects):
+        safe = subj.replace('"', '\\"')
+        parts.append(f'-subject:"{safe}"')
+
+    # Strikt include-OR-clause: BARA html_only_patterns. Soft-limit
+    # samma som standard-queryn för att respektera Gmails query-gräns.
+    base_len = len(" ".join(parts))
+    or_parts: list[str] = []
+    dropped: list[str] = []
+    for i, s in enumerate(patterns):
+        candidate = or_parts + [f"from:{s}"]
+        clause = "(" + " OR ".join(candidate) + ")"
+        if base_len + 1 + len(clause) > GMAIL_QUERY_SOFT_LIMIT:
+            dropped = patterns[i:]
+            break
+        or_parts.append(f"from:{s}")
+    if not or_parts:
+        return None
+    parts.append("(" + " OR ".join(or_parts) + ")")
+    if dropped:
+        logger.warning(
+            "html_only Gmail-query nådde längdgräns — %d patterns föll bort: %s",
+            len(dropped), dropped,
+        )
+    return " ".join(parts)
+
+
 def subject_matches_exclusion(subject: str | None, excluded: Iterable[str]) -> bool:
     """Client-side dubbelkoll — returnerar True om subject innehåller någon
     av de exkluderade fraserna (case-insensitive)."""

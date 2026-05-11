@@ -367,6 +367,28 @@ export default {
         removeFailed: 'Could not remove',
       },
     },
+    htmlOnlySenders: {
+      title: 'HTML-only senders',
+      helpText:
+        'For senders that send the receipt as HTML in the mail body instead of as a PDF attachment. Bezala Bot picks them up and converts to PDF automatically.',
+      senderPattern: 'Sender pattern',
+      senderPatternPlaceholder: 'e.g. skanetrafiken',
+      description: 'Description',
+      addButton: '+ Add',
+      save: 'Save',
+      cancel: 'Cancel',
+      active: 'Active',
+      empty: 'No HTML-only senders yet — pipeline runs standard scan only.',
+      deleteConfirm: 'Remove {pattern}?',
+      toast: {
+        added: 'Sender added',
+        removed: 'Sender removed',
+        loadFailed: 'Could not load list',
+        addFailed: 'Could not add',
+        removeFailed: 'Could not remove',
+        toggleFailed: 'Could not change status',
+      },
+    },
     auth: {
       title: 'Connections',
       lead:

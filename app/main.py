@@ -83,6 +83,19 @@ def _run_once_seed_excluded_vendors() -> None:
         logger.exception("Kunde inte seed:a excluded_vendors-listan.")
 
 
+def _run_once_seed_html_only_senders() -> None:
+    """Seed default-listan av html-only senders (Skånetrafiken, Moovy
+    notify, Cursor, Airport LRS)."""
+    try:
+        from app.services.html_only_senders import (
+            seed_default_html_only_senders,
+        )
+        with session_scope() as db:
+            seed_default_html_only_senders(db)
+    except Exception:
+        logger.exception("Kunde inte seed:a html_only_senders-listan.")
+
+
 def _run_once_fix_skipped_bezala() -> None:
     """Migrera sparade-till-Drive-rader med bezala_upload_status='skipped' till
     'pending' så användaren kan ladda upp manuellt. Gammal logik satte
@@ -125,6 +138,7 @@ async def lifespan(app: FastAPI):
     _run_once_cleanup_errors()
     _run_once_fix_skipped_bezala()
     _run_once_seed_excluded_vendors()
+    _run_once_seed_html_only_senders()
     start_scheduler()
     yield
     shutdown_scheduler()
@@ -3603,6 +3617,78 @@ def remove_excluded_vendor_endpoint(
     if not remove_vendor(db, vendor_id):
         raise HTTPException(status_code=404, detail="Vendor finns inte")
     return {"success": True}
+
+
+# --- HTML-only senders ------------------------------------------------------
+# Avsändare vars kvitto kommer som HTML i mail-bodyn istället för som
+# PDF-bilaga. Pipeline kör en separat Gmail-query för dessa utan
+# has:attachment-filtret och låter html_to_pdf-konverteraren producera
+# en PDF av bodyn.
+
+
+class HtmlOnlySenderPayload(BaseModel):
+    sender_pattern: str
+    description: str | None = None
+
+
+class HtmlOnlySenderTogglePayload(BaseModel):
+    is_active: bool
+
+
+@app.get("/api/settings/html-only-senders")
+def list_html_only_senders_endpoint(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.html_only_senders import (
+        list_html_only_senders, serialize,
+    )
+    rows = list_html_only_senders(db)
+    return {"senders": [serialize(r) for r in rows]}
+
+
+@app.post("/api/settings/html-only-senders")
+def add_html_only_sender_endpoint(
+    payload: HtmlOnlySenderPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.html_only_senders import add_sender, serialize
+    if not (payload.sender_pattern or "").strip():
+        raise HTTPException(status_code=400, detail="sender_pattern saknas")
+    try:
+        row, already = add_sender(
+            db, payload.sender_pattern, payload.description,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {**serialize(row), "already_exists": already}
+
+
+@app.delete("/api/settings/html-only-senders/{sender_id}")
+def remove_html_only_sender_endpoint(
+    sender_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.html_only_senders import remove_sender
+    if not remove_sender(db, sender_id):
+        raise HTTPException(status_code=404, detail="Sender finns inte")
+    return {"success": True}
+
+
+@app.patch("/api/settings/html-only-senders/{sender_id}")
+def toggle_html_only_sender_endpoint(
+    sender_id: int,
+    payload: HtmlOnlySenderTogglePayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    from app.services.html_only_senders import serialize, set_active
+    row = set_active(db, sender_id, payload.is_active)
+    if row is None:
+        raise HTTPException(status_code=404, detail="Sender finns inte")
+    return serialize(row)
 
 
 # --- FAS 11.5.1 — Per Diem Calculator ----------------------------------

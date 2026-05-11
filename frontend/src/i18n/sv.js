@@ -368,6 +368,28 @@ export default {
         removeFailed: 'Kunde inte ta bort',
       },
     },
+    htmlOnlySenders: {
+      title: 'HTML-only avsändare',
+      helpText:
+        'För avsändare som skickar kvittot som HTML i mailtexten istället för PDF-bilaga. Bezala Bot fångar dem och konverterar till PDF automatiskt.',
+      senderPattern: 'Sender pattern',
+      senderPatternPlaceholder: 't.ex. skanetrafiken',
+      description: 'Beskrivning',
+      addButton: '+ Lägg till',
+      save: 'Spara',
+      cancel: 'Avbryt',
+      active: 'Aktiv',
+      empty: 'Inga html-only avsändare ännu — pipelinen kör bara standard-scan.',
+      deleteConfirm: 'Ta bort {pattern}?',
+      toast: {
+        added: 'Sender tillagd',
+        removed: 'Sender borttagen',
+        loadFailed: 'Kunde inte hämta listan',
+        addFailed: 'Kunde inte lägga till',
+        removeFailed: 'Kunde inte ta bort',
+        toggleFailed: 'Kunde inte ändra status',
+      },
+    },
     auth: {
       title: 'Anslutningar',
       lead:

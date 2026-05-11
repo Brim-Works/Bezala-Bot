@@ -41,6 +41,7 @@ from app.services.receipt_analyzer import (
 from app.services.link_extractor import extract_receipt_link
 from app.services.settings_service import (
     build_gmail_query,
+    build_gmail_query_html_only,
     load_settings,
     sender_matches_link_fetch,
     subject_matches_exclusion,
@@ -172,6 +173,16 @@ def run_scan(max_results: int = 50) -> ScanResult:
         # (matchar default i models.py + settings_to_dict-tolkningen).
         _htmlpdf_raw = getattr(app_settings, "html_to_pdf_enabled", None)
         html_to_pdf_enabled = True if _htmlpdf_raw is None else bool(_htmlpdf_raw)
+        # HTML-only-senders (Skånetrafiken, Moovy, Cursor m.fl.) — andra
+        # passet kör en separat query UTAN has:attachment så html_to_pdf
+        # kan plocka upp kvittot ur mail-bodyn.
+        from app.services.html_only_senders import list_active_patterns
+        html_only_patterns = list_active_patterns(db)
+        html_only_gmail_query = build_gmail_query_html_only(
+            app_settings,
+            html_only_patterns,
+            done_label=DONE_LABEL,
+        )
         run = ScanRun(started_at=datetime.utcnow(), status="running")
         db.add(run)
         db.flush()
@@ -228,15 +239,44 @@ def run_scan(max_results: int = 50) -> ScanResult:
         _finalize_run(run_id, result, status="error", note=f"Gmail list: {exc}")
         raise
 
-    result.found = len(message_ids)
+    # Andra passet: html-only-senders utan has:attachment. Dedupa
+    # mot första passet (samma message_id kan teoretiskt matcha båda
+    # om en sender finns både i include_senders och html_only_senders).
+    html_only_ids: list[str] = []
+    if html_only_gmail_query:
+        try:
+            raw_html_only = gmail.list_candidate_message_ids(
+                query=html_only_gmail_query, max_results=max_results,
+            )
+            seen = set(message_ids)
+            for mid in raw_html_only:
+                if mid not in seen:
+                    html_only_ids.append(mid)
+                    seen.add(mid)
+        except Exception as exc:  # noqa: BLE001 — html-only-pass får inte
+            # krascha hela scan-loopen. Vi loggar och fortsätter med
+            # standard-passet, sen markerar runet som "ok" ändå.
+            logger.exception(
+                "html-only Gmail-query misslyckades — hoppar passet: %s", exc,
+            )
+
+    result.found = len(message_ids) + len(html_only_ids)
     logger.info(
-        "Scanning hittade %d kandidater (AI=%s, query: %s)",
+        "Scanning hittade %d kandidater (standard=%d, html-only=%d, "
+        "AI=%s, html_to_pdf=%s, query: %s)",
         result.found,
+        len(message_ids),
+        len(html_only_ids),
         "on" if use_ai else "off",
+        "on" if html_to_pdf_enabled else "off",
         gmail_query,
     )
+    if html_only_gmail_query:
+        logger.info(
+            "html-only-query: %s", html_only_gmail_query,
+        )
 
-    for mid in message_ids:
+    for mid in list(message_ids) + html_only_ids:
         try:
             _process_one_message(
                 mid, gmail, drive, namer, analyzer, bezala, result,
