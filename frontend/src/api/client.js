@@ -99,6 +99,8 @@ export const api = {
   bezalaMatchSuggestions: () => request('/api/bezala/match-suggestions'),
   bezalaMatchSuggestionsAll: () =>
     request('/api/bezala/match-suggestions?include_all_messages=true'),
+  matchHealth: ({ refresh = false } = {}) =>
+    request(`/api/debug/match-health${refresh ? '?refresh=true' : ''}`),
   matchToBezala: (msgId, missingReceiptId) =>
     request(`/api/messages/${msgId}/match-to-bezala`, {
       method: 'POST',

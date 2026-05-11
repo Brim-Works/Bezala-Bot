@@ -2089,6 +2089,61 @@ def get_match_suggestions(
     }
 
 
+# === DEBUG (BEHÅLLS) — Match Health-rapport ================================
+# Persistent analysverktyg (taggat DEBUG men INTE DELETE-MIG): korsrefererar
+# Bezala missing_receipts + våra ProcessedMessages + Gmail-historik och
+# klassificerar varför varje korttrans inte är matchad. Cachas per process
+# 5 min (CACHE_TTL_SECONDS). Se app/services/match_health.py för logik.
+
+
+@app.get("/api/debug/match-health")
+def get_match_health(
+    refresh: bool = False,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Analysrapport: klassificerar varje saknat Bezala-kvitto efter
+    sannolik orsak (matched_correctly | gmail_miss | no_receipt_exists |
+    ai_extraction_wrong | match_algorithm_failed | gmail_error).
+
+    Resultatet cachas 5 min per process. Skicka ?refresh=true för att
+    forcera ny fetch.
+    """
+    from app.services import match_health as match_health_service
+
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Bezala-init: {exc}",
+        ) from exc
+
+    gmail = _get_gmail_client_safe()
+    rate_provider = make_db_rate_provider(db)
+    try:
+        report = match_health_service.build_match_health_report(
+            db,
+            bezala_client=bezala,
+            gmail_client=gmail,
+            rate_provider=rate_provider,
+            normalize_missing_receipt=_normalize_missing_receipt,
+            serialize_message=_serialize_message,
+            refresh=refresh,
+        )
+    except BezalaError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Bezala missing_receipts: {exc}",
+        ) from exc
+    finally:
+        bezala.close()
+
+    return report
+
+
+# === SLUT Match Health ======================================================
+
+
 class MatchToBezalaPayload(BaseModel):
     missing_receipt_id: int | str
 

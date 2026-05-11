@@ -12,6 +12,7 @@ const ITEMS = [
   { id: 'travelTinder' },
   { id: 'trips' },
   { id: 'log' },
+  { id: 'matchHealth' },
   { id: 'settings' },
   { id: 'trash' },
 ];
