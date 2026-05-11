@@ -2158,6 +2158,136 @@ def get_match_health(
 # === SLUT Match Health ======================================================
 
 
+# === DELETE-MIG-EFTER-VERIFIERING ===========================================
+# Tillfällig diagnostik: undersöker varför PR #20:s html_only-pipeline
+# verkar inte köra i prod. Mikko ser "from:skanetrafiken ... has:attachment"
+# i Match Health-rapporten — den ska inte längre vara där om html_only-
+# patterns är seedade. Endpointen visar exakt DB-state + vad query-
+# byggaren faktiskt producerar.
+
+
+@app.get("/api/debug/html-only-senders-state")
+def debug_html_only_senders_state(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Returnerar full diagnostik om html_only_senders-tabellens prod-state.
+
+    Användning: kalla via DevTools-konsol efter login, eller curl med
+    sessionscookien. Loggar också resultatet till stdout så det syns
+    i Railway-loggar.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    diag: dict = {
+        "table_exists": False,
+        "row_count": 0,
+        "rows": [],
+        "seed_task_run": False,
+        "active_patterns": [],
+        "build_gmail_query_html_only_result": None,
+        "settings_app_settings_id": None,
+        "diagnosis": "",
+    }
+
+    # 1. Tabellen existerar?
+    try:
+        engine = db.get_bind()
+        inspector = sa_inspect(engine)
+        diag["table_exists"] = "html_only_senders" in inspector.get_table_names()
+    except Exception as exc:  # noqa: BLE001
+        diag["diagnosis"] += f"inspector failed: {exc}; "
+
+    # 2. Rader + patterns
+    if diag["table_exists"]:
+        try:
+            from app.models import HtmlOnlySender, MaintenanceTask
+            from app.services.html_only_senders import (
+                SEED_TASK_NAME, list_active_patterns,
+            )
+            rows = (
+                db.query(HtmlOnlySender)
+                .order_by(HtmlOnlySender.id.asc())
+                .all()
+            )
+            diag["row_count"] = len(rows)
+            diag["rows"] = [
+                {
+                    "id": r.id,
+                    "sender_pattern": r.sender_pattern,
+                    "description": r.description,
+                    "is_active": bool(r.is_active),
+                    "created_at": (
+                        r.created_at.isoformat()
+                        if r.created_at is not None else None
+                    ),
+                }
+                for r in rows
+            ]
+            diag["seed_task_run"] = (
+                db.query(MaintenanceTask)
+                .filter(MaintenanceTask.name == SEED_TASK_NAME)
+                .count() > 0
+            )
+            diag["active_patterns"] = list_active_patterns(db)
+        except Exception as exc:  # noqa: BLE001
+            diag["diagnosis"] += f"row fetch failed: {exc}; "
+
+    # 3. Vad PRODUCERAR build_gmail_query_html_only givet dessa patterns?
+    #    Detta är samma kod som pipeline anropar.
+    try:
+        from app.services.settings_service import (
+            build_gmail_query_html_only, load_settings,
+        )
+        app_settings = load_settings(db)
+        diag["settings_app_settings_id"] = getattr(app_settings, "id", None)
+        diag["build_gmail_query_html_only_result"] = (
+            build_gmail_query_html_only(
+                app_settings,
+                diag["active_patterns"],
+                done_label="Bezala-Klar",
+            )
+        )
+    except Exception as exc:  # noqa: BLE001
+        diag["diagnosis"] += f"query build failed: {exc}; "
+
+    # 4. Sammanfattande diagnos
+    if not diag["table_exists"]:
+        diag["diagnosis"] = (
+            "FEL: tabellen html_only_senders existerar INTE i DB. "
+            "Migration/init_db har inte skapat den. Kolla lifespan-hook."
+        ) + (" " + diag["diagnosis"] if diag["diagnosis"] else "")
+    elif diag["row_count"] == 0:
+        diag["diagnosis"] = (
+            "FEL: tabellen finns men är tom. seed_default_html_only_senders "
+            f"verkar inte ha körts (seed_task_run={diag['seed_task_run']}). "
+            "Kolla _run_once_seed_html_only_senders i lifespan."
+        )
+    elif not diag["active_patterns"]:
+        diag["diagnosis"] = (
+            f"FEL: {diag['row_count']} rader finns men ingen är is_active=True. "
+            "Skicka PATCH /api/settings/html-only-senders/{id} {is_active: true}."
+        )
+    elif diag["build_gmail_query_html_only_result"] is None:
+        diag["diagnosis"] = (
+            "FEL: build_gmail_query_html_only returnerade None trots att "
+            "active_patterns har poster. Bugg i query-byggaren."
+        )
+    elif "has:attachment" in (diag["build_gmail_query_html_only_result"] or ""):
+        diag["diagnosis"] = (
+            "FEL: query-byggaren producerar fortfarande has:attachment. "
+            "Bugg i build_gmail_query_html_only (PR #20)."
+        )
+    else:
+        diag["diagnosis"] = "OK — state ser rätt ut. Kör manuell scan och kolla logs."
+
+    logger.info("html-only-state diagnosis: %s", diag)
+    return diag
+
+
+# === SLUT DELETE-MIG-EFTER-VERIFIERING ======================================
+
+
 class MatchToBezalaPayload(BaseModel):
     missing_receipt_id: int | str
 
