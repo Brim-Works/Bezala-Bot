@@ -226,6 +226,88 @@ class GmailQueryBuilderTest(unittest.TestCase):
         q = build_gmail_query(s, done_label="Bezala-Klar")
         self.assertIn("has:attachment", q)
 
+    # ----- 12: standard build_gmail_query utan html_only_patterns ger
+    #          samma resultat som tidigare (regression — kwarg-default) -----
+    def test_standard_query_no_html_only_patterns_unchanged(self):
+        from app.services.settings_service import build_gmail_query
+        s = MagicMock()
+        s.require_attachments = True
+        s.exclude_promotions = True
+        s.exclude_social = True
+        s.exclude_calendar = True
+        s.exclude_senders = []
+        s.exclude_subjects = []
+        s.include_senders = []
+        q_default = build_gmail_query(s, done_label="Bezala-Klar")
+        q_empty = build_gmail_query(
+            s, done_label="Bezala-Klar", html_only_patterns=[],
+        )
+        q_none = build_gmail_query(
+            s, done_label="Bezala-Klar", html_only_patterns=None,
+        )
+        self.assertEqual(q_default, q_empty)
+        self.assertEqual(q_default, q_none)
+
+    # ----- 13: standard build_gmail_query MED html_only_patterns lägger
+    #          till "-from:<pattern>" för var och en så standard-passet
+    #          inte hämtar dem (bug-fix för PR #20 dedup-problemet) -----
+    def test_standard_query_excludes_html_only_senders(self):
+        from app.services.settings_service import build_gmail_query
+        s = MagicMock()
+        s.require_attachments = True
+        s.exclude_promotions = True
+        s.exclude_social = True
+        s.exclude_calendar = True
+        s.exclude_senders = []
+        s.exclude_subjects = []
+        s.include_senders = []
+        q = build_gmail_query(
+            s, done_label="Bezala-Klar",
+            html_only_patterns=[
+                "skanetrafiken", "noreply@moovy.fi", "cursor", "airport",
+            ],
+        )
+        self.assertIn("-from:skanetrafiken", q)
+        self.assertIn("-from:noreply@moovy.fi", q)
+        self.assertIn("-from:cursor", q)
+        self.assertIn("-from:airport", q)
+        # has:attachment ska FORTFARANDE finnas — vi blockerar bara
+        # html_only-senders, inte hela attachment-filtret.
+        self.assertIn("has:attachment", q)
+
+    # ----- 14: dedup-fix — html-only-mail ska INTE bli matchad av
+    #          standard-queryn längre. Verifiera att samma pattern
+    #          finns både i `-from:` (exkluderar standard) och i
+    #          OR-clause:n av html-only-queryn (inkluderar html-only). -----
+    def test_dedup_separation_html_only_vs_standard(self):
+        from app.services.settings_service import (
+            build_gmail_query, build_gmail_query_html_only,
+        )
+        s = MagicMock()
+        s.require_attachments = True
+        s.exclude_promotions = True
+        s.exclude_social = True
+        s.exclude_calendar = True
+        s.exclude_senders = []
+        s.exclude_subjects = []
+        s.include_senders = []
+        patterns = ["skanetrafiken", "cursor"]
+
+        std = build_gmail_query(
+            s, done_label="Bezala-Klar", html_only_patterns=patterns,
+        )
+        html_only = build_gmail_query_html_only(
+            s, patterns, done_label="Bezala-Klar",
+        )
+        # Standard-queryn EXKLUDERAR
+        self.assertIn("-from:skanetrafiken", std)
+        self.assertIn("-from:cursor", std)
+        # html-only-queryn INKLUDERAR (i OR-clause:n)
+        self.assertIn("from:skanetrafiken", html_only)
+        self.assertIn("from:cursor", html_only)
+        # html-only-queryn har INGEN has:attachment (poängen)
+        self.assertNotIn("has:attachment", html_only)
+
 
 # ---------- Endpoint-integration ----------
 

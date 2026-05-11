@@ -113,10 +113,23 @@ def _clean_list(items: Iterable[str] | None) -> list[str]:
     return [s.strip() for s in (items or []) if s and s.strip()]
 
 
-def build_gmail_query(row: AppSettings, done_label: str) -> str:
+def build_gmail_query(
+    row: AppSettings,
+    done_label: str,
+    *,
+    html_only_patterns: Iterable[str] | None = None,
+) -> str:
     """Bygg Gmail-query: hårdkodade includes + user-includes (OR) samt alla
     exkluderingar. Prioriterar builtins om kombinationen närmar sig
-    GMAIL_QUERY_SOFT_LIMIT."""
+    GMAIL_QUERY_SOFT_LIMIT.
+
+    `html_only_patterns` (PR #20 follow-up): aktiva html_only_senders som
+    standard-passet ska EXKLUDERA. Dessa mail ligger oftast helt utan
+    PDF-bilaga (eller med inline-logos som Gmail räknar som attachment)
+    och blir antingen dropped i pipelinen ELLER deduperade bort innan
+    html-only-passet hinner ta dem. Genom att exkludera redan här
+    säkerställer vi att html-only-passet är ENDA platsen de processas.
+    """
     parts: list[str] = [
         f'-label:"{done_label}"',
         "-in:spam",
@@ -145,6 +158,12 @@ def build_gmail_query(row: AppSettings, done_label: str) -> str:
     for subj in _clean_list(row.exclude_subjects):
         safe = subj.replace('"', '\\"')
         parts.append(f'-subject:"{safe}"')
+
+    # html_only_senders-exkluderingar — ren separation mellan passen.
+    # Standard-passet ska aldrig hämta dessa mail; html-only-passet
+    # (`build_gmail_query_html_only`) tar dem ostört.
+    for pattern in _clean_list(html_only_patterns):
+        parts.append(f"-from:{pattern}")
 
     # Include-OR-klausul: builtins först (hög prio), user-chips efter.
     # Om total längd skulle överskrida Gmails gräns prioriterar vi builtins.
