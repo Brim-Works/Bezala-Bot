@@ -113,17 +113,21 @@ class AccountIdLookupTest(unittest.TestCase):
         # Tåg ↔ tag är aliases utan diakritik
         self.assertEqual(get_account_id_for_category("Tåg"),
                          get_account_id_for_category("tag"))
-        # Böcker har inget verifierat ID (None) — båda formerna går till
-        # fallback (Muut matkakulut = 67110).
-        self.assertEqual(get_account_id_for_category("Böcker"), 67110)
-        self.assertEqual(get_account_id_for_category("bocker"), 67110)
+        # Böcker — ALL former (diakritik, utan, finska) mappar till
+        # samma verifierade konto-ID.
+        self.assertEqual(get_account_id_for_category("Böcker"), 67085)
+        self.assertEqual(get_account_id_for_category("bocker"), 67085)
+        self.assertEqual(get_account_id_for_category("kirjat"), 67085)
 
-    def test_unmapped_category_uses_fallback(self):
+    def test_newly_verified_categories(self):
+        """Mikkos prod-dump fyllde i tidigare None-platshållare."""
         from app.services.bezala_field_mapper import get_account_id_for_category
-        # "Telefon" har None som värde — ska falla tillbaka till annat
-        self.assertEqual(get_account_id_for_category("Telefon"), 67110)
-        self.assertEqual(get_account_id_for_category("Datakommunikation"), 67110)
-        self.assertEqual(get_account_id_for_category("Utbildning"), 67110)
+        # Verifierade via /api/bezala/metadata dump (45 accounts)
+        self.assertEqual(get_account_id_for_category("Telefon"), 67109)        # Puhelinkulut
+        self.assertEqual(get_account_id_for_category("Datakommunikation"), 67106)  # Datasiirtokulut
+        self.assertEqual(get_account_id_for_category("Böcker"), 67085)         # Ammattikirjallisuus
+        self.assertEqual(get_account_id_for_category("Utbildning"), 67086)     # Henkilökunnan koulutus
+        # Bilhyra: ingen dedikerad konto-rad → samma som "Annat" (Muut matkakulut)
         self.assertEqual(get_account_id_for_category("Bilhyra"), 67110)
 
     def test_unknown_category_uses_fallback(self):

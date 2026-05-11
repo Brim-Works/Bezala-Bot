@@ -48,7 +48,7 @@ CATEGORY_TO_ACCOUNT_ID: dict[str, int | None] = {
     "transport": 67100,              # alias → Matkaliput
     "resa": 67100,                   # alias → Matkaliput
     "taxi": 67101,                   # Taksikulut — verifierat
-    "bilhyra": None,                 # TODO: Mikko verifierar — sannolikt 67110 (Muut matkakulut)
+    "bilhyra": 67110,                # Muut matkakulut — verifierat (default_vat_id=864). OBS: ingen dedikerad konto för bilhyra i Mikkos Bezala-instans.
     "parkering": 67113,              # Paikoituskulut — verifierat (Moovy, EasyPark)
     "parking": 67113,                # alias
     "pysakointi": 67113,             # finsk alias
@@ -66,17 +66,17 @@ CATEGORY_TO_ACCOUNT_ID: dict[str, int | None] = {
     "saas": 82612,                   # alias
     "software": 82612,               # alias
     "it": 82612,                     # alias
-    "telefon": None,                 # TODO: Mikko verifierar — Puhelinkulut
-    "puhelin": None,                 # finsk alias
-    "datakommunikation": None,       # TODO: Mikko verifierar — Datasiirtokulut
-    "tiedonsiirto": None,            # finsk alias
+    "telefon": 67109,                # Puhelinkulut — verifierat (default_vat_id=864)
+    "puhelin": 67109,                # finsk alias
+    "datakommunikation": 67106,      # Datasiirtokulut — verifierat (default_vat_id=864)
+    "tiedonsiirto": 67106,           # finsk alias
 
     # --- Övrigt ---
-    "böcker": None,                  # TODO: Mikko verifierar — Ammattikirjallisuus, lehdet, kirjat
-    "bocker": None,                  # alias utan diakritik
-    "kirjat": None,                  # finsk alias
-    "utbildning": None,              # TODO: Mikko verifierar — Henkilökunnan koulutus
-    "koulutus": None,                # finsk alias
+    "böcker": 67085,                 # Ammattikirjallisuus, lehdet, kirjat — verifierat (default_vat_id=1355)
+    "bocker": 67085,                 # alias utan diakritik
+    "kirjat": 67085,                 # finsk alias
+    "utbildning": 67086,             # Henkilökunnan koulutus — verifierat (default_vat_id=null)
+    "koulutus": 67086,               # finsk alias
     "representation": 67097,         # Edustuskulut — verifierat
     "kontorsmaterial": 67107,        # Toimistotarvikkeet — verifierat
     "kontor": 67107,                 # alias
@@ -534,27 +534,22 @@ def build_vat_lines(
 #   Purchases Abroad (EU/Non-EU): "0.0"
 
 # `None` = okänt prod-ID; fylls i efter diagnostik. `str` = verifierat.
+#
+# Status efter Mikkos prod-dump (2026-05-11):
+#   Bezalas GET /api/vat_rates returnerar tom array → vi har inga
+#   explicita SE/NO-VAT-koder att lägga till. De aktuella koder som
+#   används i prod är de tre nedan (sett via account.default_vat_id).
+#   SE/NO-flöden förlitar sig på `get_default_vat_for_country`-fallback
+#   tills Bezala börjar exponera vat_rates-listan eller Mikko kan
+#   gräva fram IDs ur Bezala-UI:t.
 VAT_PERCENTAGE_BY_CODE: dict[int, str | None] = {
-    # --- Finland — VERIFIERADE ---
+    # --- Finland — VERIFIERADE via account.default_vat_id ---
     1355: "0.255",   # FI standard 25,5% (efter sep 2024)
-    864:  "0.14",    # FI reducerad 14%
+    864:  "0.14",    # FI reducerad 14% (livsmedel, restaurang)
     1:    "0.0",     # FI 0% (representation / skattefritt)
-    # --- Finland — placeholders för 10% och övriga ---
-    # När Mikko levererar prod-metadata: lägg till t.ex.
-    #   <id>: "0.10",  # FI reducerad 10%
-    # --- Sverige — placeholders ---
-    # <id>: "0.25",   # SE standard 25%
-    # <id>: "0.12",   # SE reducerad 12% (livsmedel, hotell)
-    # <id>: "0.06",   # SE reducerad 6% (böcker, kollektivtrafik)
-    # <id>: "0.0",    # SE 0%
-    # --- Norge — placeholders ---
-    # <id>: "0.25",   # NO standard 25%
-    # <id>: "0.15",   # NO reducerad 15% (livsmedel)
-    # <id>: "0.12",   # NO reducerad 12% (transport, hotell)
-    # <id>: "0.0",    # NO 0%
-    # --- Purchases Abroad (Bezalas EU/Non-EU-konton) ---
-    # <id>: "0.0",    # Purchases Abroad (EU)
-    # <id>: "0.0",    # Purchases Abroad (Non-EU)
+    # --- Finland 10% reducerad: ID okänt — vat_rates-endpoint tom ---
+    # --- Sverige / Norge: ID okänt — country-fallback aktiv via
+    #     get_default_vat_for_country() i tax_percentage_for_vat_code ---
 }
 
 
