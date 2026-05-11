@@ -649,7 +649,7 @@ export default {
     actionSkip: 'Skip',
     actionInfo: 'More info',
     actionMatch: 'Match',
-    matched: '✓ Matched: {vendor}',
+    matchSuccess: '✓ Matched: {vendor}',
     matchFailed: 'Could not match',
     skipped: 'Skipped suggestion',
     noMoreSuggestions: 'No AI match — pick manually',
