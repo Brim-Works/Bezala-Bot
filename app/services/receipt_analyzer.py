@@ -39,7 +39,10 @@ SYSTEM_PROMPT = (
     '  "amount": 123.45 eller null,\n'
     '  "currency": "EUR",\n'
     '  "date": "YYYY-MM-DD" eller null,\n'
-    '  "category": "Flyg | Hotell | Parkering | Mat | Taxi | Annat",\n'
+    '  "category": "Flyg | Tåg | Kollektivtrafik | Taxi | Bilhyra | '
+    "Parkering | Hotell | Mat | AI-verktyg | Mjukvara | Telefon | "
+    'Datakommunikation | Böcker | Utbildning | Representation | '
+    'Kontorsmaterial | Annat",\n'
     '  "summary": "kort beskrivning på svenska"\n'
     "}\n\n"
     "Regler:\n"
@@ -50,12 +53,141 @@ SYSTEM_PROMPT = (
     "- Inga specialtecken i filnamnet förutom bindestreck, mellanslag och punkt.\n"
     "- Filnamnet slutar alltid på .pdf.\n"
     "- Om belopp, valuta eller datum INTE kan utläsas säkert: sätt null.\n"
-    "- Kategorier: 'Flyg', 'Hotell', 'Parkering', 'Mat', 'Taxi', 'Annat'.\n"
-    "- confidence speglar hur säker du är på att detta är ett kvitto/utläggsunderlag."
+    "- confidence speglar hur säker du är på att detta är ett kvitto/utläggsunderlag.\n\n"
+    "Kategori-vägledning (välj EN — använd 'Annat' bara om inget annat passar):\n"
+    "- Flyg: Finnair, SAS, Norwegian, KLM, Lufthansa etc.\n"
+    "- Tåg: SJ, Snälltåget, MTR Express, VR (finska järnvägen), DB.\n"
+    "- Kollektivtrafik: Skånetrafiken, SL, HSL, Arlanda Express,\n"
+    "  Flytoget, lokaltrafik och tunnelbana.\n"
+    "- Taxi: Uber, Bolt, traditionella taxiföretag.\n"
+    "- Bilhyra: Hertz, Avis, Sixt, Europcar, Budget.\n"
+    "- Parkering: Moovy, EasyPark, p-hus, parkering vid flygplats.\n"
+    "- Hotell: Scandic, Strawberry, Hilton, AirBnB, Booking.com.\n"
+    "- Mat: lunch/middag på resa, restauranger (men EJ kund-/partner-"
+    "representation — då 'Representation').\n"
+    "- AI-verktyg: Anthropic (Claude), OpenAI (ChatGPT), GitHub Copilot,\n"
+    "  Cursor, Perplexity.\n"
+    "- Mjukvara: SaaS-prenumerationer (Notion, Spotify som arbetsverktyg,\n"
+    "  Adobe, Figma, Slack, Atlassian, 1Password, Dropbox).\n"
+    "- Telefon: mobiloperatörer och telefonräkningar (Elisa, Telia,\n"
+    "  Telenor, DNA, Tele2).\n"
+    "- Datakommunikation: bredband, fiber, mobilt internet, dataöverföring.\n"
+    "- Böcker: facklitteratur, fackböcker, prenumerationer på tidningar\n"
+    "  och tidskrifter.\n"
+    "- Utbildning: kursavgifter, certifikat, konferensavgifter, e-learning.\n"
+    "- Representation: middag/lunch med kund eller partner, gåvor.\n"
+    "- Kontorsmaterial: pennor, papper, skrivare, kontorsmöbler, USB-stickor.\n"
+    "- Annat: enbart när inget av ovanstående passar."
 )
 
 _FILENAME_RE = re.compile(r"^[A-Za-z0-9ÅÄÖåäö \-_.]+\.pdf$")
-_ALLOWED_CATEGORIES = {"Flyg", "Hotell", "Parkering", "Mat", "Taxi", "Annat"}
+_ALLOWED_CATEGORIES = {
+    "Flyg",
+    "Tåg",
+    "Kollektivtrafik",
+    "Taxi",
+    "Bilhyra",
+    "Parkering",
+    "Hotell",
+    "Mat",
+    "AI-verktyg",
+    "Mjukvara",
+    "Telefon",
+    "Datakommunikation",
+    "Böcker",
+    "Utbildning",
+    "Representation",
+    "Kontorsmaterial",
+    "Annat",
+}
+
+# AI kan ibland returnera kategori på finska eller engelska, eller med
+# enkel typo. Vi normaliserar det till våra tillåtna värden här i stället
+# för att tvinga AI:n till exakt match. Lägg gärna till fler alias när
+# fler vendor-flöden hittas.
+_CATEGORY_ALIAS: dict[str, str] = {
+    # Engelska
+    "flight": "Flyg",
+    "flights": "Flyg",
+    "train": "Tåg",
+    "public transport": "Kollektivtrafik",
+    "transit": "Kollektivtrafik",
+    "rental car": "Bilhyra",
+    "car rental": "Bilhyra",
+    "parking": "Parkering",
+    "hotel": "Hotell",
+    "lodging": "Hotell",
+    "food": "Mat",
+    "meal": "Mat",
+    "meals": "Mat",
+    "ai": "AI-verktyg",
+    "ai tools": "AI-verktyg",
+    "software": "Mjukvara",
+    "saas": "Mjukvara",
+    "phone": "Telefon",
+    "mobile": "Telefon",
+    "telecom": "Telefon",
+    "internet": "Datakommunikation",
+    "broadband": "Datakommunikation",
+    "data": "Datakommunikation",
+    "books": "Böcker",
+    "literature": "Böcker",
+    "training": "Utbildning",
+    "education": "Utbildning",
+    "course": "Utbildning",
+    "representation": "Representation",
+    "entertainment": "Representation",
+    "office supplies": "Kontorsmaterial",
+    "stationery": "Kontorsmaterial",
+    "other": "Annat",
+    # Finska
+    "lentolippu": "Flyg",
+    "juna": "Tåg",
+    "joukkoliikenne": "Kollektivtrafik",
+    "taksi": "Taxi",
+    "autovuokraus": "Bilhyra",
+    "pysäköinti": "Parkering",
+    "pysakointi": "Parkering",
+    "hotelli": "Hotell",
+    "ruoka": "Mat",
+    "ruokailut": "Mat",
+    "tekoaly": "AI-verktyg",
+    "tekoäly": "AI-verktyg",
+    "ohjelmisto": "Mjukvara",
+    "puhelin": "Telefon",
+    "tiedonsiirto": "Datakommunikation",
+    "kirjat": "Böcker",
+    "koulutus": "Utbildning",
+    "edustus": "Representation",
+    "toimistotarvikkeet": "Kontorsmaterial",
+    "muut": "Annat",
+}
+
+
+def _normalize_category(raw: str | None) -> str | None:
+    """Normalisera AI:s `category`-svar till en av _ALLOWED_CATEGORIES.
+
+    Steg:
+      1. None / tom → None (kallaren bestämmer fallback)
+      2. Exakt match (case-sensitive) i _ALLOWED_CATEGORIES → behåll
+      3. Lowercase + strip → kolla _CATEGORY_ALIAS-tabellen
+      4. Lowercase-match mot tillåtna värden (case-insensitive)
+      5. Inget matchar → 'Annat'
+    """
+    if not raw:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    if s in _ALLOWED_CATEGORIES:
+        return s
+    lower = s.lower()
+    if lower in _CATEGORY_ALIAS:
+        return _CATEGORY_ALIAS[lower]
+    for allowed in _ALLOWED_CATEGORIES:
+        if allowed.lower() == lower:
+            return allowed
+    return "Annat"
 
 
 @dataclass
@@ -302,9 +434,7 @@ def _normalize(
         date = str(date) if date else None
 
     category = payload.get("category")
-    if category and category not in _ALLOWED_CATEGORIES:
-        category = "Annat"
-    category = str(category) if category else None
+    category = _normalize_category(category)
 
     summary = payload.get("summary")
     summary = str(summary).strip() if summary else None
