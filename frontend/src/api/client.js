@@ -137,6 +137,15 @@ export const api = {
       `/api/messages/${id}/reprocess-full${force ? '?force=true' : ''}`,
       { method: 'POST' },
     ),
+  reprocessGmailWindow: ({ days = 30, vendorFilter = null, maxResults = 100 } = {}) =>
+    request('/api/gmail/reprocess', {
+      method: 'POST',
+      body: {
+        days,
+        vendor_filter: vendorFilter || null,
+        max_results: maxResults,
+      },
+    }),
   cleanupExcludedVendors: () =>
     request('/api/trips/cleanup-excluded-vendors', { method: 'POST' }),
   messageBody: (id) => request(`/api/messages/${id}/body`),

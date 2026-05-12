@@ -19,7 +19,7 @@ om tabellen är tom eller fetch failar — analysen ska aldrig blockeras.
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from dataclasses import dataclass
 
 from sqlalchemy.exc import IntegrityError
@@ -913,6 +913,213 @@ def _log_error(
                 )
     except Exception:
         logger.exception("Kunde inte logga fel för %s", message_id)
+
+
+def _build_reprocess_query(days: int, vendor_filter: str | None) -> str:
+    """Bygg Gmail-query för reprocess-fönstret. Skiljer sig från standard-
+    scan-queryn på två sätt:
+      - INGEN has:attachment (vi vill fånga html_to_pdf-targets som
+        tidigare missades)
+      - INGEN -label:Bezala-Klar (vi söker brett; redan-processade mail
+        filtreras bort efteråt via ProcessedMessage-lookup)
+    """
+    after = (datetime.utcnow() - timedelta(days=days)).strftime("%Y/%m/%d")
+    parts: list[str] = [
+        f"after:{after}",
+        "-in:spam",
+        "-in:trash",
+        "-category:promotions",
+        "-category:social",
+    ]
+    if vendor_filter:
+        token = vendor_filter.strip().lower()
+        if token:
+            parts.append(f"(from:{token} OR subject:{token})")
+    return " ".join(parts)
+
+
+def reprocess_gmail_window(
+    *,
+    days: int = 30,
+    vendor_filter: str | None = None,
+    max_results: int = 100,
+) -> dict:
+    """Sök Gmail i ett datum-fönster, filtrera bort redan-processade mail
+    (de som finns i ProcessedMessage med samma message_id) och kör
+    pipeline-orkestreringen för resten.
+
+    Returnerar en dict:
+      {
+        "found":      antal kandidater från Gmail-sökningen (efter filter),
+        "processed":  antal som sparades till Drive/DB,
+        "failed":     antal som kraschade i pipeline,
+        "skipped":    antal som filtrerades (no_pdf, not_receipt, …),
+        "details":    [ {message_id, outcome, sender?, subject?, error?}, … ],
+        "query":      slutgiltig Gmail-query (för felsökning),
+      }
+
+    Använder samma `_process_one_message` som `run_scan` — vi rör inte
+    AI-extraktionen, bara orkestreringen runtomkring. INGEN ScanRun skapas
+    (detta är inte en periodisk scan utan en manuell återprocessning).
+    """
+    query = _build_reprocess_query(days, vendor_filter)
+    details: list[dict] = []
+
+    try:
+        gmail = GmailClient()
+    except Exception as exc:
+        logger.exception("reprocess_gmail_window: Gmail-init misslyckades")
+        return {
+            "found": 0, "processed": 0, "failed": 0, "skipped": 0,
+            "details": [], "query": query,
+            "error": f"Gmail init: {exc}",
+        }
+
+    try:
+        drive = DriveClient()
+    except Exception as exc:
+        logger.exception("reprocess_gmail_window: Drive-init misslyckades")
+        return {
+            "found": 0, "processed": 0, "failed": 0, "skipped": 0,
+            "details": [], "query": query,
+            "error": f"Drive init: {exc}",
+        }
+
+    try:
+        candidate_ids = gmail.list_candidate_message_ids(
+            query=query, max_results=max_results,
+        )
+    except Exception as exc:
+        logger.exception("reprocess_gmail_window: Gmail-sökning misslyckades")
+        return {
+            "found": 0, "processed": 0, "failed": 0, "skipped": 0,
+            "details": [], "query": query,
+            "error": f"Gmail list: {exc}",
+        }
+
+    # Filtrera bort de som redan har en ProcessedMessage-rad — de räknas
+    # som processade (även om status='skipped:*' eller 'error'; för dem
+    # finns dedikerade reprocess-endpoints).
+    unprocessed_ids: list[str] = []
+    if candidate_ids:
+        with session_scope() as db:
+            existing = {
+                row.message_id
+                for row in db.query(ProcessedMessage.message_id)
+                .filter(ProcessedMessage.message_id.in_(candidate_ids))
+                .all()
+            }
+        unprocessed_ids = [mid for mid in candidate_ids if mid not in existing]
+
+    logger.info(
+        "reprocess_gmail_window: query=%r kandidater=%d ej_processade=%d "
+        "(days=%d vendor_filter=%r max_results=%d)",
+        query, len(candidate_ids), len(unprocessed_ids),
+        days, vendor_filter, max_results,
+    )
+
+    if not unprocessed_ids:
+        return {
+            "found": 0, "processed": 0, "failed": 0, "skipped": 0,
+            "details": [], "query": query,
+            "candidates_total": len(candidate_ids),
+        }
+
+    # Hämta settings/dependencies en gång (samma uppsättning som run_scan).
+    with session_scope() as db:
+        app_settings = load_settings(db)
+        excluded_subjects = list(app_settings.exclude_subjects or [])
+        ai_enabled = bool(app_settings.ai_naming_enabled)
+        auto_upload = bool(app_settings.auto_upload_enabled)
+        confidence_threshold = int(app_settings.confidence_threshold or 0)
+        ai_min_confidence = int(app_settings.ai_min_confidence_to_save or 0)
+        link_fetch_senders = list(app_settings.link_fetch_senders or [])
+        _htmlpdf_raw = getattr(app_settings, "html_to_pdf_enabled", None)
+        html_to_pdf_enabled = True if _htmlpdf_raw is None else bool(_htmlpdf_raw)
+
+    namer = FileNamer()
+    analyzer = ReceiptAnalyzer()
+    use_ai = ai_enabled and analyzer.enabled
+
+    bezala: BezalaClient | None = None
+    bezala_metadata: dict = {"accounts": [], "cost_centers": [], "vat_rates": []}
+    if auto_upload:
+        try:
+            bezala = BezalaClient()
+            bezala_metadata = fetch_bezala_metadata(bezala)
+        except BezalaError as exc:
+            logger.warning(
+                "reprocess_gmail_window: Bezala-init misslyckades: %s", exc,
+            )
+
+    result = ScanResult()
+    result.found = len(unprocessed_ids)
+
+    for mid in unprocessed_ids:
+        before_processed = result.processed
+        before_errors = result.errors
+        before_skipped = result.skipped
+        detail: dict = {"message_id": mid}
+        try:
+            _process_one_message(
+                mid, gmail, drive, namer, analyzer, bezala, result,
+                excluded_subjects=excluded_subjects,
+                use_ai=use_ai,
+                auto_upload=auto_upload,
+                confidence_threshold=confidence_threshold,
+                ai_min_confidence=ai_min_confidence,
+                link_fetch_senders=link_fetch_senders,
+                html_to_pdf_enabled=html_to_pdf_enabled,
+                bezala_metadata=bezala_metadata,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("reprocess_gmail_window: fel under %s", mid)
+            result.errors += 1
+            detail["outcome"] = "error"
+            detail["error"] = str(exc)[:500]
+            _log_error(mid, str(exc))
+            details.append(detail)
+            continue
+
+        if result.processed > before_processed:
+            detail["outcome"] = "processed"
+        elif result.errors > before_errors:
+            detail["outcome"] = "error"
+        elif result.skipped > before_skipped:
+            detail["outcome"] = "skipped"
+        else:
+            detail["outcome"] = "skipped"
+
+        # Plocka sender/subject från den nyss skapade DB-raden (om finns)
+        # för bättre översikt i UI-svaret.
+        try:
+            with session_scope() as db:
+                row = (
+                    db.query(ProcessedMessage)
+                    .filter(ProcessedMessage.message_id == mid)
+                    .first()
+                )
+                if row is not None:
+                    detail["sender"] = row.sender
+                    detail["subject"] = row.subject
+                    detail["status"] = row.status
+        except Exception:  # noqa: BLE001
+            logger.debug("reprocess: kunde inte plocka DB-detaljer för %s", mid)
+
+        details.append(detail)
+
+    if bezala is not None:
+        bezala.close()
+
+    return {
+        "found": result.found,
+        "processed": result.processed,
+        "failed": result.errors,
+        "skipped": result.skipped,
+        "details": details,
+        "query": query,
+        "candidates_total": len(candidate_ids),
+    }
 
 
 def _finalize_run(run_id: int, result: ScanResult, *, status: str, note: str | None = None) -> None:
