@@ -106,9 +106,23 @@ class MatchHealthPureFunctionTest(unittest.TestCase):
         gmail.list_candidate_message_ids.side_effect = fake_list
 
         db = MagicMock()
+        # Befintliga 4-filter-chain: find_matches-kandidater (smal)
         db.query.return_value.filter.return_value.filter.return_value.\
             filter.return_value.filter.return_value.order_by.return_value.\
             limit.return_value.all.return_value = candidates
+        # Match Health 2.0 — _find_extended_candidates använder 2-filter-
+        # chain. Båda chains slutar med order_by().limit().all() så vi
+        # configurerar order_by-grenen direkt; det vinner över den smala
+        # konfigurationen för 2-filter-anrop.
+        db.query.return_value.filter.return_value.filter.return_value.\
+            order_by.return_value.limit.return_value.all.return_value = (
+                candidates
+            )
+        # Match Health 2.0 — Gmail-enrichment lookup (in_-filter):
+        # `db.query(...).filter(message_id.in_([...])).all()` → tom lista
+        # gör ProcessedMessage-lookup tom så Gmail-träffar inte mappar
+        # till några processade rader.
+        db.query.return_value.filter.return_value.all.return_value = []
         return self.svc.build_match_health_report(
             db, bezala_client=bezala, gmail_client=gmail,
             normalize_missing_receipt=_fake_normalize,
@@ -136,24 +150,32 @@ class MatchHealthPureFunctionTest(unittest.TestCase):
         self.assertEqual(row["verdict"]["category"], "matched_correctly")
         self.assertGreaterEqual(row["best_match"]["score"], 80)
 
-    # ----- 3: gmail_miss när has:attachment filtrerar bort -----
-    def test_gmail_miss_when_attachment_filter_hides_hits(self):
+    # ----- 3: Match Health 2.0 — gmail_found_not_processed när mail
+    # finns i Gmail men inte är processade i vår DB (har:attachment-
+    # filter dolde dem för pipelinen). Mer specifikt än gamla
+    # gmail_miss-verdicten. -----
+    def test_gmail_found_not_processed_when_attachment_filter_hides_hits(self):
         missing = [{
             "id": 2, "description": "MIKKO: SKANETRAFIKEN, MALMO 50.00 SEK",
             "amount": 50.00, "currency": "SEK", "date": "2026-04-10",
         }]
-        # Inga kandidater i DB → fuzzy=0. Gmail har 5 träffar utan
-        # attachment, 0 med → category='filtered' → verdict gmail_miss.
         report = self._build(
             missing=missing, candidates=[],
             gmail_with=[], gmail_without=["a", "b", "c", "d", "e"],
         )
         row = report["rows"][0]
-        self.assertEqual(row["verdict"]["category"], "gmail_miss")
+        self.assertEqual(
+            row["verdict"]["category"], "gmail_found_not_processed",
+        )
         self.assertEqual(row["gmail_status"]["category"], "filtered")
         self.assertEqual(
             row["gmail_status"]["would_match_without_attachment_filter"], 5,
         )
+        # Match Health 2.0: gmail_messages-listan ska visa de 5 mailen
+        self.assertEqual(len(row["gmail_messages"]), 5)
+        for m in row["gmail_messages"]:
+            self.assertFalse(m["has_attachment"])
+            self.assertFalse(m["is_processed"])
 
     # ----- 4: no_receipt_exists när 0 Gmail-träffar -----
     def test_no_receipt_exists_when_zero_gmail_hits(self):
@@ -194,7 +216,15 @@ class MatchHealthPureFunctionTest(unittest.TestCase):
             row["fuzzy_candidates"]["by_amount_window_10pct"], 0,
         )
         self.assertIsNone(row["best_match"])
-        self.assertEqual(row["verdict"]["category"], "ai_extraction_wrong")
+        # Match Health 2.0: extended candidates inkluderar denna kandidat
+        # (±20% belopp) men score < 80 → "best_below_threshold" eller
+        # "processed_but_no_candidate" beroende på om score > 0.
+        self.assertIn(
+            row["verdict"]["category"],
+            ("best_below_threshold", "processed_but_no_candidate"),
+        )
+        # Match Health 2.0: kandidaten finns i processed_receipts
+        self.assertGreaterEqual(len(row["processed_receipts"]), 1)
 
     # ----- 6: match_algorithm_failed när score mellan 50-79 -----
     def test_match_algorithm_failed_when_score_mid_range(self):
@@ -220,7 +250,11 @@ class MatchHealthPureFunctionTest(unittest.TestCase):
         # Förvänta oss en score som ligger i match_algorithm_failed-zonen
         self.assertLess(score, 80)
         self.assertGreaterEqual(score, 50)
-        self.assertEqual(row["verdict"]["category"], "match_algorithm_failed")
+        # Match Health 2.0: score 50-79 → "best_below_threshold"
+        # (mer specifikt än gamla "match_algorithm_failed").
+        self.assertEqual(row["verdict"]["category"], "best_below_threshold")
+        self.assertGreaterEqual(len(row["processed_receipts"]), 1)
+        self.assertFalse(row["processed_receipts"][0]["above_threshold"])
 
     # ----- Match Health respekterar html_only_senders -----
     # När vendor matchar en html-only-pattern: gmail_status får INTE
@@ -310,6 +344,102 @@ class MatchHealthPureFunctionTest(unittest.TestCase):
         self.assertEqual(verdict["category"], "gmail_miss")
         action = verdict["suggested_action"]
         self.assertIn("HTML-only", action)
+
+    # ----- Match Health 2.0 — multiple_candidates_above_threshold -----
+    def test_multiple_candidates_above_threshold(self):
+        """2+ kandidater över score-tröskel → multiple_above-verdict."""
+        missing = [{
+            "id": 50, "description": "MIKKO: ANTHROPIC, US 100.00 EUR",
+            "amount": 100.00, "currency": "EUR", "date": "2026-04-14",
+        }]
+        cand1 = MagicMock(
+            id=51, message_id="m-51", vendor="Anthropic",
+            amount=100.00, currency="EUR", receipt_date="2026-04-14",
+            file_name="a1.pdf",
+        )
+        cand2 = MagicMock(
+            id=52, message_id="m-52", vendor="Anthropic",
+            amount=100.00, currency="EUR", receipt_date="2026-04-13",
+            file_name="a2.pdf",
+        )
+        report = self._build(
+            missing=missing, candidates=[cand1, cand2],
+            gmail_with=[], gmail_without=[],
+        )
+        row = report["rows"][0]
+        self.assertEqual(
+            row["verdict"]["category"], "multiple_candidates_above_threshold",
+        )
+        above = [c for c in row["processed_receipts"] if c["above_threshold"]]
+        self.assertGreaterEqual(len(above), 2)
+
+    # ----- Match Health 2.0 — processed_receipts schema -----
+    def test_processed_receipts_schema_with_enriched_breakdown(self):
+        """Verifiera att score_breakdown har Match Health 2.0:s nya fält."""
+        missing = [{
+            "id": 60, "description": "MIKKO: VENDORZ 100.00 EUR",
+            "amount": 100.00, "currency": "EUR", "date": "2026-04-15",
+        }]
+        cand = MagicMock(
+            id=61, message_id="m-61", vendor="VendorZ",
+            amount=108.00, currency="EUR", receipt_date="2026-04-17",
+            file_name="z.pdf",
+        )
+        report = self._build(
+            missing=missing, candidates=[cand],
+            gmail_with=[], gmail_without=[],
+        )
+        row = report["rows"][0]
+        self.assertEqual(len(row["processed_receipts"]), 1)
+        rec = row["processed_receipts"][0]
+        bd = rec["match_score_breakdown"]
+        # Match Health 2.0 nya fält:
+        self.assertIn("amount_diff", bd)
+        self.assertIn("amount_diff_pct", bd)
+        self.assertIn("date_diff_days", bd)
+        self.assertIn("vendor_match_method", bd)
+        self.assertIn("vendor_similarity_pct", bd)
+        # amount: 108 vs 100 → diff 8.00, 8.0%
+        self.assertEqual(bd["amount_diff"], 8.0)
+        self.assertEqual(bd["amount_diff_pct"], 8.0)
+        # date: 2 dagar diff
+        self.assertEqual(bd["date_diff_days"], 2)
+        # vendor: substring (VendorZ in VENDORZ är case-insensitive substring)
+        self.assertIn(bd["vendor_match_method"],
+                      ("substring", "override", "fuzzy"))
+        self.assertGreater(bd["vendor_similarity_pct"], 50)
+
+    # ----- Match Health 2.0 — diagnostic_summary schema -----
+    def test_diagnostic_summary_present_per_row(self):
+        missing = [{
+            "id": 70, "description": "MIKKO: FOO 100.00 EUR",
+            "amount": 100.00, "currency": "EUR", "date": "2026-04-15",
+        }]
+        report = self._build(
+            missing=missing, candidates=[],
+            gmail_with=[], gmail_without=[],
+        )
+        row = report["rows"][0]
+        ds = row["diagnostic_summary"]
+        for k in ("gmail_status", "gmail_count", "processed_count",
+                  "candidate_count", "above_threshold_count",
+                  "best_score", "threshold", "next_action"):
+            self.assertIn(k, ds)
+        self.assertEqual(ds["threshold"], 80)
+
+    # ----- Match Health 2.0 — _vendor_match_method -----
+    def test_vendor_match_method_classification(self):
+        # exact substring
+        method, pct = self.svc._vendor_match_method("Skånetrafiken", "skånetrafiken")
+        self.assertEqual(method, "substring")
+        self.assertEqual(pct, 100)
+        # fuzzy
+        method, pct = self.svc._vendor_match_method("Foo", "Bar")
+        self.assertEqual(method, "none")
+        # missing
+        method, pct = self.svc._vendor_match_method(None, "x")
+        self.assertEqual(method, "none")
+        self.assertEqual(pct, 0)
 
     # ----- 7: Gmail-query bygger med datum-fönster + has:attachment -----
     def test_gmail_query_format(self):

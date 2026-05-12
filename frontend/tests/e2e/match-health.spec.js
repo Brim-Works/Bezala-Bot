@@ -7,40 +7,57 @@ function buildRow({
   id, merchant, vendor, amount, currency = 'EUR', date,
   verdict, bestScore = null, bestVendor = null, gmailCategory = 'no_hits',
   wouldMatchHidden = 0,
+  processedReceipts = null, gmailMessages = null,
 }) {
+  const top3 = bestScore != null ? [{
+    score: bestScore,
+    score_breakdown: {
+      amount: 50, date: 25, vendor: 25,
+      amount_diff: 0, amount_diff_pct: 0,
+      date_diff_days: 0, date_matched_field: 'receipt_date',
+      vendor_match_method: 'substring', vendor_similarity_pct: 100,
+    },
+    message_id: `msg-${id}`,
+    id: id * 10,
+    vendor: bestVendor || vendor,
+    file_name: `${date} ${bestVendor || vendor}.pdf`,
+    amount,
+    currency,
+    receipt_date: date,
+    received_at: null,
+  }] : [];
+
+  const procDefault = bestScore != null ? [{
+    id: id * 10,
+    message_id: `msg-${id}`,
+    vendor: bestVendor || vendor,
+    file_name: `${date} ${bestVendor || vendor}.pdf`,
+    amount,
+    currency,
+    receipt_date: date,
+    drive_link: `https://drive/${id}`,
+    ai_confidence: 92,
+    ai_summary: 'Mock summary',
+    match_score_total: bestScore,
+    match_score_breakdown: {
+      amount: 50, date: 25, vendor: 25,
+      amount_diff: 0, amount_diff_pct: 0,
+      date_diff_days: 0, vendor_match_method: 'substring',
+      vendor_similarity_pct: 100,
+    },
+    above_threshold: bestScore >= 80,
+    why_not_best: null,
+  }] : [];
+
+  const processed = processedReceipts ?? procDefault;
+  const messages = gmailMessages ?? [];
+
   return {
     bill_line: {
-      id,
-      merchant,
-      vendor_normalized: vendor,
-      amount,
-      currency,
-      date,
+      id, merchant, vendor_normalized: vendor, amount, currency, date,
     },
-    best_match: bestScore != null ? {
-      score: bestScore,
-      score_breakdown: { amount: 50, date: 25, vendor: 25 },
-      message_id: `msg-${id}`,
-      id: id * 10,
-      vendor: bestVendor || vendor,
-      file_name: `${date} ${bestVendor || vendor}.pdf`,
-      amount,
-      currency,
-      receipt_date: date,
-      received_at: null,
-    } : null,
-    top_3_suggestions: bestScore != null ? [{
-      score: bestScore,
-      score_breakdown: { amount: 50, date: 25, vendor: 25 },
-      message_id: `msg-${id}`,
-      id: id * 10,
-      vendor: bestVendor || vendor,
-      file_name: `${date} ${bestVendor || vendor}.pdf`,
-      amount,
-      currency,
-      receipt_date: date,
-      received_at: null,
-    }] : [],
+    best_match: top3[0] || null,
+    top_3_suggestions: top3,
     fuzzy_candidates: {
       by_amount_window_10pct: 0,
       by_date_window_7d: 0,
@@ -58,6 +75,19 @@ function buildRow({
       category: verdict,
       confidence: 'high',
       suggested_action: `Action for ${verdict}`,
+    },
+    // Match Health 2.0 — nya fält
+    processed_receipts: processed,
+    gmail_messages: messages,
+    diagnostic_summary: {
+      gmail_status: gmailCategory,
+      gmail_count: messages.length,
+      processed_count: messages.filter((m) => m.is_processed).length,
+      candidate_count: processed.length,
+      above_threshold_count: processed.filter((p) => p.above_threshold).length,
+      best_score: bestScore || 0,
+      threshold: 80,
+      next_action: `Action for ${verdict}`,
     },
   };
 }
@@ -239,4 +269,74 @@ test('Match Health — error-card visas vid backend-fel', async ({ page }) => {
   await page.goto('/match-health');
   await expect(page.getByTestId('mh-error')).toBeVisible();
   await expect(page.getByTestId('mh-retry')).toBeVisible();
+});
+
+/* ----- Match Health 2.0 — expand modes + score bars + flow ----- */
+
+test('Match Health 2.0 — expanderad rad default till Sammanfattning + flow', async ({ page }) => {
+  await setupMatchHealthMocks(page);
+  await page.goto('/match-health');
+  await page.getByTestId('mh-filter-period').selectOption('all');
+  await page.getByTestId('mh-row-1').click();
+  // Default-läge = summary, flow ska synas
+  await expect(page.getByTestId('mh-flow-1')).toBeVisible();
+  // Mode-toggle ska visas
+  await expect(page.getByTestId('mh-mode-summary-1')).toHaveAttribute(
+    'aria-selected', 'true',
+  );
+});
+
+test('Match Health 2.0 — toggle till Detaljerad vy renderar score-bars', async ({ page }) => {
+  await setupMatchHealthMocks(page);
+  await page.goto('/match-health');
+  await page.getByTestId('mh-filter-period').selectOption('all');
+  await page.getByTestId('mh-row-1').click();
+  await page.getByTestId('mh-mode-details-1').click();
+  await expect(page.getByTestId('mh-mode-details-1')).toHaveAttribute(
+    'aria-selected', 'true',
+  );
+  // Score bars renderas — Belopp/Datum/Vendor/Total
+  await expect(page.locator('.mh-bar-fill').first()).toBeVisible();
+});
+
+test('Match Health 2.0 — collapsed-rad visar counts ikoner', async ({ page }) => {
+  await setupMatchHealthMocks(page);
+  await page.goto('/match-health');
+  await page.getByTestId('mh-filter-period').selectOption('all');
+  // mh-counts ska finnas i raden
+  await expect(page.getByTestId('mh-counts-1')).toBeVisible();
+});
+
+test('Match Health 2.0 — processed_receipts renderas i Detaljerad vy', async ({ page }) => {
+  await setupMatchHealthMocks(page);
+  await page.goto('/match-health');
+  await page.getByTestId('mh-filter-period').selectOption('all');
+  await page.getByTestId('mh-row-1').click();
+  await page.getByTestId('mh-mode-details-1').click();
+  // processed-listan ska finnas
+  await expect(page.getByTestId('mh-processed-1')).toBeVisible();
+});
+
+test('Match Health 2.0 — Drive-länk har target=_blank', async ({ page }) => {
+  await setupMatchHealthMocks(page);
+  await page.goto('/match-health');
+  await page.getByTestId('mh-filter-period').selectOption('all');
+  await page.getByTestId('mh-row-1').click();
+  await page.getByTestId('mh-mode-details-1').click();
+  const link = page.getByTestId('mh-drive-10');
+  await expect(link).toBeVisible();
+  await expect(link).toHaveAttribute('target', '_blank');
+});
+
+test('Match Health 2.0 — markdown-export inkluderar processed_receipts', async ({ page, context }) => {
+  await setupMatchHealthMocks(page);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto('/match-health');
+  await page.getByTestId('mh-filter-period').selectOption('all');
+  await page.getByTestId('mh-copy-all').click();
+  await expect(page.getByText(/Kopierat|Copied/)).toBeVisible();
+  const clip = await page.evaluate(() => navigator.clipboard.readText());
+  // Markdown ska innehålla 2.0-sektioner
+  expect(clip).toContain('Diagnos:');
+  expect(clip).toContain('Kandidater:');
 });
