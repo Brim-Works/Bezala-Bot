@@ -227,6 +227,13 @@ export const api = {
     request('/api/excluded-vendors', { method: 'POST', body: payload }),
   excludedVendorsRemove: (id) =>
     request(`/api/excluded-vendors/${id}`, { method: 'DELETE' }),
+  bezalaConfigList: () => request('/api/bezala-config'),
+  bezalaConfigCreate: (payload) =>
+    request('/api/bezala-config', { method: 'POST', body: payload }),
+  bezalaConfigUpdate: (id, payload) =>
+    request(`/api/bezala-config/${id}`, { method: 'PATCH', body: payload }),
+  bezalaConfigDelete: (id) =>
+    request(`/api/bezala-config/${id}`, { method: 'DELETE' }),
   htmlOnlySendersList: () => request('/api/settings/html-only-senders'),
   htmlOnlySendersAdd: (payload) =>
     request('/api/settings/html-only-senders', {

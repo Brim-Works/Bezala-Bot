@@ -16,6 +16,7 @@ from app.config import get_settings
 from app.db import get_db, init_db, session_scope
 from app.models import MaintenanceTask, ProcessedMessage, SavedFile, ScanRun
 from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
+from app.routers.bezala_config import router as bezala_config_router
 from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.bezala_field_mapper import build_receipt_params
 from app.services.drive_client import DriveClient
@@ -83,6 +84,17 @@ def _run_once_seed_excluded_vendors() -> None:
         logger.exception("Kunde inte seed:a excluded_vendors-listan.")
 
 
+def _run_once_seed_bezala_vendor_mappings() -> None:
+    """Bezala config-admin — seed default mappningar (Moovy/Finavia → 67113
+    25.5%) idempotent."""
+    try:
+        from app.services.bezala_config import seed_default_mappings
+        with session_scope() as db:
+            seed_default_mappings(db)
+    except Exception:
+        logger.exception("Kunde inte seed:a bezala_vendor_mappings.")
+
+
 def _run_once_seed_html_only_senders() -> None:
     """Seed default-listan av html-only senders (Skånetrafiken, Moovy
     notify, Cursor, Airport LRS)."""
@@ -139,6 +151,7 @@ async def lifespan(app: FastAPI):
     _run_once_fix_skipped_bezala()
     _run_once_seed_excluded_vendors()
     _run_once_seed_html_only_senders()
+    _run_once_seed_bezala_vendor_mappings()
     start_scheduler()
     yield
     shutdown_scheduler()
@@ -162,6 +175,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(bezala_config_router)
 
 
 def require_auth(request: Request) -> None:

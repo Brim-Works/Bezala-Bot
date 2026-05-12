@@ -384,6 +384,38 @@ class ExcludedVendor(Base):
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
 
 
+class BezalaVendorMapping(Base):
+    """Bezala config-admin — vendor→account+VAT override.
+
+    Använder substring-match (case-insensitive) mot ProcessedMessage.vendor.
+    Default-mappningar (Moovy/Finavia → 67113 25.5%) seedas en gång per
+    deploy via MaintenanceTask, men användaren får ändra/ta bort dem.
+
+    OBS: själva applicerandet i upload-flödet implementeras i ett
+    senare PR — den här PR:en lagrar bara konfigurationen.
+    """
+
+    __tablename__ = "bezala_vendor_mappings"
+    __table_args__ = (
+        UniqueConstraint(
+            "vendor_pattern", name="uq_bezala_vendor_mappings_pattern",
+        ),
+    )
+
+    id = Column(Integer, primary_key=True)
+    vendor_pattern = Column(String(200), nullable=False)
+    bezala_account_id = Column(Integer, nullable=False)
+    vat_rate = Column(Numeric(5, 2), nullable=False)
+    description_override = Column(String(500), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime,
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
+
+
 class HtmlOnlySender(Base):
     """HTML-only senders: avsändare som skickar kvittot i mail-bodyn
     istället för som PDF-bilaga (Skånetrafiken, Moovy notifieringar,
