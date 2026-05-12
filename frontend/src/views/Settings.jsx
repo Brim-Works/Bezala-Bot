@@ -9,6 +9,7 @@ import FilterSection from '../components/settings/FilterSection.jsx';
 import ScanRulesSection from '../components/settings/ScanRulesSection.jsx';
 import LinkFetchSection from '../components/settings/LinkFetchSection.jsx';
 import TripCleanupSection from '../components/settings/TripCleanupSection.jsx';
+import GmailReprocessSection from '../components/settings/GmailReprocessSection.jsx';
 import TrashSection from '../components/settings/TrashSection.jsx';
 import ExcludedVendorsSection from '../components/settings/ExcludedVendorsSection.jsx';
 import HtmlOnlySendersSection from '../components/settings/HtmlOnlySendersSection.jsx';
@@ -123,6 +124,7 @@ export default function Settings() {
         <ExcludedVendorsSection />
         <HtmlOnlySendersSection />
         <TripCleanupSection />
+        <GmailReprocessSection />
         <TrashSection form={form} update={update} />
       </div>
       <SaveBar dirty={dirty} saving={saving} onSave={onSave} onReset={onReset} />

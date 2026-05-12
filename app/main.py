@@ -23,7 +23,11 @@ from app.services.gmail_client import GmailClient
 from app.services.html_pdf_converter import HtmlToPdfError, html_to_pdf
 from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
-from app.services.pipeline import fetch_bezala_metadata, run_scan
+from app.services.pipeline import (
+    fetch_bezala_metadata,
+    reprocess_gmail_window,
+    run_scan,
+)
 from app.services.receipt_analyzer import AnalyzerError, ReceiptAnalyzer
 from app.services.currency_converter import make_db_rate_provider
 from app.services.receipt_matcher import find_matches
@@ -1348,6 +1352,71 @@ def reprocess_errors(
         "triggered_scan": True,
         "filter": {"error_contains": needle or None, "message_ids": ids},
     }
+
+
+class GmailReprocessPayload(BaseModel):
+    """Body för POST /api/gmail/reprocess.
+
+    days: hur många dagar bakåt vi söker i Gmail (1–365). Default 30.
+    vendor_filter: valfri substring som matchas mot from: + subject:
+      (case-insensitive). Användbart när Match Health visar att en
+      specifik vendor har många EJ processade mail.
+    max_results: tak för Gmail-sökningen (skydd mot oavsiktliga
+      gigant-körningar). Default 100, max 500.
+    """
+    days: int = 30
+    vendor_filter: str | None = None
+    max_results: int = 100
+
+
+@app.post("/api/gmail/reprocess")
+def reprocess_gmail_unprocessed(
+    payload: GmailReprocessPayload,
+    _: None = Depends(require_auth),
+):
+    """Återprocessa Gmail-mail som hittas i ett datum-fönster men aldrig
+    har fått en ProcessedMessage-rad (EJ processad i Match Health).
+
+    Skiljer sig från andra reprocess-endpoints på en avgörande punkt:
+    den letar i Gmail (inte i DB) och kör pipelinens orkestrering direkt
+    — så vi fångar mail som filtrerades bort av gamla buggar eller av
+    has:attachment-kravet innan html_to_pdf-stödet kom på plats.
+
+    Body: {"days": 30, "vendor_filter": "lovable", "max_results": 100}.
+    Svar: {"found": N, "processed": M, "failed": K, "skipped": S,
+           "details": [...], "query": "..."}.
+    """
+    days = payload.days if payload.days is not None else 30
+    if days < 1 or days > 365:
+        raise HTTPException(
+            status_code=400,
+            detail="days måste vara 1–365",
+        )
+    max_results = (
+        payload.max_results if payload.max_results is not None else 100
+    )
+    if max_results < 1 or max_results > 500:
+        raise HTTPException(
+            status_code=400,
+            detail="max_results måste vara 1–500",
+        )
+    vendor_filter = (payload.vendor_filter or "").strip() or None
+
+    logger.info(
+        "Gmail reprocess startad: days=%d vendor_filter=%r max_results=%d",
+        days, vendor_filter, max_results,
+    )
+    result = reprocess_gmail_window(
+        days=days,
+        vendor_filter=vendor_filter,
+        max_results=max_results,
+    )
+    logger.info(
+        "Gmail reprocess klar: found=%s processed=%s failed=%s skipped=%s",
+        result.get("found"), result.get("processed"),
+        result.get("failed"), result.get("skipped"),
+    )
+    return result
 
 
 @app.post("/api/messages/{msg_id}/fetch-pdf")
