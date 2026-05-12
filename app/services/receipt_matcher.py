@@ -29,6 +29,8 @@ MAX_SUGGESTIONS_PER_MISSING = 5
 # debiteringar) — för att ge belopp+vendor-perfekta matchningar en
 # chans att nå tröskel utökar vi fönstret upp till 60 dagar med
 # avtagande poäng.
+# Match algorithm 3.1: hård cutoff vid >365d — bortom ett år nollas hela
+# scoren oavsett andra signaler (se DATE_HARD_CUTOFF_DAYS nedan).
 DATE_BUCKETS: tuple[tuple[int, int], ...] = (
     (3, 30),
     (7, 25),
@@ -37,13 +39,29 @@ DATE_BUCKETS: tuple[tuple[int, int], ...] = (
     (60, 5),
 )
 
+# Match algorithm 3.1: kvitton mer än ett år från korttransaktionen kan
+# aldrig vara den verkliga matchen. Total scoren nollas oavsett belopp +
+# vendor — fångar fall som "FINNAIR 2026 vs Finnair-kvitto 2021".
+DATE_HARD_CUTOFF_DAYS = 365
+
+# Match algorithm 3.1: vendor-floor. När enda vendor-signalen är
+# fuzzy SequenceMatcher med <20% similarity är det inte en match —
+# liknande belopp/datum händer av en slump för ofta. Kapas vid 49
+# (en under MIN_DISPLAY_SCORE). Alias / substring / override returnerar
+# 0.95-1.0 så de påverkas aldrig av floor:en.
+VENDOR_FLOOR_SIMILARITY = 0.20
+VENDOR_FLOOR_MAX_TOTAL = 49
+
 # Belopp-tolerans: ±5% (valutakurser + avrundning) för samma valuta.
 AMOUNT_TOLERANCE = 0.05
 AMOUNT_BONUS = 50
 
-# När vi konverterar via ECB-kurs tillåter vi ±10% (kurs-osäkerhet +
-# bankens spread på debiteringen), men ger något lägre confidence-bonus.
-AMOUNT_TOLERANCE_CONVERTED = 0.10
+# När vi konverterar via ECB-kurs kräver vi tight ±2%-match (Match
+# algorithm 3.1). Tidigare ±10% gav false positives för icke-relaterade
+# transaktioner som råkade hamna i samma EUR-storleksordning efter
+# konvertering (NOK↔EUR, USD↔EUR). Kursbruset är för stort + slumpen för
+# vanlig för att tillåta lös tolerans cross-currency.
+AMOUNT_TOLERANCE_CONVERTED = 0.02
 AMOUNT_BONUS_CONVERTED = 40
 
 # Vendor-fuzzy: SequenceMatcher → 0..30
@@ -56,7 +74,8 @@ VENDOR_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("claude.ai", "anthropic"),
     ("anthropic", "anthropic"),
     ("openai", "openai"),
-    ("airport lrs", "arlanda express"),
+    # Match algorithm 3.1: 'airport lrs' override borttagen — AIRPORT LRS
+    # (Stockholm Arlanda P-bolaget) är inte samma vendor som Arlanda Express.
     ("arlandaexpress", "arlanda express"),
     ("uber", "uber"),
     ("finnair", "finnair"),
@@ -75,17 +94,23 @@ VENDOR_OVERRIDES: tuple[tuple[str, str], ...] = (
 # Mappa kort-vendor → lista av aliaser som kan finnas i
 # ProcessedMessage.vendor eller .sender. Träff räknas som lika stark
 # som substring (30 poäng / 100% similarity).
+# Match algorithm 3.1: alias-nycklar måste vara specifika brand-identifierare
+# (fullständiga vendor-namn). Generiska ord som "AIRPORT", "EXPRESS", "BILL"
+# triggar false positives mellan orelaterade vendors.
 VENDOR_ALIASES: dict[str, list[str]] = {
     "LOVABLE": ["lovable", "lovable.dev"],
     "MJS.LIFE": ["mjs.life", "mjslife"],
     "CIRCLE K OERKELLJUNGA": ["circle k", "circlek"],
     "APPLE.COM/BILL": ["apple", "itunes", "apple.com"],
-    "AIRPORT LRS": ["airport", "lrs"],
+    # AIRPORT LRS borttagen — generisk "AIRPORT"-nyckel + aliaser
+    # ["airport", "lrs"] gav falska träffar mot andra "airport"-vendors.
     "HERTZ SVERIGE": ["hertz"],
     "CURSOR": ["cursor.com", "cursor.sh", "anysphere"],
     "MOOVY": ["moovy", "finavia"],
     "SKANETRAFIKEN APP": ["skanetrafiken", "skånetrafiken"],
-    "ARLANDA EXPRESS": ["arlanda", "arlandaexpress"],
+    # "arlanda" (utan "express") borttaget — partial-match mot t.ex.
+    # "arlanda parking" gav false positives.
+    "ARLANDA EXPRESS": ["arlanda express", "arlandaexpress"],
     "FINNAIR": ["finnair", "amadeus", "eticket"],
     "FLYTOGET": ["flytoget"],
     "ANTHROPIC": ["anthropic"],
@@ -318,6 +343,23 @@ def score_match(
     breakdown = {"amount": 0, "date": 0, "vendor": 0}
     conversion: dict | None = None
 
+    # Match algorithm 3.1 — hård date-cutoff. Beräkna best date-diff från
+    # de tillgängliga date-fälten och avbryt om bortom DATE_HARD_CUTOFF_DAYS.
+    _diffs = [
+        d for d in (
+            _date_diff_days(missing.get("date"), candidate.get("receipt_date")),
+            _date_diff_days(missing.get("date"), candidate.get("received_at")),
+        ) if d is not None
+    ]
+    if _diffs and min(_diffs) > DATE_HARD_CUTOFF_DAYS:
+        breakdown["date_matched_field"] = None
+        breakdown["date_days_off"] = min(_diffs)
+        return {
+            "total": 0,
+            "breakdown": breakdown,
+            "rejected_reason": "date_too_far",
+        }
+
     if _amount_matches(
         missing.get("amount"), candidate.get("amount"),
         missing.get("currency"), candidate.get("currency"),
@@ -357,6 +399,14 @@ def score_match(
     breakdown["vendor"] = int(round(sim * VENDOR_BONUS_MAX))
 
     total = breakdown["amount"] + breakdown["date"] + breakdown["vendor"]
+
+    # Match algorithm 3.1 — vendor-floor. Utan vendor-signal är liknande
+    # belopp+datum oftast slump (Hertz Sverige 108.92 EUR ↔ Anthropic
+    # 112.95 EUR). Kapa total under display-tröskel. Alias/substring/
+    # override returnerar sim 0.95-1.0 så de är immuna.
+    if sim < VENDOR_FLOOR_SIMILARITY and total > VENDOR_FLOOR_MAX_TOTAL:
+        total = VENDOR_FLOOR_MAX_TOTAL
+
     result: dict = {"total": total, "breakdown": breakdown}
     if conversion is not None:
         result["conversion"] = conversion

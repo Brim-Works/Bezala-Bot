@@ -301,10 +301,23 @@ class ScoreMatchTest(unittest.TestCase):
         sim = vendor_similarity("CLAUDE.AI SUBSCRIPTION", "Anthropic")
         self.assertGreaterEqual(sim, 0.9)
 
-    def test_vendor_override_airport_lrs_arlanda(self):
-        from app.services.receipt_matcher import vendor_similarity
+    def test_airport_lrs_no_false_alias(self):
+        """Match algorithm 3.1 Bug #1: AIRPORT LRS är inte Arlanda Express.
+        Tidigare override + alias gjorde att de matchade 95-100% — falskt
+        positivt. Efter fix: ingen alias, ingen override → låg fuzzy-sim."""
+        from app.services.receipt_matcher import (
+            alias_match, vendor_similarity, _vendor_canonical,
+        )
+        # Ingen override-mapping
+        self.assertIsNone(_vendor_canonical("airport lrs"))
+        # Ingen alias-match
+        self.assertFalse(alias_match("AIRPORT LRS", "Arlanda Express"))
+        # Fuzzy-similarity ska vara låg (< 0.5) — olika brands
         sim = vendor_similarity("AIRPORT LRS", "Arlanda Express")
-        self.assertGreaterEqual(sim, 0.9)
+        self.assertLess(sim, 0.5)
+        # Arlanda Express ska fortfarande matcha sig själv
+        sim_self = vendor_similarity("ARLANDA EXPRESS BILJETT", "Arlanda Express")
+        self.assertGreaterEqual(sim_self, 0.9)
 
     # ---------- Match algorithm 3.0 — utökad datum-tolerans ----------
 
@@ -471,6 +484,164 @@ class ScoreMatchTest(unittest.TestCase):
              "vendor": "X"},
         )
         self.assertEqual(s["breakdown"]["amount"], 50)
+
+    # ---------- Match algorithm 3.1 — false-positive-skydd ----------
+
+    def test_cross_currency_tight_tolerance(self):
+        """Bug #2: cross-currency-konvertering ska kräva ±2% (inte ±10%).
+        APPLE.COM/BILL 22.99 EUR vs Flytoget 268 NOK (~25 EUR efter konv,
+        ~9% diff) → inga amount-poäng, total ska INTE nå 50."""
+        from app.services.receipt_matcher import score_match
+
+        def rate_provider(date_str, from_c, to_c):
+            # NOK→EUR ≈ 0.093 → 268 NOK = 24.92 EUR (diff 8.4% från 22.99)
+            if (from_c, to_c) == ("NOK", "EUR"):
+                return 0.093
+            return None
+
+        s = score_match(
+            {
+                "amount": 22.99, "currency": "EUR", "date": "2026-04-28",
+                "description": "MIKKO KEINONEN: APPLE.COM/BILL, CUPERTINO, US 22.99 EUR",
+            },
+            {
+                "amount": 268.0, "currency": "NOK",
+                "receipt_date": "2026-04-28",
+                "vendor": "Flytoget",
+            },
+            rate_provider=rate_provider,
+        )
+        self.assertEqual(s["breakdown"]["amount"], 0)
+        self.assertNotIn("conversion", s)
+
+    def test_cross_currency_within_2pct_still_matches(self):
+        """Bug #2 motsats: cross-currency MED <2% diff ska fortfarande
+        ge 40p (regressionssäkring för true positives)."""
+        from app.services.receipt_matcher import score_match
+
+        def rate_provider(date_str, from_c, to_c):
+            # SEK→EUR = 0.0951 → 300 SEK = 28.53 EUR, diff 0.04% från 28.54
+            if (from_c, to_c) == ("SEK", "EUR"):
+                return 0.0951
+            return None
+
+        s = score_match(
+            {
+                "amount": 28.54, "currency": "EUR", "date": "2026-04-22",
+                "description": "SKANETRAFIKEN APP",
+            },
+            {
+                "amount": 300.0, "currency": "SEK",
+                "receipt_date": "2026-04-22",
+                "vendor": "Skånetrafiken",
+            },
+            rate_provider=rate_provider,
+        )
+        self.assertEqual(s["breakdown"]["amount"], 40)
+
+    def test_skanetrafiken_eur_sek_amount_mismatch_stays_low(self):
+        """Bug #3: SKANETRAFIKEN 23.14 EUR vs Skånetrafiken 300 SEK är ett
+        riktigt data-mismatch (300 SEK är ett prepaid-kortpåfyllning, inte
+        själva köpet). Trots perfekt vendor-alias ska score stanna under
+        tröskeln 80 när belopp skiljer >30% efter konvertering."""
+        from app.services.receipt_matcher import score_match
+
+        def rate_provider(date_str, from_c, to_c):
+            # 300 SEK → ca 26.30 EUR. Diff från 23.14 ≈ 13.6%.
+            if (from_c, to_c) == ("SEK", "EUR"):
+                return 0.0876
+            return None
+
+        s = score_match(
+            {
+                "amount": 23.14, "currency": "EUR", "date": "2026-04-22",
+                "description": "SKANETRAFIKEN APP",
+            },
+            {
+                "amount": 300.0, "currency": "SEK",
+                "receipt_date": "2026-04-22",
+                "vendor": "Skånetrafiken",
+            },
+            rate_provider=rate_provider,
+        )
+        # vendor 30 (alias 1.0) + date 30 + amount 0 = 60. Under 80.
+        self.assertEqual(s["breakdown"]["amount"], 0)
+        self.assertLess(s["total"], 80)
+
+    def test_old_receipt_rejected_over_365_days(self):
+        """Bug #4: kvitto > 365d från korttransaktion ska få total=0
+        oavsett andra signaler. FINNAIR 494,50 EUR 2026-04-28 vs Finnair
+        489,76 EUR 2021-12-15 (1595d) ska inte vara en match."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 494.50, "currency": "EUR", "date": "2026-04-28",
+                "description": "FINNAIR O87UJ3J",
+            },
+            {
+                "amount": 489.76, "currency": "EUR",
+                "receipt_date": "2021-12-15",
+                "vendor": "Finnair",
+            },
+        )
+        self.assertEqual(s["total"], 0)
+        self.assertEqual(s.get("rejected_reason"), "date_too_far")
+
+    def test_under_365_days_not_rejected(self):
+        """Bug #4 regression: 364 dagar gammalt kvitto ska INTE killas."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 100.0, "currency": "EUR", "date": "2026-04-28",
+                "description": "ANTHROPIC",
+            },
+            {
+                "amount": 100.0, "currency": "EUR",
+                "receipt_date": "2025-04-29",  # 364 dagar
+                "vendor": "Anthropic",
+            },
+        )
+        self.assertNotEqual(s["total"], 0)
+        self.assertNotIn("rejected_reason", s)
+
+    def test_vendor_floor_caps_score_at_49(self):
+        """Bug #5: HERTZ SVERIGE 108.92 EUR vs Anthropic 112.95 EUR har
+        liknande belopp + datum men noll vendor-signal (sim < 20%).
+        Total ska kapas vid 49 (under display-tröskeln 50)."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 108.92, "currency": "EUR", "date": "2026-04-14",
+                "description": (
+                    "MIKKO KEINONEN: HERTZ SVERIGE, STOCKHOLM, "
+                    "SE 108.92 EUR"
+                ),
+            },
+            {
+                "amount": 112.95, "currency": "EUR",
+                "receipt_date": "2026-04-20",
+                "vendor": "Anthropic",
+            },
+        )
+        self.assertLessEqual(s["total"], 49)
+
+    def test_vendor_floor_does_not_affect_alias_matches(self):
+        """Bug #5 regression: MOOVY → Finavia via alias (sim=1.0) ska
+        INTE kapas av vendor-floor."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 73.49, "currency": "EUR", "date": "2026-05-09",
+                "description": "MIKKO KEINONEN: MOOVY, HELSINKI, FI 73.49 EUR",
+            },
+            {
+                "amount": 73.49, "currency": "EUR",
+                "receipt_date": "2026-04-24",
+                "vendor": "Finavia",
+            },
+        )
+        # 50 + 10 + 30 = 90 (alias triggar, ingen floor)
+        self.assertGreaterEqual(s["total"], 80)
 
     def test_find_matches_filters_below_threshold(self):
         from app.services.receipt_matcher import find_matches, MIN_DISPLAY_SCORE
