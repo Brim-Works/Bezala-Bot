@@ -411,6 +411,8 @@ def _attempt_bezala_upload(
         accounts=meta["accounts"],
         cost_centers=meta["cost_centers"],
         vat_rates=meta["vat_rates"],
+        # FAS 5.9 — använd AI-genererad engelsk Bezala-beskrivning
+        description_override=analysis.description_en,
     )
     # vat_lines=[] är OK — Bezala använder kontots default_vat_id
     # automatiskt. Vi fortsätter med upload.
@@ -758,6 +760,9 @@ def _process_one_message(
                         receipt_date=analysis.date if analysis else None,
                         category=analysis.category if analysis else None,
                         summary=analysis.summary if analysis else None,
+                        ai_description_en=(
+                            analysis.description_en if analysis else None
+                        ),
                         ai_confidence=analysis.confidence if analysis else None,
                         bezala_transaction_id=bezala_txn_id,
                         bezala_upload_status=bezala_status,

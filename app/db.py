@@ -30,6 +30,8 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "receipt_date": "VARCHAR(32)",
     "category": "VARCHAR(64)",
     "summary": "TEXT",
+    # FAS 5.9 — engelsk Bezala-beskrivning (vendor + plats/syfte + datum)
+    "ai_description_en": "VARCHAR(500)",
     "ai_confidence": "INTEGER",
     "bezala_transaction_id": "VARCHAR(255)",
     "bezala_upload_status": "VARCHAR(32)",

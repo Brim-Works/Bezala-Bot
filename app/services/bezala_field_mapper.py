@@ -724,6 +724,7 @@ def build_receipt_params(
     vat_rates: list[dict] | None = None,  # valfri — default_vat_id från account föredras
     preferred_cost_center: str | None = None,
     preferred_cost_center_id: int | None = None,
+    description_override: str | None = None,
 ) -> dict:
     """Bygger en komplett kwargs-dict för BezalaClient.upload_receipt().
 
@@ -761,10 +762,15 @@ def build_receipt_params(
         vat_rate=vat_rate_fallback,
     )
 
+    # FAS 5.9 — engelsk Bezala-beskrivning prioriteras när AI:n producerade
+    # en. description_override kan vara analysis.description_en (nya rader)
+    # eller row.ai_description_en/row.summary (legacy/manuell omladdning).
+    override = (description_override or "").strip() if description_override else ""
+    description = override or build_description(
+        file_name, vendor=vendor, subject=subject, receipt_date=receipt_date,
+    )
     params: dict = {
-        "description": build_description(
-            file_name, vendor=vendor, subject=subject, receipt_date=receipt_date,
-        ),
+        "description": description,
         "date": receipt_date,
         # Dessa tre används INTE i Bezala-payload (fältet finns inte längre
         # top-level) men sparas för logging + UI-visning.
