@@ -2706,6 +2706,9 @@ def upload_message_to_bezala(
             db.commit()
             raise HTTPException(status_code=502, detail=msg)
         metadata = fetch_bezala_metadata(bezala)
+        # FAS 5.9 — prioritera engelsk AI-beskrivning, fall tillbaka på
+        # svensk summary för legacy-rader (innan ai_description_en fanns).
+        description_override = row.ai_description_en or row.summary
         params = build_receipt_params(
             file_name=row.file_name,
             sender=row.sender,
@@ -2718,6 +2721,7 @@ def upload_message_to_bezala(
             accounts=metadata["accounts"],
             cost_centers=metadata["cost_centers"],
             vat_rates=metadata["vat_rates"],
+            description_override=description_override,
         )
         # Förbereder för PR 2 (mappnings-jämförelse) — logga komplett
         # params-payload så vi kan se exakt vad Bezala får i upload-flödet.

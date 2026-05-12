@@ -33,6 +33,12 @@ class ProcessedMessage(Base):
     receipt_date = Column(String(32), nullable=True)
     category = Column(String(64), nullable=True)
     summary = Column(Text, nullable=True)
+    # FAS 5.9 — engelsk beskrivning för Bezala-utkast på formatet
+    # "{vendor} + {place/purpose} + {date}", t.ex.
+    # "Parking at Helsinki-Vantaa Airport P2, 22-24 April 2026".
+    # summary (svenska) behålls för UI-visning; ai_description_en används
+    # som description-fält när vi skickar transaktionen till Bezala.
+    ai_description_en = Column(String(500), nullable=True)
     ai_confidence = Column(Integer, nullable=True)
 
     bezala_transaction_id = Column(String(255), nullable=True)

@@ -43,10 +43,21 @@ SYSTEM_PROMPT = (
     "Parkering | Hotell | Mat | AI-verktyg | Mjukvara | Telefon | "
     'Datakommunikation | Böcker | Utbildning | Representation | '
     'Kontorsmaterial | Annat",\n'
-    '  "summary": "kort beskrivning på svenska"\n'
+    '  "summary": "kort beskrivning på svenska",\n'
+    '  "description_en": "vendor + place/purpose + date på engelska"\n'
     "}\n\n"
     "Regler:\n"
     "- Svenska filnamn och sammanfattningar.\n"
+    "- description_en är ENGELSK Bezala-beskrivning på formatet\n"
+    "  '{vendor} + {place/purpose} + {date}', t.ex.:\n"
+    "    'Parking at Helsinki-Vantaa Airport P2, 22-24 April 2026'\n"
+    "    'Flight Helsinki-Stockholm round trip, 30 April 2026'\n"
+    "    'Taxi from Arlanda to Stockholm City, 16 April 2026'\n"
+    "    'Hotel Scandic Continental Stockholm, 12-14 March 2026'\n"
+    "  Datum skrivs ut (t.ex. '22 April 2026', eller intervall\n"
+    "  '22-24 April 2026'). Max 500 tecken. Ingen avslutande punkt.\n"
+    "  Om datum saknas: utelämn datum-delen. Sätt null om ingen\n"
+    "  meningsfull beskrivning kan byggas.\n"
     "- Datum i filnamnet: YYYYMMDD. Datum i fältet 'date': YYYY-MM-DD.\n"
     "- Leverantör = företagets/varumärkets namn (t.ex. Finnair, SL, Scandic).\n"
     "- Beskrivning i filnamnet: max 3–5 ord, tydlig och kort.\n"
@@ -201,6 +212,9 @@ class ReceiptAnalysis:
     date: str | None  # YYYY-MM-DD
     category: str | None
     summary: str | None
+    # FAS 5.9 — engelsk Bezala-beskrivning (vendor + plats/syfte + datum).
+    # None om Claude inte kunde producera en meningsfull beskrivning.
+    description_en: str | None = None
 
 
 def _sanitize_filename(name: str) -> str:
@@ -339,7 +353,7 @@ class ReceiptAnalyzer:
         try:
             resp = self._client.messages.create(
                 model=self._model,
-                max_tokens=600,
+                max_tokens=800,
                 system=system_prompt,
                 messages=[
                     {
@@ -441,6 +455,16 @@ def _normalize(
     if summary and len(summary) > 1000:
         summary = summary[:1000]
 
+    description_en = payload.get("description_en")
+    description_en = str(description_en).strip() if description_en else None
+    if description_en:
+        # Bezala description-fältet sparas som VARCHAR(500). Trunkera defensivt.
+        description_en = description_en.rstrip(".").strip()
+        if len(description_en) > 500:
+            description_en = description_en[:500].rstrip()
+        if not description_en:
+            description_en = None
+
     return ReceiptAnalysis(
         is_receipt=is_receipt,
         confidence=confidence,
@@ -451,6 +475,7 @@ def _normalize(
         date=date,
         category=category,
         summary=summary,
+        description_en=description_en,
     )
 
 

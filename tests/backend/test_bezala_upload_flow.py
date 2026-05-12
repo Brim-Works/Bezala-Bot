@@ -722,6 +722,10 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
             receipt_date="2026-04-22",
             category="Flyg",
             summary="Flyg HEL-CPH",
+            # FAS 5.9 — engelsk Bezala-beskrivning (vendor + plats + datum)
+            ai_description_en=(
+                "Flight Helsinki-Copenhagen round trip, 22 April 2026"
+            ),
             ai_confidence=95,
             bezala_upload_status="pending",
         )
@@ -766,7 +770,12 @@ class UploadToBezalaEndpointTest(unittest.TestCase):
         kwargs = fake_bezala.upload_receipt.call_args.kwargs
         # credit_account_id = betalningsmetod (82320 default)
         self.assertEqual(kwargs["credit_account_id"], 82320)
-        self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
+        # FAS 5.9 — manuell upload prioriterar row.ai_description_en
+        # (engelsk AI-beskrivning) framför filnamns-fallbacken.
+        self.assertEqual(
+            kwargs["description"],
+            "Flight Helsinki-Copenhagen round trip, 22 April 2026",
+        )
         self.assertEqual(kwargs["date"], "2026-04-22")
         self.assertEqual(kwargs["vat_lines_attributes"], [{
             "taxable": "503.00",
