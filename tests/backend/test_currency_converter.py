@@ -146,8 +146,11 @@ class MatcherCurrencyIntegrationTest(unittest.TestCase):
     """Verifiera att matchern använder rate_provider för cross-currency."""
 
     def test_exact_example_from_spec(self):
-        """Bezala: 28.54 EUR, Kvitto: 300 SEK, kurs 0.0875 SEK→EUR
-        → 300 * 0.0875 = 26.25 EUR, diff 8% → <10% → match."""
+        """Bezala: 28.54 EUR, Kvitto: 300 SEK, kurs 0.0951 SEK→EUR
+        → 300 * 0.0951 = 28.53 EUR, diff 0.04% → <2% → match.
+        Match algorithm 3.1: cross-currency-toleransen är ±2% (tidigare
+        ±10% gav false positives för NOK↔EUR-jämförelser där olika
+        transaktioner råkade ligga i samma EUR-storleksordning)."""
         from app.services.receipt_matcher import find_matches
 
         missing = {
@@ -160,10 +163,10 @@ class MatcherCurrencyIntegrationTest(unittest.TestCase):
             "sender": "noreply@skanetrafiken.se",
         }
 
-        # Rate-provider: SEK→EUR = 0.0875
+        # Rate-provider: SEK→EUR = 0.0951 (near-perfect match)
         def rate_provider(date_str, from_c, to_c):
             if (from_c, to_c) == ("SEK", "EUR"):
-                return 0.0875
+                return 0.0951
             return None
 
         results = find_matches(missing, [candidate], rate_provider=rate_provider)
@@ -172,8 +175,8 @@ class MatcherCurrencyIntegrationTest(unittest.TestCase):
         self.assertIn("conversion", r)
         self.assertEqual(r["conversion"]["from_currency"], "SEK")
         self.assertEqual(r["conversion"]["to_currency"], "EUR")
-        self.assertAlmostEqual(r["conversion"]["to_amount"], 26.25, places=2)
-        self.assertAlmostEqual(r["conversion"]["rate"], 0.0875, places=4)
+        self.assertAlmostEqual(r["conversion"]["to_amount"], 28.53, places=2)
+        self.assertAlmostEqual(r["conversion"]["rate"], 0.0951, places=4)
         # 40p amount (converted) + 30p date (exakt) + 30p vendor (exakt)
         self.assertEqual(r["score_breakdown"]["amount"], 40)
         self.assertEqual(r["score_breakdown"]["date"], 30)
