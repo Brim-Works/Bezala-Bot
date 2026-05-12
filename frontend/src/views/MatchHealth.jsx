@@ -16,22 +16,50 @@ const LS_VENDOR_KEY = 'mh_filter_vendor';
 
 const VERDICT_ORDER = [
   'matched_correctly',
+  'multiple_candidates_above_threshold',
+  'best_below_threshold',
+  'processed_but_no_candidate',
+  'gmail_found_not_processed',
+  'gmail_filtered_or_excluded',
   'gmail_miss',
   'ai_extraction_wrong',
   'match_algorithm_failed',
   'no_receipt_exists',
+  'already_matched',
   'gmail_error',
 ];
 
 // Mappar verdict-namn → i18n-nyckel + CSS-row-modifier.
 const VERDICT_TO_KEY = {
   matched_correctly: 'matchedCorrectly',
+  multiple_candidates_above_threshold: 'multipleAboveThreshold',
+  best_below_threshold: 'bestBelowThreshold',
+  processed_but_no_candidate: 'processedButNoCandidate',
+  gmail_found_not_processed: 'gmailFoundNotProcessed',
+  gmail_filtered_or_excluded: 'gmailFilteredOrExcluded',
   gmail_miss: 'gmailMiss',
   ai_extraction_wrong: 'aiExtractionWrong',
   match_algorithm_failed: 'matchAlgorithmFailed',
   no_receipt_exists: 'noReceiptExists',
+  already_matched: 'alreadyMatched',
   gmail_error: 'gmailError',
 };
+
+// Max-värden för score-staplar (matchar receipt_matcher.py-konstanter).
+const SCORE_MAX = {
+  amount: 50,
+  date: 30,
+  vendor: 30,
+  total: 110,
+};
+
+function scoreColorClass(value, max) {
+  if (max <= 0) return 'mh-bar--err';
+  const pct = (value / max) * 100;
+  if (pct >= 80) return 'mh-bar--ok';
+  if (pct >= 40) return 'mh-bar--warn';
+  return 'mh-bar--err';
+}
 
 const PERIODS = ['7d', '30d', '90d', 'all'];
 
@@ -120,12 +148,50 @@ function rowToMarkdown(row, t) {
 
   const actionLine = `**Föreslagen åtgärd:** ${row.verdict.suggested_action || '—'}`;
 
+  // Match Health 2.0 — diagnostic summary + processed_receipts + gmail_messages
+  const ds = row.diagnostic_summary || {};
+  const summaryLine = (
+    `**Diagnos:** ${ds.gmail_count ?? 0} Gmail-mail · `
+    + `${ds.candidate_count ?? 0} kandidater · `
+    + `${ds.above_threshold_count ?? 0} över tröskel ${ds.threshold ?? 80}`
+  );
+
+  const processed = row.processed_receipts || [];
+  const processedBlock = processed.length
+    ? '**Kandidater:**\n' + processed.slice(0, 10).map((r) => {
+        const bd = r.match_score_breakdown || {};
+        return `- ${r.vendor || r.file_name || '—'} `
+          + `${fmtAmount(r.amount, r.currency)} `
+          + `(${fmtDate(r.receipt_date)}) — score ${r.match_score_total} `
+          + `(belopp:${bd.amount ?? 0}, diff ${bd.amount_diff ?? '?'}; `
+          + `datum:${bd.date ?? 0}, ${bd.date_diff_days ?? '?'}d; `
+          + `vendor:${bd.vendor ?? 0}, ${bd.vendor_match_method || '—'} `
+          + `${bd.vendor_similarity_pct ?? 0}%)`
+          + (r.above_threshold ? ' ✓' : '')
+          + (r.drive_link ? ` · Drive: ${r.drive_link}` : '');
+      }).join('\n')
+    : '';
+
+  const messages = row.gmail_messages || [];
+  const messagesBlock = messages.length
+    ? '**Gmail-mail:**\n' + messages.slice(0, 10).map((m) => {
+        return `- ${m.subject || m.message_id} `
+          + `(${m.sender || '—'}) — `
+          + (m.has_attachment ? 'med' : 'utan') + ' attachment, '
+          + (m.is_processed ? 'processad' : 'EJ processad')
+          + (m.via_html_only_pipeline ? ', html-only' : '');
+      }).join('\n')
+    : '';
+
   return [
     header,
+    summaryLine,
     bestLine,
     '**Top 3:**',
     top3Block,
     '',
+    processedBlock,
+    messagesBlock,
     fuzzyLine,
     gmailLine,
     queryLine,
@@ -438,6 +504,7 @@ function MatchHealthRow({ row, expanded, onToggle, onCopyRow, t }) {
   const verdictLabel = t.matchHealth.verdicts[verdictKey] || row.verdict?.category;
   const score = row.best_match?.score;
   const billLineId = row.bill_line.id;
+  const ds = row.diagnostic_summary || {};
 
   return (
     <>
@@ -469,6 +536,25 @@ function MatchHealthRow({ row, expanded, onToggle, onCopyRow, t }) {
           ) : (
             <span className="muted">{t.matchHealth.bestMatchNone}</span>
           )}
+          {/* Match Health 2.0 — counts ikoner */}
+          <div className="muted small mh-counts"
+               data-testid={`mh-counts-${billLineId}`}>
+            <span title={t.matchHealth.counts.gmail}>
+              📧 {ds.gmail_count ?? 0}
+            </span>
+            {' · '}
+            <span title={t.matchHealth.counts.processed}>
+              📄 {ds.candidate_count ?? 0}
+            </span>
+            {ds.above_threshold_count > 0 ? (
+              <>
+                {' · '}
+                <span title={t.matchHealth.counts.aboveThreshold}>
+                  🎯 {ds.above_threshold_count}
+                </span>
+              </>
+            ) : null}
+          </div>
         </td>
         <td>
           <span data-testid={`mh-verdict-${billLineId}`}>{verdictLabel}</span>
@@ -492,50 +578,224 @@ function MatchHealthRow({ row, expanded, onToggle, onCopyRow, t }) {
   );
 }
 
-function MatchHealthDetails({ row, onCopyRow, t }) {
+function ScoreBar({ label, value, max, t }) {
+  const safeMax = Math.max(1, max);
+  const widthPct = Math.min(100, (value / safeMax) * 100);
+  const colorCls = scoreColorClass(value, safeMax);
+  return (
+    <div className="mh-score-row" data-testid={`mh-score-row-${label}`}>
+      <span className="mh-score-label muted small">{label}</span>
+      <div className="mh-bar-track">
+        <div className={`mh-bar-fill ${colorCls}`}
+             style={{ width: `${widthPct}%` }} />
+      </div>
+      <span className="mh-score-value mono small">{value}/{max}</span>
+    </div>
+  );
+}
+
+function FlowStep({ icon, title, status, ok }) {
+  return (
+    <div className={`mh-flow-step ${ok ? 'mh-flow-step--ok' : 'mh-flow-step--info'}`}>
+      <span className="mh-flow-icon" aria-hidden="true">{icon}</span>
+      <span className="mh-flow-title">{title}</span>
+      <span className="mh-flow-status muted small">{status}</span>
+    </div>
+  );
+}
+
+function SummaryView({ row, t }) {
+  const ds = row.diagnostic_summary || {};
+  const verdictKey = VERDICT_TO_KEY[row.verdict?.category] || 'matchedCorrectly';
+  const aboveCount = ds.above_threshold_count ?? 0;
+  return (
+    <div className="mh-flow" data-testid={`mh-flow-${row.bill_line.id}`}>
+      <FlowStep
+        icon="📧"
+        title={t.matchHealth.flow.gmailStep}
+        status={(t.matchHealth.status.foundMails || '{count} mail hittade')
+          .replace('{count}', String(ds.gmail_count ?? 0))}
+        ok={(ds.gmail_count ?? 0) > 0}
+      />
+      <div className="mh-flow-arrow" aria-hidden="true">↓</div>
+      <FlowStep
+        icon="📄"
+        title={t.matchHealth.flow.processedStep}
+        status={(t.matchHealth.status.processedOk || '{count} processade')
+          .replace('{count}', String(ds.candidate_count ?? 0))}
+        ok={(ds.candidate_count ?? 0) > 0}
+      />
+      <div className="mh-flow-arrow" aria-hidden="true">↓</div>
+      <FlowStep
+        icon="🎯"
+        title={t.matchHealth.flow.matchingStep}
+        status={
+          row.best_match
+            ? (t.matchHealth.status.bestScore || 'Bästa: {score}')
+                .replace('{score}', String(ds.best_score ?? 0))
+              + ' / ' + String(ds.threshold ?? 80)
+              + ' '
+              + (aboveCount > 0
+                ? (t.matchHealth.status.aboveThreshold || '✓ över')
+                : (t.matchHealth.status.belowThreshold || '✗ under'))
+            : t.matchHealth.bestMatchNone
+        }
+        ok={aboveCount > 0}
+      />
+      <div className="mh-flow-arrow" aria-hidden="true">↓</div>
+      <FlowStep
+        icon={aboveCount > 0 ? '✓' : 'ℹ'}
+        title={t.matchHealth.flow.resultStep}
+        status={
+          t.matchHealth.verdicts[verdictKey]
+            || row.verdict?.category || '—'
+        }
+        ok={aboveCount > 0}
+      />
+      <p className="muted" style={{ marginTop: '0.75rem' }}>
+        {ds.next_action || row.verdict?.suggested_action || ''}
+      </p>
+    </div>
+  );
+}
+
+function TechnicalView({ row, t }) {
   const top3 = row.top_3_suggestions || [];
+  const processed = row.processed_receipts || [];
+  const messages = row.gmail_messages || [];
   const fc = row.fuzzy_candidates || {};
   const g = row.gmail_status || {};
   const gmailUrl = buildGmailUrl(g.search_query_used);
 
   return (
-    <div className="mh-details" style={{ padding: '0.75rem 0.5rem' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between',
-                    alignItems: 'flex-start', gap: '1rem' }}>
-        <div style={{ flex: 1 }}>
-          <h4>{t.matchHealth.details.top3}</h4>
-          {top3.length === 0 ? (
-            <p className="muted">{t.matchHealth.details.top3Empty}</p>
-          ) : (
-            <ol style={{ paddingLeft: '1.25rem' }}>
-              {top3.map((s, i) => {
-                const b = s.score_breakdown || {};
-                return (
-                  <li key={`${row.bill_line.id}-${i}`}>
-                    <strong>{s.vendor || s.file_name || '—'}</strong>
-                    {' '}({fmtAmount(s.amount, s.currency)}) —{' '}
-                    score {s.score}
-                    <span className="muted small">
-                      {' '}({t.matchHealth.details.amountScore}:{b.amount ?? 0}
-                      , {t.matchHealth.details.dateScore}:{b.date ?? 0}
-                      , {t.matchHealth.details.vendorScore}:{b.vendor ?? 0})
-                    </span>
-                  </li>
-                );
-              })}
-            </ol>
-          )}
-        </div>
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onCopyRow(row); }}
-          data-testid={`mh-copy-row-${row.bill_line.id}`}
-          className="btn"
-        >
-          <IconCopy className="icon sm" />
-          <span>{t.matchHealth.copyRow}</span>
-        </button>
-      </div>
+    <div className="mh-tech">
+      <h4>{t.matchHealth.details.top3}</h4>
+      {top3.length === 0 ? (
+        <p className="muted">{t.matchHealth.details.top3Empty}</p>
+      ) : (
+        <ol style={{ paddingLeft: '1.25rem' }}>
+          {top3.map((s, i) => {
+            const b = s.score_breakdown || {};
+            return (
+              <li key={`${row.bill_line.id}-top-${i}`}
+                  data-testid={`mh-top-${row.bill_line.id}-${i}`}>
+                <strong>{s.vendor || s.file_name || '—'}</strong>
+                {' '}({fmtAmount(s.amount, s.currency)}) — score {s.score}
+                <div className="mh-bars">
+                  <ScoreBar
+                    label={t.matchHealth.details.amountScore}
+                    value={b.amount ?? 0} max={SCORE_MAX.amount} t={t}
+                  />
+                  <ScoreBar
+                    label={t.matchHealth.details.dateScore}
+                    value={b.date ?? 0} max={SCORE_MAX.date} t={t}
+                  />
+                  <ScoreBar
+                    label={t.matchHealth.details.vendorScore}
+                    value={b.vendor ?? 0} max={SCORE_MAX.vendor} t={t}
+                  />
+                  <ScoreBar
+                    label={t.matchHealth.fields.total}
+                    value={s.score ?? 0} max={SCORE_MAX.total} t={t}
+                  />
+                </div>
+              </li>
+            );
+          })}
+        </ol>
+      )}
+
+      {/* Match Health 2.0 — utökad kandidatlista */}
+      {processed.length > 0 ? (
+        <>
+          <h4>{t.matchHealth.processedReceipts.title} ({processed.length})</h4>
+          <ul style={{ paddingLeft: '1.25rem' }}
+              data-testid={`mh-processed-${row.bill_line.id}`}>
+            {processed.slice(0, 10).map((r) => (
+              <li key={`${row.bill_line.id}-proc-${r.id}`}
+                  data-testid={`mh-processed-row-${r.id}`}>
+                <strong>{r.vendor || r.file_name || '—'}</strong>
+                {' '}({fmtAmount(r.amount, r.currency)}) ·{' '}
+                {fmtDate(r.receipt_date || r.received_at)}
+                {' · '}
+                <span className="muted small">
+                  score {r.match_score_total}
+                </span>
+                {r.above_threshold ? (
+                  <span className="mh-pill mh-pill--ok">
+                    {t.matchHealth.processedReceipts.aboveThreshold}
+                  </span>
+                ) : null}
+                {r.drive_link ? (
+                  <>
+                    {' · '}
+                    <a href={r.drive_link} target="_blank" rel="noreferrer"
+                       data-testid={`mh-drive-${r.id}`}>
+                      {t.matchHealth.fields.driveLink}
+                    </a>
+                  </>
+                ) : (
+                  <span className="muted small">
+                    {' '}· {t.matchHealth.processedReceipts.noDrive}
+                  </span>
+                )}
+                {r.ai_confidence != null ? (
+                  <span className="muted small">
+                    {' '}· AI {r.ai_confidence}%
+                  </span>
+                ) : null}
+                {r.ai_summary ? (
+                  <div className="muted small">
+                    {r.ai_summary}
+                  </div>
+                ) : null}
+              </li>
+            ))}
+            {processed.length > 10 ? (
+              <li className="muted">
+                +{processed.length - 10} fler…
+              </li>
+            ) : null}
+          </ul>
+        </>
+      ) : null}
+
+      {/* Match Health 2.0 — Gmail-meddelanden */}
+      {messages.length > 0 ? (
+        <>
+          <h4>{t.matchHealth.gmailMessages.title} ({messages.length})</h4>
+          <ul style={{ paddingLeft: '1.25rem' }}
+              data-testid={`mh-gmail-${row.bill_line.id}`}>
+            {messages.slice(0, 10).map((m) => (
+              <li key={`${row.bill_line.id}-gm-${m.message_id}`}>
+                <strong>{m.subject || m.message_id}</strong>
+                {' · '}
+                <span className="muted small">{m.sender || '—'}</span>
+                {' · '}
+                <span className="muted small">
+                  {m.has_attachment
+                    ? t.matchHealth.gmailMessages.withAttachment
+                    : t.matchHealth.gmailMessages.noAttachment}
+                </span>
+                {m.is_processed ? (
+                  <span className="mh-pill mh-pill--ok">
+                    {t.matchHealth.gmailMessages.processed}
+                  </span>
+                ) : (
+                  <span className="mh-pill mh-pill--warn">
+                    {t.matchHealth.gmailMessages.notProcessed}
+                  </span>
+                )}
+                {m.via_html_only_pipeline ? (
+                  <span className="mh-pill mh-pill--info">
+                    {t.matchHealth.gmailMessages.viaHtmlOnly}
+                  </span>
+                ) : null}
+              </li>
+            ))}
+          </ul>
+        </>
+      ) : null}
 
       <h4>{t.matchHealth.details.fuzzyTitle}</h4>
       <ul style={{ paddingLeft: '1.25rem' }}>
@@ -566,17 +826,57 @@ function MatchHealthDetails({ row, onCopyRow, t }) {
           ) : null}
         </p>
       ) : null}
-      <ul style={{ paddingLeft: '1.25rem' }}>
-        <li>{(t.matchHealth.details.gmailHitsWith || '')
-          .replace('{count}', String(g.hits_with_attachment || 0))}</li>
-        <li>{(t.matchHealth.details.gmailHitsWithout || '')
-          .replace('{count}', String(g.hits_without_attachment || 0))}</li>
-        {g.would_match_without_attachment_filter > 0 ? (
-          <li><strong>{(t.matchHealth.details.gmailWouldMatch || '')
-            .replace('{count}',
-              String(g.would_match_without_attachment_filter))}</strong></li>
-        ) : null}
-      </ul>
+    </div>
+  );
+}
+
+function MatchHealthDetails({ row, onCopyRow, t }) {
+  const [mode, setMode] = useState('summary');
+
+  return (
+    <div className="mh-details" style={{ padding: '0.75rem 0.5rem' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between',
+                    alignItems: 'flex-start', gap: '1rem',
+                    marginBottom: '0.5rem' }}>
+        <div className="mh-mode-toggle" role="tablist"
+             data-testid={`mh-mode-${row.bill_line.id}`}>
+          <button
+            type="button"
+            className={`btn ${mode === 'summary' ? 'primary' : 'ghost'} btn--sm`}
+            onClick={(e) => { e.stopPropagation(); setMode('summary'); }}
+            data-testid={`mh-mode-summary-${row.bill_line.id}`}
+            role="tab"
+            aria-selected={mode === 'summary'}
+          >
+            {t.matchHealth.summaryView}
+          </button>
+          <button
+            type="button"
+            className={`btn ${mode === 'details' ? 'primary' : 'ghost'} btn--sm`}
+            onClick={(e) => { e.stopPropagation(); setMode('details'); }}
+            data-testid={`mh-mode-details-${row.bill_line.id}`}
+            role="tab"
+            aria-selected={mode === 'details'}
+          >
+            {t.matchHealth.detailedView}
+          </button>
+        </div>
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onCopyRow(row); }}
+          data-testid={`mh-copy-row-${row.bill_line.id}`}
+          className="btn"
+        >
+          <IconCopy className="icon sm" />
+          <span>{t.matchHealth.copyRow}</span>
+        </button>
+      </div>
+
+      {mode === 'summary' ? (
+        <SummaryView row={row} t={t} />
+      ) : (
+        <TechnicalView row={row} t={t} />
+      )}
     </div>
   );
 }

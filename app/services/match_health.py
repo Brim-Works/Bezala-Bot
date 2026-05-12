@@ -28,15 +28,20 @@ import time
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 
-from sqlalchemy import desc
+from sqlalchemy import desc, or_
 from sqlalchemy.orm import Session
 
 from app.models import ProcessedMessage
 from app.services.receipt_matcher import (
     AMOUNT_BONUS,
+    DATE_BUCKETS,
     MIN_DISPLAY_SCORE,
     VENDOR_BONUS_MAX,
+    VENDOR_OVERRIDES,
+    _normalize_vendor,
+    _vendor_canonical,
     find_matches,
+    score_match,
     vendor_similarity,
 )
 
@@ -443,6 +448,486 @@ def _strip_serialized_for_suggestion(d: dict) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Match Health 2.0 — utökade hjälpfunktioner
+# ---------------------------------------------------------------------------
+#
+# Spec:
+#   - processed_receipts[]: bredare kandidatlista (±20% belopp / ±21d /
+#     vendor-substring / redan kopplade till denna bill_line) med fullt
+#     score-breakdown per rad
+#   - gmail_messages[]: alla Gmail-träffar (med + utan attachment), med
+#     fält om de är processade i vår DB eller filtrerade som not_receipt
+#   - diagnostic_summary: kort sammanfattning för UI:t
+#   - Utvidgad verdict-lista: multiple_candidates_above_threshold,
+#     best_below_threshold, processed_but_no_candidate,
+#     gmail_found_not_processed, gmail_filtered_or_excluded,
+#     already_matched
+
+# Bredare fönster för "kandidat-listan" i diagnostiken.
+EXTENDED_AMOUNT_PCT = 0.20      # ±20%
+EXTENDED_DATE_DAYS = 21         # ±21d
+
+# Hur många icke-processade Gmail-träffar vi anropar
+# `fetch_message_metadata` för per bill_line — Gmail-quota-styrning.
+MAX_METADATA_FETCH_PER_BILL_LINE = 5
+
+
+def _vendor_match_method(
+    missing_description: str | None, candidate_vendor: str | None,
+) -> tuple[str, int]:
+    """Klassificera vendor-matchningen: ('substring' | 'override' |
+    'fuzzy' | 'none', similarity_pct_int)."""
+    a = _normalize_vendor(missing_description)
+    b = _normalize_vendor(candidate_vendor)
+    if not a or not b:
+        return "none", 0
+    if b in a or a in b:
+        return "substring", 100
+    canonical = _vendor_canonical(a)
+    if canonical and canonical in b:
+        return "override", 95
+    pct = int(round(vendor_similarity(missing_description, candidate_vendor) * 100))
+    return ("fuzzy" if pct > 0 else "none"), pct
+
+
+def _enrich_score_breakdown(
+    missing: dict, cand: dict, *, base_breakdown: dict,
+) -> dict:
+    """Bygg ut score_breakdown med diagnostik-vänliga fält:
+    amount_diff/_pct, vendor_method/_similarity_pct, date_matched_field
+    (redan i base). Behåller alla befintliga nycklar."""
+    out = dict(base_breakdown)
+    # Datum-diff (already in base_breakdown som date_days_off)
+    out.setdefault("date_diff_days", base_breakdown.get("date_days_off"))
+    # Belopps-diff
+    m_amt = missing.get("amount")
+    c_amt = cand.get("amount")
+    if m_amt is not None and c_amt is not None:
+        try:
+            diff = float(c_amt) - float(m_amt)
+            out["amount_diff"] = round(diff, 2)
+            if float(m_amt) > 0:
+                out["amount_diff_pct"] = round(
+                    abs(diff) / float(m_amt) * 100.0, 1,
+                )
+            else:
+                out["amount_diff_pct"] = None
+        except (ValueError, TypeError):
+            out["amount_diff"] = None
+            out["amount_diff_pct"] = None
+    else:
+        out["amount_diff"] = None
+        out["amount_diff_pct"] = None
+    # Vendor-method + similarity
+    method, sim_pct = _vendor_match_method(
+        missing.get("description"), cand.get("vendor"),
+    )
+    out["vendor_match_method"] = method
+    out["vendor_similarity_pct"] = sim_pct
+    return out
+
+
+def _find_extended_candidates(
+    db: Session,
+    missing: dict,
+    *,
+    vendor_name: str | None,
+    serialize_message,
+) -> list[dict]:
+    """Bred kandidatlista för diagnostik. Match Health 2.0:
+      - amount ±20% (ej ±5% som matchern)
+      - date ±21d (ej ±7d som matchern)
+      - vendor case-insensitive substring (båda håll)
+      - bezala_transaction_id == bill_line.id (redan kopplade)
+
+    Returnerar deserialized dicts (samma shape som matchern förväntar).
+    """
+    bill_id = missing.get("id")
+    bill_id_str = str(bill_id) if bill_id is not None else None
+
+    # Fetch broadly, filter in Python — enklare och tabell-storlek är liten.
+    q = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.status == "saved")
+        .order_by(desc(ProcessedMessage.received_at))
+        .limit(1000)
+    )
+    rows = q.all()
+
+    bill_amt = missing.get("amount")
+    bill_date = _parse_iso_date(missing.get("date"))
+    vendor_lower = (vendor_name or "").strip().lower()
+
+    candidates: list[dict] = []
+    for r in rows:
+        matched = False
+        # 1. Already coupled to THIS bill_line
+        if bill_id_str and r.bezala_transaction_id is not None \
+                and str(r.bezala_transaction_id) == bill_id_str:
+            matched = True
+        # 2. Amount ±20%
+        if not matched and bill_amt is not None and r.amount is not None:
+            try:
+                if abs(float(r.amount) - float(bill_amt)) / float(bill_amt) \
+                        <= EXTENDED_AMOUNT_PCT:
+                    matched = True
+            except (ValueError, ZeroDivisionError, TypeError):
+                pass
+        # 3. Date ±21d
+        if not matched and bill_date is not None:
+            r_date = (
+                _parse_iso_date(r.receipt_date)
+                or _parse_iso_date(
+                    r.received_at.isoformat()
+                    if r.received_at is not None else None,
+                )
+            )
+            if r_date is not None and abs((r_date - bill_date).days) <= EXTENDED_DATE_DAYS:
+                matched = True
+        # 4. Vendor case-insensitive substring (båda håll)
+        if not matched and vendor_lower and r.vendor:
+            r_vendor_lower = r.vendor.strip().lower()
+            if r_vendor_lower and (
+                vendor_lower in r_vendor_lower or r_vendor_lower in vendor_lower
+            ):
+                matched = True
+        if matched:
+            candidates.append(serialize_message(r))
+    return candidates
+
+
+def _score_candidates_for_diagnostic(
+    missing: dict, candidates: list[dict],
+    *, rate_provider, strong_threshold: int,
+) -> list[dict]:
+    """Score VARJE kandidat oavsett MIN_DISPLAY_SCORE (för diagnostik).
+    Returnerar lista sorterad på total desc, varje rad har:
+        { ...candidate fields..., match_score_total, match_score_breakdown,
+          above_threshold, why_not_best }
+    """
+    scored: list[dict] = []
+    for cand in candidates:
+        s = score_match(missing, cand, rate_provider=rate_provider)
+        breakdown = _enrich_score_breakdown(
+            missing, cand, base_breakdown=s["breakdown"],
+        )
+        entry = {
+            **_strip_serialized_for_suggestion(cand),
+            "sender_full": cand.get("sender"),
+            "subject": cand.get("subject"),
+            "category": cand.get("category"),
+            "ai_confidence": cand.get("ai_confidence"),
+            "ai_summary": cand.get("summary"),
+            "drive_link": cand.get("drive_link"),
+            "drive_file_id": cand.get("drive_file_id"),
+            "bezala_upload_status": cand.get("bezala_upload_status"),
+            "bezala_transaction_id": cand.get("bezala_transaction_id"),
+            "match_score_total": s["total"],
+            "match_score_breakdown": breakdown,
+            "above_threshold": s["total"] >= strong_threshold,
+        }
+        if "conversion" in s:
+            entry["conversion"] = s["conversion"]
+        scored.append(entry)
+    # Sort desc by total
+    scored.sort(key=lambda e: e["match_score_total"], reverse=True)
+    # Mark why_not_best för icke-toppen
+    if scored:
+        top_score = scored[0]["match_score_total"]
+        for i, entry in enumerate(scored):
+            if i == 0:
+                entry["why_not_best"] = None
+            else:
+                gap = top_score - entry["match_score_total"]
+                entry["why_not_best"] = (
+                    f"Annat kvitto har högre score ({top_score} vs {entry['match_score_total']}, "
+                    f"diff {gap})"
+                )
+    return scored
+
+
+def _enrich_gmail_messages(
+    gmail_client, db: Session, vendor_name: str | None,
+    bill_date: datetime | None, *,
+    html_only_patterns: list[str] | None,
+) -> list[dict]:
+    """Hämta Gmail-träffar runt vendor + datum-fönster och annotera dem:
+      - has_attachment (via vilken query som matchade)
+      - via_html_only_pipeline (om vendor matchar pattern)
+      - is_processed + processed_message_id (lookup i ProcessedMessage)
+      - is_filtered_not_receipt (om processade och deleted via not_receipt)
+      - sender/subject/received_at (från DB om processad, annars
+        fetch_message_metadata upp till MAX_METADATA_FETCH_PER_BILL_LINE)
+
+    Returnerar [] vid Gmail-fel eller avsaknad av klient.
+    """
+    if gmail_client is None or vendor_name is None:
+        return []
+    from app.services.html_only_senders import is_html_only_sender
+    via_html_only = is_html_only_sender(
+        vendor_name, html_only_patterns or [],
+    )
+    q_with = _build_gmail_query_for_vendor(
+        vendor_name, bill_date, with_attachment=True,
+    )
+    q_without = _build_gmail_query_for_vendor(
+        vendor_name, bill_date, with_attachment=False,
+    )
+    if not q_without:
+        return []
+    try:
+        # Vi behöver båda för has_attachment-fältet, även för html-only.
+        if via_html_only:
+            ids_with: set = set()
+        else:
+            ids_with = set(gmail_client.list_candidate_message_ids(
+                query=q_with, max_results=20,
+            ))
+        ids_all = list(gmail_client.list_candidate_message_ids(
+            query=q_without, max_results=20,
+        ))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "Gmail-enrichment misslyckades för vendor=%r: %s", vendor_name, exc,
+        )
+        return []
+
+    # Lookup processed messages via gmail message_id (en query)
+    processed_by_msg_id: dict = {}
+    if ids_all:
+        try:
+            for row in (
+                db.query(ProcessedMessage)
+                .filter(ProcessedMessage.message_id.in_(ids_all))
+                .all()
+            ):
+                processed_by_msg_id[row.message_id] = row
+        except Exception:  # noqa: BLE001
+            logger.exception("ProcessedMessage-lookup failed for Gmail enrichment")
+
+    out: list[dict] = []
+    metadata_calls_remaining = MAX_METADATA_FETCH_PER_BILL_LINE
+    for mid in ids_all:
+        proc = processed_by_msg_id.get(mid)
+        has_attachment = (mid in ids_with) and not via_html_only
+
+        if proc is not None:
+            sender = proc.sender
+            subject = proc.subject
+            received_at_iso = (
+                proc.received_at.isoformat()
+                if proc.received_at is not None else None
+            )
+            is_processed = True
+            processed_message_id = proc.id
+            is_filtered_not_receipt = (
+                proc.deleted_at is not None
+                and proc.delete_reason == "user_marked_not_receipt"
+            )
+            filter_reason = proc.delete_reason if proc.deleted_at else None
+        else:
+            sender = subject = received_at_iso = None
+            is_processed = False
+            processed_message_id = None
+            is_filtered_not_receipt = None
+            filter_reason = None
+            if metadata_calls_remaining > 0:
+                try:
+                    md = gmail_client.fetch_message_metadata(mid)
+                    metadata_calls_remaining -= 1
+                    headers = md.get("headers") or {}
+                    sender = headers.get("from") or headers.get("From")
+                    subject = headers.get("subject") or headers.get("Subject")
+                    received_at_iso = (
+                        headers.get("date") or headers.get("Date")
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.debug(
+                        "fetch_message_metadata failed for mid=%s — fortsätter",
+                        mid,
+                    )
+
+        out.append({
+            "message_id": mid,
+            "sender": sender,
+            "subject": subject,
+            "received_at": received_at_iso,
+            "has_attachment": has_attachment,
+            "via_html_only_pipeline": via_html_only,
+            "is_processed": is_processed,
+            "processed_message_id": processed_message_id,
+            "is_excluded": None,  # framtida: koppla mot excluded_vendors
+            "is_filtered_not_receipt": is_filtered_not_receipt,
+            "filter_reason": filter_reason,
+        })
+    return out
+
+
+def _classify_diagnostic_v2(
+    *,
+    scored_candidates: list[dict],
+    gmail_messages: list[dict],
+    gmail_status: dict,
+    vendor_name: str | None,
+    strong_threshold: int,
+) -> tuple[dict, dict]:
+    """Klassificera bill_line:n med utökad verdict-lista (Match Health 2.0).
+
+    Returnerar (verdict_dict, diagnostic_summary_dict).
+    """
+    above = [c for c in scored_candidates if c["above_threshold"]]
+    has_processed = bool(scored_candidates)
+    best = scored_candidates[0] if scored_candidates else None
+    best_score = best["match_score_total"] if best else 0
+    has_gmail = bool(gmail_messages)
+    n_processed_in_gmail = sum(
+        1 for g in gmail_messages if g.get("is_processed")
+    )
+    n_filtered = sum(
+        1 for g in gmail_messages if g.get("is_filtered_not_receipt")
+    )
+    # already_matched: någon kandidat har redan denna bill_line som
+    # bezala_transaction_id.
+    already_matched = next(
+        (c for c in scored_candidates
+         if c.get("bezala_transaction_id")
+         and str(c["bezala_transaction_id"])
+             == str(scored_candidates[0].get("bezala_transaction_id"))
+         and c.get("match_score_total", 0) > 0),
+        None,
+    )
+    coupled_to_this = [
+        c for c in scored_candidates
+        if c.get("bezala_transaction_id")
+    ]
+
+    summary = {
+        "gmail_status": gmail_status.get("category") or "not_searched",
+        "gmail_count": len(gmail_messages),
+        "processed_count": n_processed_in_gmail,
+        "processed_failed_count": max(
+            0, len(gmail_messages) - n_processed_in_gmail,
+        ),
+        "candidate_count": len(scored_candidates),
+        "above_threshold_count": len(above),
+        "best_score": best_score,
+        "threshold": strong_threshold,
+    }
+
+    if coupled_to_this:
+        coupled = coupled_to_this[0]
+        verdict = {
+            "category": "already_matched",
+            "confidence": "high",
+            "suggested_action": (
+                f"Korttrans redan kopplad till '{coupled.get('vendor') or '—'}' "
+                f"(ProcessedMessage #{coupled.get('id')})."
+            ),
+        }
+        summary["next_action"] = verdict["suggested_action"]
+        return verdict, summary
+
+    if gmail_status.get("category") == "gmail_error":
+        verdict = {
+            "category": "gmail_error",
+            "confidence": "low",
+            "suggested_action": "Gmail API svarade inte — testa igen.",
+        }
+        summary["next_action"] = verdict["suggested_action"]
+        return verdict, summary
+
+    if len(above) >= 2:
+        verdict = {
+            "category": "multiple_candidates_above_threshold",
+            "confidence": "medium",
+            "suggested_action": (
+                f"{len(above)} kvitton över tröskeln {strong_threshold}. "
+                "Välj manuellt i Travel Tinder."
+            ),
+        }
+    elif len(above) == 1:
+        verdict = {
+            "category": "matched_correctly",
+            "confidence": "high",
+            "suggested_action": (
+                "Klicka Match i Travel Tinder för att bekräfta kopplingen."
+            ),
+        }
+    elif has_processed and best_score > 0:
+        gap = strong_threshold - best_score
+        verdict = {
+            "category": "best_below_threshold",
+            "confidence": "medium",
+            "suggested_action": (
+                f"Bästa kandidat har score {best_score}, behöver {strong_threshold}. "
+                f"Saknar {gap} poäng — kolla score-breakdown nedan."
+            ),
+        }
+    elif has_processed:
+        verdict = {
+            "category": "processed_but_no_candidate",
+            "confidence": "medium",
+            "suggested_action": (
+                f"{len(scored_candidates)} kvitton finns i DB men ingen är "
+                "ens nära matchning. Sannolikt AI-extraktion fel (datum/belopp). "
+                "Kolla kvitton-listan nedan."
+            ),
+        }
+    elif has_gmail and n_processed_in_gmail == 0:
+        verdict = {
+            "category": "gmail_found_not_processed",
+            "confidence": "medium",
+            "suggested_action": (
+                f"{len(gmail_messages)} mail finns i Gmail men ingen är "
+                "processad i Bezala Bot — html_to_pdf-fel eller annan pipeline-fail."
+            ),
+        }
+    elif has_gmail and n_filtered > 0:
+        verdict = {
+            "category": "gmail_filtered_or_excluded",
+            "confidence": "medium",
+            "suggested_action": (
+                f"{n_filtered} mail har markerats som inte-kvitto. "
+                "Återställ via Papperskorgen om felaktigt."
+            ),
+        }
+    elif gmail_status.get("category") == "filtered":
+        verdict = {
+            "category": "gmail_miss",
+            "confidence": "high",
+            "suggested_action": (
+                f"Lägg till {vendor_name or '<vendor>'} i HTML-only "
+                "avsändare i Inställningar — Bezala Bot kommer då plocka "
+                f"upp dem via html_to_pdf-pipelinen "
+                f"({gmail_status.get('would_match_without_attachment_filter', 0)} "
+                "sådana mail finns)."
+            ),
+        }
+    elif gmail_status.get("category") == "no_hits":
+        verdict = {
+            "category": "no_receipt_exists",
+            "confidence": "medium",
+            "suggested_action": (
+                f"Kvitto för {vendor_name or '<vendor>'} finns sannolikt "
+                "inte i Gmail — fysiskt eller app-store-faktura."
+            ),
+        }
+    else:
+        verdict = {
+            "category": "no_receipt_exists",
+            "confidence": "low",
+            "suggested_action": "Ingen tydlig signal — manuell genomgång.",
+        }
+
+    summary["next_action"] = verdict["suggested_action"]
+    return verdict, summary
+
+
+# ---------------------------------------------------------------------------
+
+
 def build_match_health_report(
     db: Session,
     *,
@@ -504,14 +989,23 @@ def build_match_health_report(
         html_only_patterns = []
 
     rows: list[dict] = []
-    stats = {
+    stats: dict = {
         "total": 0,
+        # Behåll legacy-nycklar så befintliga frontend-vyer + tester inte
+        # bryts; UI:t använder dem för stats-baren.
         "matched_correctly": 0,
         "gmail_miss": 0,
         "ai_extraction_wrong": 0,
         "match_algorithm_failed": 0,
         "no_receipt_exists": 0,
         "gmail_error": 0,
+        # Match Health 2.0 — nya kategorier
+        "multiple_candidates_above_threshold": 0,
+        "best_below_threshold": 0,
+        "processed_but_no_candidate": 0,
+        "gmail_found_not_processed": 0,
+        "gmail_filtered_or_excluded": 0,
+        "already_matched": 0,
     }
 
     for raw in missing_raw:
@@ -520,6 +1014,7 @@ def build_match_health_report(
         vendor_name = _normalize_merchant_to_vendor(merchant)
         bill_date = _parse_iso_date(missing.get("date"))
 
+        # Standard top-3 (behåller befintligt schema)
         suggestions = find_matches(
             missing, candidate_dicts, rate_provider=rate_provider,
         )
@@ -527,7 +1022,10 @@ def build_match_health_report(
         for s in suggestions[:3]:
             entry = {
                 "score": s["score"],
-                "score_breakdown": s["score_breakdown"],
+                "score_breakdown": _enrich_score_breakdown(
+                    missing, s["message"],
+                    base_breakdown=s["score_breakdown"],
+                ),
                 **_strip_serialized_for_suggestion(s["message"]),
             }
             if "conversion" in s:
@@ -540,12 +1038,30 @@ def build_match_health_report(
             gmail_client, vendor_name, bill_date,
             html_only_patterns=html_only_patterns,
         )
-        verdict = _classify_verdict(
-            best_match=best_match,
-            fuzzy=fuzzy,
-            gmail=gmail,
+
+        # Match Health 2.0 — utökad kandidat- + gmail-data + verdict
+        extended_candidates = _find_extended_candidates(
+            db, missing,
             vendor_name=vendor_name,
+            serialize_message=serialize_message,
         )
+        processed_receipts = _score_candidates_for_diagnostic(
+            missing, extended_candidates,
+            rate_provider=rate_provider,
+            strong_threshold=STRONG_MATCH_THRESHOLD,
+        )
+        gmail_messages = _enrich_gmail_messages(
+            gmail_client, db, vendor_name, bill_date,
+            html_only_patterns=html_only_patterns,
+        )
+        verdict, diagnostic_summary = _classify_diagnostic_v2(
+            scored_candidates=processed_receipts,
+            gmail_messages=gmail_messages,
+            gmail_status=gmail,
+            vendor_name=vendor_name,
+            strong_threshold=STRONG_MATCH_THRESHOLD,
+        )
+
         stats[verdict["category"]] = stats.get(verdict["category"], 0) + 1
         stats["total"] += 1
 
@@ -563,6 +1079,10 @@ def build_match_health_report(
             "fuzzy_candidates": fuzzy,
             "gmail_status": gmail,
             "verdict": verdict,
+            # Match Health 2.0 — nya fält
+            "processed_receipts": processed_receipts,
+            "gmail_messages": gmail_messages,
+            "diagnostic_summary": diagnostic_summary,
         })
 
     report = {

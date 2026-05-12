@@ -4413,3 +4413,103 @@ html[data-theme='B'] .modal__title {
   margin-top: 0.75rem;
   margin-bottom: 0.25rem;
 }
+
+/* ---------- Match Health 2.0: score bars, flow, pills ---------- */
+.mh-counts {
+  margin-top: 0.25rem;
+}
+.mh-mode-toggle {
+  display: flex;
+  gap: 0.25rem;
+}
+.mh-flow {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  padding: 0.5rem 0;
+}
+.mh-flow-step {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.6rem;
+  border-radius: var(--radius-sm, 6px);
+  border: 1px solid var(--border);
+  background: var(--surface);
+}
+.mh-flow-step--ok {
+  background: color-mix(in oklch, var(--ok) 6%, var(--surface));
+  border-color: color-mix(in oklch, var(--ok) 30%, var(--border));
+}
+.mh-flow-step--info {
+  background: color-mix(in oklch, var(--info) 4%, var(--surface));
+}
+.mh-flow-icon {
+  font-size: 1.1rem;
+}
+.mh-flow-title {
+  font-weight: 600;
+  min-width: 8rem;
+}
+.mh-flow-status {
+  flex: 1;
+}
+.mh-flow-arrow {
+  text-align: center;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+/* Score bars */
+.mh-bars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  margin: 0.4rem 0 0.6rem 0;
+  max-width: 32rem;
+}
+.mh-score-row {
+  display: grid;
+  grid-template-columns: 5rem 1fr 4rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+.mh-bar-track {
+  height: 0.5rem;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm, 6px);
+  overflow: hidden;
+}
+.mh-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-sm, 6px);
+  transition: width 200ms ease;
+}
+.mh-bar--ok   { background: var(--ok); }
+.mh-bar--warn { background: var(--warn); }
+.mh-bar--err  { background: var(--err); }
+
+/* Pills */
+.mh-pill {
+  display: inline-block;
+  padding: 0.05rem 0.4rem;
+  margin-left: 0.4rem;
+  font-size: 0.75rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+}
+.mh-pill--ok {
+  background: color-mix(in oklch, var(--ok) 14%, var(--surface));
+  border-color: color-mix(in oklch, var(--ok) 35%, var(--border));
+}
+.mh-pill--warn {
+  background: color-mix(in oklch, var(--warn) 16%, var(--surface));
+  border-color: color-mix(in oklch, var(--warn) 35%, var(--border));
+}
+.mh-pill--info {
+  background: color-mix(in oklch, var(--info) 12%, var(--surface));
+  border-color: color-mix(in oklch, var(--info) 30%, var(--border));
+}
