@@ -21,17 +21,20 @@ logger = logging.getLogger(__name__)
 MIN_DISPLAY_SCORE = 50
 MAX_SUGGESTIONS_PER_MISSING = 5
 
-# Datum-bonus (FAS 8.5a fix — dual-date matching):
-# Bucket-skala för bästa matchen mellan kort-trans och receipt_date /
-# received_at. Anledning till bucket istället för linjär decay: vi vill
-# ha ett brett 4-7-dagars intervall (minskat värde) för att fånga
-# bokningar där bekräftelsen kommer dagar före/efter resedagen, men
-# fortfarande prioritera samma-dag-match.
+# Datum-bonus (Match algorithm 3.0 — utökat fönster för fördröjd
+# kortdebitering):
+# Bucket-skala (max_days, score) för bästa matchen mellan kort-trans
+# och receipt_date / received_at. Korttransaktioner kan komma 7-30+
+# dagar efter köpet (parkeringar, transit-bokningar, försenade
+# debiteringar) — för att ge belopp+vendor-perfekta matchningar en
+# chans att nå tröskel utökar vi fönstret upp till 60 dagar med
+# avtagande poäng.
 DATE_BUCKETS: tuple[tuple[int, int], ...] = (
-    (0, 30),
-    (1, 25),
-    (3, 15),
-    (7, 8),
+    (3, 30),
+    (7, 25),
+    (14, 15),
+    (30, 10),
+    (60, 5),
 )
 
 # Belopp-tolerans: ±5% (valutakurser + avrundning) för samma valuta.
@@ -66,6 +69,28 @@ VENDOR_OVERRIDES: tuple[tuple[str, str], ...] = (
     ("strawberry", "strawberry"),
 )
 
+# Vendor-aliasing (Match algorithm 3.0):
+# Korttransaktionsbeskrivningar är råa kortbeskrivningar (versaler,
+# tekniska identifierare) som inte fuzzy-matchar mot Gmail-vendors.
+# Mappa kort-vendor → lista av aliaser som kan finnas i
+# ProcessedMessage.vendor eller .sender. Träff räknas som lika stark
+# som substring (30 poäng / 100% similarity).
+VENDOR_ALIASES: dict[str, list[str]] = {
+    "LOVABLE": ["lovable", "lovable.dev"],
+    "MJS.LIFE": ["mjs.life", "mjslife"],
+    "CIRCLE K OERKELLJUNGA": ["circle k", "circlek"],
+    "APPLE.COM/BILL": ["apple", "itunes", "apple.com"],
+    "AIRPORT LRS": ["airport", "lrs"],
+    "HERTZ SVERIGE": ["hertz"],
+    "CURSOR": ["cursor.com", "cursor.sh", "anysphere"],
+    "MOOVY": ["moovy", "finavia"],
+    "SKANETRAFIKEN APP": ["skanetrafiken", "skånetrafiken"],
+    "ARLANDA EXPRESS": ["arlanda", "arlandaexpress"],
+    "FINNAIR": ["finnair", "amadeus", "eticket"],
+    "FLYTOGET": ["flytoget"],
+    "ANTHROPIC": ["anthropic"],
+}
+
 
 def _parse_date(raw: str | None) -> datetime | None:
     if not raw:
@@ -97,12 +122,52 @@ def _vendor_canonical(missing_description: str) -> str | None:
     return None
 
 
+def alias_match(
+    missing_description: str | None,
+    candidate_vendor: str | None,
+    candidate_sender: str | None = None,
+) -> bool:
+    """Match algorithm 3.0 — alias-matchning.
+
+    Om någon nyckel i VENDOR_ALIASES förekommer i missing_description
+    (case-insensitive) och något av motsvarande aliaser förekommer i
+    candidate_vendor eller candidate_sender → True. Annars False.
+    """
+    if not missing_description:
+        return False
+    desc_upper = str(missing_description).upper()
+    haystack_parts: list[str] = []
+    if candidate_vendor:
+        haystack_parts.append(str(candidate_vendor).lower())
+    if candidate_sender:
+        haystack_parts.append(str(candidate_sender).lower())
+    if not haystack_parts:
+        return False
+    haystack = " ".join(haystack_parts)
+    for key, aliases in VENDOR_ALIASES.items():
+        if key in desc_upper:
+            for alias in aliases:
+                if alias.lower() in haystack:
+                    return True
+    return False
+
+
 def vendor_similarity(
-    missing_description: str | None, candidate_vendor: str | None,
+    missing_description: str | None,
+    candidate_vendor: str | None,
+    candidate_sender: str | None = None,
 ) -> float:
-    """Returnerar 0..1-similarity mellan beskrivning och vendor-namn."""
+    """Returnerar 0..1-similarity mellan beskrivning och vendor-namn.
+
+    candidate_sender är valfri — när angiven används den som extra
+    haystack för alias-matchning (Match algorithm 3.0).
+    """
     a = _normalize_vendor(missing_description)
     b = _normalize_vendor(candidate_vendor)
+    # Alias-match (Match algorithm 3.0) — kan trigga även när
+    # vendor-fältet i sig är svagt om sender bär signalen.
+    if alias_match(missing_description, candidate_vendor, candidate_sender):
+        return 1.0
     if not a or not b:
         return 0.0
     # Exact substring → max
@@ -115,10 +180,25 @@ def vendor_similarity(
     return SequenceMatcher(None, a, b).ratio()
 
 
-def _amount_matches(missing_amount: float | None, candidate_amount: float | None) -> bool:
+def _amount_matches(
+    missing_amount: float | None,
+    candidate_amount: float | None,
+    missing_currency: str | None = None,
+    candidate_currency: str | None = None,
+) -> bool:
+    """Direkt amount-match (samma valuta).
+
+    Match algorithm 3.0: blockerar cross-currency match utan konvertering.
+    Ex: 100 EUR vs 100 SEK ska INTE matcha även om siffran råkar stämma —
+    konvertering måste ske via _amount_matches_via_conversion istället.
+    """
     if missing_amount is None or candidate_amount is None:
         return False
     if missing_amount == 0:
+        return False
+    mc = (missing_currency or "").upper().strip()
+    cc = (candidate_currency or "").upper().strip()
+    if mc and cc and mc != cc:
         return False
     diff_pct = abs(missing_amount - candidate_amount) / abs(missing_amount)
     return diff_pct <= AMOUNT_TOLERANCE
@@ -238,7 +318,10 @@ def score_match(
     breakdown = {"amount": 0, "date": 0, "vendor": 0}
     conversion: dict | None = None
 
-    if _amount_matches(missing.get("amount"), candidate.get("amount")):
+    if _amount_matches(
+        missing.get("amount"), candidate.get("amount"),
+        missing.get("currency"), candidate.get("currency"),
+    ):
         breakdown["amount"] = AMOUNT_BONUS
     elif rate_provider is not None:
         matches, converted, rate = _amount_matches_via_conversion(
@@ -267,7 +350,9 @@ def score_match(
     breakdown["date_days_off"] = days_off
 
     sim = vendor_similarity(
-        missing.get("description"), candidate.get("vendor"),
+        missing.get("description"),
+        candidate.get("vendor"),
+        candidate.get("sender"),
     )
     breakdown["vendor"] = int(round(sim * VENDOR_BONUS_MAX))
 

@@ -474,10 +474,18 @@ MAX_METADATA_FETCH_PER_BILL_LINE = 5
 
 
 def _vendor_match_method(
-    missing_description: str | None, candidate_vendor: str | None,
+    missing_description: str | None,
+    candidate_vendor: str | None,
+    candidate_sender: str | None = None,
 ) -> tuple[str, int]:
-    """Klassificera vendor-matchningen: ('substring' | 'override' |
-    'fuzzy' | 'none', similarity_pct_int)."""
+    """Klassificera vendor-matchningen: ('alias' | 'substring' | 'override'
+    | 'fuzzy' | 'none', similarity_pct_int).
+
+    'alias' (Match algorithm 3.0) tar precedens över substring eftersom
+    aliaser är explicita kort-vendor → Gmail-vendor-mappningar."""
+    from app.services.receipt_matcher import alias_match
+    if alias_match(missing_description, candidate_vendor, candidate_sender):
+        return "alias", 100
     a = _normalize_vendor(missing_description)
     b = _normalize_vendor(candidate_vendor)
     if not a or not b:
@@ -487,7 +495,9 @@ def _vendor_match_method(
     canonical = _vendor_canonical(a)
     if canonical and canonical in b:
         return "override", 95
-    pct = int(round(vendor_similarity(missing_description, candidate_vendor) * 100))
+    pct = int(round(vendor_similarity(
+        missing_description, candidate_vendor, candidate_sender,
+    ) * 100))
     return ("fuzzy" if pct > 0 else "none"), pct
 
 
@@ -521,7 +531,7 @@ def _enrich_score_breakdown(
         out["amount_diff_pct"] = None
     # Vendor-method + similarity
     method, sim_pct = _vendor_match_method(
-        missing.get("description"), cand.get("vendor"),
+        missing.get("description"), cand.get("vendor"), cand.get("sender"),
     )
     out["vendor_match_method"] = method
     out["vendor_similarity_pct"] = sim_pct
@@ -598,6 +608,40 @@ def _find_extended_candidates(
     return candidates
 
 
+def _is_auto_match_confident(
+    missing: dict, breakdown: dict,
+) -> bool:
+    """Match algorithm 3.0 — auto_match_confident regel.
+
+    När ett kvitto har:
+      - amount_diff == 0 (exakt belopp)
+      - samma valuta (eller båda saknar valuta)
+      - vendor_similarity_pct >= 95 (alias / substring / override)
+      - date_diff_days <= 60
+    → matchningen är så stark att vi överrider score-tröskeln. Annars
+    fastnar uppenbara matchningar precis under tröskeln (78 poäng) pga
+    avtagande datum-poäng vid fördröjd kortdebitering.
+    """
+    amount_diff = breakdown.get("amount_diff")
+    if amount_diff is None or abs(float(amount_diff)) > 0.0:
+        return False
+    sim_pct = breakdown.get("vendor_similarity_pct") or 0
+    if sim_pct < 95:
+        return False
+    date_diff = breakdown.get("date_diff_days")
+    if date_diff is None or date_diff > 60:
+        return False
+    # Currency check: behåll samma logik som amount-matchning för
+    # att blockera 100 EUR ↔ 100 SEK-fall även om amount_diff råkar
+    # vara 0 (cross-currency utan konvertering).
+    mc = (missing.get("currency") or "").upper().strip()
+    cc = breakdown.get("candidate_currency")
+    cc = (cc or "").upper().strip() if cc else ""
+    if mc and cc and mc != cc:
+        return False
+    return True
+
+
 def _score_candidates_for_diagnostic(
     missing: dict, candidates: list[dict],
     *, rate_provider, strong_threshold: int,
@@ -605,7 +649,10 @@ def _score_candidates_for_diagnostic(
     """Score VARJE kandidat oavsett MIN_DISPLAY_SCORE (för diagnostik).
     Returnerar lista sorterad på total desc, varje rad har:
         { ...candidate fields..., match_score_total, match_score_breakdown,
-          above_threshold, why_not_best }
+          above_threshold, why_not_best, auto_match_confident }
+
+    above_threshold är True om antingen total >= strong_threshold ELLER
+    auto_match_confident-regeln triggas (Match algorithm 3.0).
     """
     scored: list[dict] = []
     for cand in candidates:
@@ -613,6 +660,10 @@ def _score_candidates_for_diagnostic(
         breakdown = _enrich_score_breakdown(
             missing, cand, base_breakdown=s["breakdown"],
         )
+        # Berika breakdown med candidate_currency så
+        # _is_auto_match_confident kan jämföra valutor.
+        breakdown["candidate_currency"] = cand.get("currency")
+        auto_confident = _is_auto_match_confident(missing, breakdown)
         entry = {
             **_strip_serialized_for_suggestion(cand),
             "sender_full": cand.get("sender"),
@@ -626,7 +677,10 @@ def _score_candidates_for_diagnostic(
             "bezala_transaction_id": cand.get("bezala_transaction_id"),
             "match_score_total": s["total"],
             "match_score_breakdown": breakdown,
-            "above_threshold": s["total"] >= strong_threshold,
+            "above_threshold": (
+                s["total"] >= strong_threshold or auto_confident
+            ),
+            "auto_match_confident": auto_confident,
         }
         if "conversion" in s:
             entry["conversion"] = s["conversion"]
@@ -838,6 +892,11 @@ def _classify_diagnostic_v2(
         summary["next_action"] = verdict["suggested_action"]
         return verdict, summary
 
+    # auto_match_confident (Match algorithm 3.0): exakt belopp + samma
+    # valuta + vendor 95%+ + datum ≤60d → övertrumfar tröskeln.
+    auto_confident = [
+        c for c in scored_candidates if c.get("auto_match_confident")
+    ]
     if len(above) >= 2:
         verdict = {
             "category": "multiple_candidates_above_threshold",
@@ -845,6 +904,19 @@ def _classify_diagnostic_v2(
             "suggested_action": (
                 f"{len(above)} kvitton över tröskeln {strong_threshold}. "
                 "Välj manuellt i Travel Tinder."
+            ),
+        }
+    elif len(auto_confident) == 1 and len(above) == 1 \
+            and above[0] is auto_confident[0] \
+            and best is auto_confident[0] \
+            and best["match_score_total"] < strong_threshold:
+        verdict = {
+            "category": "auto_match_confident",
+            "confidence": "high",
+            "suggested_action": (
+                f"Exakt belopp + vendor-alias + datum inom 60d → "
+                f"auto-match (score {best['match_score_total']}, under "
+                f"tröskel {strong_threshold} men signalerna är entydiga)."
             ),
         }
     elif len(above) == 1:
@@ -1006,6 +1078,8 @@ def build_match_health_report(
         "gmail_found_not_processed": 0,
         "gmail_filtered_or_excluded": 0,
         "already_matched": 0,
+        # Match algorithm 3.0
+        "auto_match_confident": 0,
     }
 
     for raw in missing_raw:

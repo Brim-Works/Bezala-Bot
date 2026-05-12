@@ -164,26 +164,39 @@ class ScoreMatchTest(unittest.TestCase):
 
     def test_date_distance_decay(self):
         from app.services.receipt_matcher import score_match
+        # Match algorithm 3.0 buckets (max_days, score):
+        # (3, 30), (7, 25), (14, 15), (30, 10), (60, 5), >60 → 0
         # Same date → 30
         self.assertEqual(
             score_match(self._missing(), self._candidate())["breakdown"]["date"], 30,
         )
-        # ±1 day → 25
+        # ±1 day → 30 (i 0-3-bucketen)
         self.assertEqual(
-            score_match(self._missing(), self._candidate(receipt_date="2026-04-15"))["breakdown"]["date"], 25,
+            score_match(self._missing(), self._candidate(receipt_date="2026-04-15"))["breakdown"]["date"], 30,
         )
-        # ±3 days → 15
+        # ±3 days → 30 (gränsen för 0-3-bucketen)
         self.assertEqual(
-            score_match(self._missing(), self._candidate(receipt_date="2026-04-17"))["breakdown"]["date"], 15,
+            score_match(self._missing(), self._candidate(receipt_date="2026-04-17"))["breakdown"]["date"], 30,
         )
-        # FAS 8.5a — 4-7 days → 8 (utökat fönster för bokningar där
-        # bekräftelsen kommer dagar före/efter resedagen)
+        # 4-7 days → 25
         self.assertEqual(
-            score_match(self._missing(), self._candidate(receipt_date="2026-04-20"))["breakdown"]["date"], 8,
+            score_match(self._missing(), self._candidate(receipt_date="2026-04-20"))["breakdown"]["date"], 25,
         )
-        # >7 days → 0
+        # 8-14 days → 15
         self.assertEqual(
-            score_match(self._missing(), self._candidate(receipt_date="2026-04-25"))["breakdown"]["date"], 0,
+            score_match(self._missing(), self._candidate(receipt_date="2026-04-25"))["breakdown"]["date"], 15,
+        )
+        # 15-30 days → 10
+        self.assertEqual(
+            score_match(self._missing(), self._candidate(receipt_date="2026-05-08"))["breakdown"]["date"], 10,
+        )
+        # 31-60 days → 5
+        self.assertEqual(
+            score_match(self._missing(), self._candidate(receipt_date="2026-06-05"))["breakdown"]["date"], 5,
+        )
+        # >60 days → 0
+        self.assertEqual(
+            score_match(self._missing(), self._candidate(receipt_date="2026-07-15"))["breakdown"]["date"], 0,
         )
 
     # ---------- FAS 8.5a fix — dual-date matching ----------
@@ -219,25 +232,30 @@ class ScoreMatchTest(unittest.TestCase):
     def test_dual_date_picks_smaller_diff(self):
         """När båda finns men ingen är exakt: välj fältet med minst diff."""
         from app.services.receipt_matcher import score_match
-        # card_trans 14 april, receipt_date 17 april (3 dagar), received_at 16 april (2 dagar)
+        # card_trans 14 april, receipt_date 25 april (11 dagar),
+        # received_at 22 april (8 dagar) — båda i samma bucket men
+        # received_at är närmare. Match algorithm 3.0: 8-14d → 15p.
         s = score_match(
             self._missing(date="2026-04-14"),
             self._candidate(
-                receipt_date="2026-04-17",
-                received_at="2026-04-16T10:00:00+00:00",
+                receipt_date="2026-04-25",
+                received_at="2026-04-22T10:00:00+00:00",
             ),
         )
         self.assertEqual(s["breakdown"]["date_matched_field"], "received_at")
-        self.assertEqual(s["breakdown"]["date_days_off"], 2)
+        self.assertEqual(s["breakdown"]["date_days_off"], 8)
         self.assertEqual(s["breakdown"]["date"], 15)
 
     def test_dual_date_neither_matches(self):
+        """Båda fälten >60 dagar från bankraden → 0p och matched_field=None.
+        Match algorithm 3.0 utökade fönstret till 60d, så testet använder
+        65/64-dagars-diff för att verifiera över-gränsen."""
         from app.services.receipt_matcher import score_match
         s = score_match(
             self._missing(date="2026-04-14"),
             self._candidate(
-                receipt_date="2026-05-30",
-                received_at="2026-05-29T10:00:00+00:00",
+                receipt_date="2026-06-18",
+                received_at="2026-06-17T10:00:00+00:00",
             ),
         )
         self.assertEqual(s["breakdown"]["date"], 0)
@@ -287,6 +305,172 @@ class ScoreMatchTest(unittest.TestCase):
         from app.services.receipt_matcher import vendor_similarity
         sim = vendor_similarity("AIRPORT LRS", "Arlanda Express")
         self.assertGreaterEqual(sim, 0.9)
+
+    # ---------- Match algorithm 3.0 — utökad datum-tolerans ----------
+
+    def test_date_tolerance_15_days_gets_15_points(self):
+        """Bug 1: 15-30d ska ge 10 poäng. 15 dagar ligger i den bucketen.
+        Tidigare gav 8+ dagar 0 poäng vilket dödade fördröjda
+        kortdebiteringar (parkering, transit etc)."""
+        from app.services.receipt_matcher import score_match
+        # 15 dagar diff (datum-bucket: 15-30 → 10p)
+        s = score_match(
+            self._missing(date="2026-05-09"),
+            self._candidate(receipt_date="2026-04-24"),
+        )
+        self.assertEqual(s["breakdown"]["date_days_off"], 15)
+        self.assertEqual(s["breakdown"]["date"], 10)
+
+    def test_date_tolerance_30_days_gets_10_points(self):
+        """Bug 1: 30 dagar ska fortfarande ligga i 15-30d-bucketen → 10p."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-05-14"),
+            self._candidate(receipt_date="2026-04-14"),
+        )
+        self.assertEqual(s["breakdown"]["date_days_off"], 30)
+        self.assertEqual(s["breakdown"]["date"], 10)
+
+    def test_date_tolerance_45_days_gets_5_points(self):
+        """Bug 1: 31-60d ska ge 5p (tidigare 0p)."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-05-29"),
+            self._candidate(receipt_date="2026-04-14"),
+        )
+        self.assertEqual(s["breakdown"]["date_days_off"], 45)
+        self.assertEqual(s["breakdown"]["date"], 5)
+
+    def test_date_tolerance_61_days_gets_zero(self):
+        """Bug 1: >60 dagar ska ge 0p (övre gränsen)."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-06-15"),
+            self._candidate(receipt_date="2026-04-14"),
+        )
+        self.assertEqual(s["breakdown"]["date_days_off"], 62)
+        self.assertEqual(s["breakdown"]["date"], 0)
+
+    def test_moovy_15_day_delayed_debit_reaches_threshold(self):
+        """Bug 1 verifiering: MOOVY 73,49 EUR bankrad 2026-05-09 → Moovy
+        kvitto 73,49 EUR 2026-04-24 (15 dagars skillnad). Tidigare 78p
+        (under tröskel), nu med utökat datum-fönster ska bli ≥80."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 73.49, "currency": "EUR", "date": "2026-05-09",
+                "description": "MIKKO KEINONEN: MOOVY, HELSINKI, FI 73.49 EUR",
+            },
+            {
+                "amount": 73.49, "currency": "EUR",
+                "receipt_date": "2026-04-24",
+                "vendor": "Moovy",
+            },
+        )
+        # 50 (amount) + 10 (15d) + 30 (alias/substring/override) = 90
+        self.assertGreaterEqual(s["total"], 80)
+
+    # ---------- Match algorithm 3.0 — vendor-aliasing ----------
+
+    def test_vendor_alias_moovy_matches_finavia(self):
+        """Bug 2: bankrad 'MOOVY' ska matcha kvitto med vendor 'Finavia'
+        via VENDOR_ALIASES-mappningen."""
+        from app.services.receipt_matcher import alias_match, vendor_similarity
+        self.assertTrue(alias_match(
+            "MIKKO KEINONEN: MOOVY, HELSINKI, FI 37.49 EUR",
+            "Finavia",
+        ))
+        sim = vendor_similarity(
+            "MIKKO KEINONEN: MOOVY, HELSINKI, FI 37.49 EUR",
+            "Finavia",
+        )
+        self.assertEqual(sim, 1.0)
+
+    def test_vendor_alias_lovable_via_sender(self):
+        """Bug 2: alias kan triggas via sender-fältet om vendor-fältet
+        inte bär signalen (Lovable-mejl från no-reply@lovable.dev)."""
+        from app.services.receipt_matcher import alias_match
+        self.assertTrue(alias_match(
+            "MIKKO KEINONEN: LOVABLE, DOVER, US 100.00 EUR",
+            "no-reply",
+            "no-reply@lovable.dev",
+        ))
+
+    def test_vendor_alias_apple_does_NOT_match_anthropic(self):
+        """Bug 2 negativ test: APPLE.COM/BILL ska INTE matcha
+        Anthropic-vendor — endast aliaserna i listan."""
+        from app.services.receipt_matcher import alias_match
+        self.assertFalse(alias_match(
+            "MIKKO KEINONEN: APPLE.COM/BILL, CUPERTINO, US 9.99 EUR",
+            "Anthropic",
+        ))
+
+    def test_vendor_alias_no_match_when_key_absent(self):
+        """Bug 2: alias triggar inte om bankraden inte innehåller någon
+        VENDOR_ALIASES-nyckel."""
+        from app.services.receipt_matcher import alias_match
+        self.assertFalse(alias_match(
+            "MIKKO KEINONEN: RANDOM_VENDOR, NYC, US 50.00 EUR",
+            "lovable.dev",
+        ))
+
+    def test_score_match_uses_alias_via_sender(self):
+        """End-to-end: Lovable-bankrad + processed_message med
+        sender=lovable.dev men vendor=null → vendor-bonus 30p via alias."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 100.0, "currency": "EUR", "date": "2026-04-25",
+                "description": "MIKKO KEINONEN: LOVABLE, DOVER, US 100.00 EUR",
+            },
+            {
+                "amount": 100.0, "currency": "EUR",
+                "receipt_date": "2026-04-25",
+                "vendor": None,
+                "sender": "billing@lovable.dev",
+            },
+        )
+        self.assertEqual(s["breakdown"]["vendor"], 30)
+
+    # ---------- Match algorithm 3.0 — currency-check ----------
+
+    def test_amount_blocked_when_currencies_differ(self):
+        """Verifiering: LOVABLE 100 EUR vs Arlanda Express 100 SEK ska
+        INTE få amount-bonus utan konvertering — currency-mismatch
+        blockerar direkt match."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 100.0, "currency": "EUR", "date": "2026-04-25",
+                "description": "MIKKO KEINONEN: LOVABLE, DOVER, US 100.00 EUR",
+            },
+            {
+                "amount": 100.0, "currency": "SEK",
+                "receipt_date": "2026-04-25",
+                "vendor": "Arlanda Express",
+            },
+        )
+        self.assertEqual(s["breakdown"]["amount"], 0)
+
+    def test_amount_matches_when_currencies_match(self):
+        """Regression: samma valuta + samma belopp → 50p (oförändrat)."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(),
+            self._candidate(),
+        )
+        self.assertEqual(s["breakdown"]["amount"], 50)
+
+    def test_amount_matches_when_currency_missing_on_either_side(self):
+        """Defensiv: om någon valuta saknas, behåll gamla beteendet
+        (matcha på belopp). Backwards compat med rader som saknar valuta."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {"amount": 100.0, "date": "2026-04-25", "description": "X"},
+            {"amount": 100.0, "currency": "EUR", "receipt_date": "2026-04-25",
+             "vendor": "X"},
+        )
+        self.assertEqual(s["breakdown"]["amount"], 50)
 
     def test_find_matches_filters_below_threshold(self):
         from app.services.receipt_matcher import find_matches, MIN_DISPLAY_SCORE
