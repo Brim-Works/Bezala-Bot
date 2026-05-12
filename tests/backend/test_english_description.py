@@ -236,6 +236,67 @@ class BezalaUploaderUsesEnglishFieldTest(unittest.TestCase):
         self.assertEqual(kwargs["description"], "20260422 Finnair HEL-CPH")
 
 
+class SerializerExposesEnglishDescriptionTest(unittest.TestCase):
+    """Followup till FAS 5.9 — _serialize_message och _serialize_processed_message_full
+    måste exponera ai_description_en så frontend (Drawer AI-tab) kan visa
+    fältet. Annars är hela kolumnen död data."""
+
+    def _row(self, **overrides):
+        from app.models import ProcessedMessage
+
+        defaults = dict(
+            id=1,
+            message_id="m1",
+            sender="x@y.com",
+            subject="s",
+            file_name="f.pdf",
+            status="saved",
+            vendor="V",
+            amount=10.0,
+            currency="EUR",
+            receipt_date="2026-04-22",
+            category="Annat",
+            summary="svensk",
+            ai_description_en=(
+                "Parking at Helsinki-Vantaa Airport P2, 22-24 April 2026"
+            ),
+            ai_confidence=90,
+        )
+        defaults.update(overrides)
+        return ProcessedMessage(**defaults)
+
+    def test_serialize_message_includes_ai_description_en(self):
+        from app.main import _serialize_message
+
+        out = _serialize_message(self._row())
+        self.assertIn("ai_description_en", out)
+        self.assertEqual(
+            out["ai_description_en"],
+            "Parking at Helsinki-Vantaa Airport P2, 22-24 April 2026",
+        )
+        # summary (SV) ska finnas kvar oförändrat
+        self.assertEqual(out["summary"], "svensk")
+
+    def test_serialize_message_full_includes_ai_description_en(self):
+        from app.main import _serialize_processed_message_full
+
+        out = _serialize_processed_message_full(self._row())
+        self.assertIn("ai_description_en", out)
+        self.assertEqual(
+            out["ai_description_en"],
+            "Parking at Helsinki-Vantaa Airport P2, 22-24 April 2026",
+        )
+
+    def test_serialize_message_null_ai_description_en_for_legacy(self):
+        """Legacy-rader saknar ai_description_en — fältet ska serialiseras
+        som None (inte saknas helt) så frontend kan rendera fallback."""
+        from app.main import _serialize_message
+
+        out = _serialize_message(self._row(ai_description_en=None))
+        self.assertIn("ai_description_en", out)
+        self.assertIsNone(out["ai_description_en"])
+
+
 class FieldMapperFallbackTest(unittest.TestCase):
     """build_receipt_params(description_override=...) — verifierar
     legacy-fallback: när ai_description_en saknas men row.summary

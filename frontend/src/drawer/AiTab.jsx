@@ -61,6 +61,13 @@ export default function AiTab({ message }) {
         </>
       ) : null}
 
+      {message.ai_description_en ? (
+        <>
+          <div className="drawer-section__label">{t.drawer.ai.descriptionEn}</div>
+          <p className="drawer-reasoning">{message.ai_description_en}</p>
+        </>
+      ) : null}
+
       <FeedbackButtons messageId={message.message_id} message={message} />
     </div>
   );

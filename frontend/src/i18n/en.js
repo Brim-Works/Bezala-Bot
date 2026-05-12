@@ -85,6 +85,7 @@ export default {
     ai: {
       analysisComplete: 'Analysis complete',
       extractedFields: 'Extracted fields',
+      descriptionEn: 'AI Description (EN)',
       reasoning: 'AI reasoning',
       vendor: 'Vendor',
       date: 'Date',
