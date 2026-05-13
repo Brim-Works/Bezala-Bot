@@ -678,6 +678,102 @@ class MatchHealthPureFunctionTest(unittest.TestCase):
         self.assertIsNone(self.svc._normalize_merchant_to_vendor(None))
         self.assertIsNone(self.svc._normalize_merchant_to_vendor(""))
 
+    # ----- FAS 5.14 — stats-aggregeringen iterar rows korrekt -----
+    def test_stats_count_auto_match_confident_correctly(self):
+        """Bug: stats.auto_match_confident var 0 trots att rows hade
+        processed_receipts med auto_match_confident=True. Räknaren ska
+        nu räkna rader där MINST en processed_receipt har flaggan satt,
+        oavsett radens verdict.category."""
+        missing = [{
+            "id": 100,
+            "description": "MIKKO KEINONEN: MOOVY, HELSINKI, FI 73.49 EUR",
+            "amount": 73.49, "currency": "EUR", "date": "2026-05-09",
+        }]
+        cand = MagicMock(
+            id=101, message_id="m-100",
+            vendor="Finavia", sender="receipts@finavia.fi",
+            amount=73.49, currency="EUR",
+            receipt_date="2026-04-24",  # 15d → 15p datum-poäng
+            file_name="finavia.pdf",
+        )
+        report = self._build(
+            missing=missing, candidates=[cand],
+            gmail_with=[], gmail_without=[],
+        )
+        row = report["rows"][0]
+        self.assertTrue(row["processed_receipts"][0]["auto_match_confident"])
+        # auto_match_confident-räknaren plockar upp raden även om dess
+        # verdict är matched_correctly (score ≥ 80).
+        self.assertEqual(report["stats"]["auto_match_confident"], 1)
+
+    def test_stats_count_multiple_candidates_above_threshold(self):
+        """Två starka kandidater över tröskel → verdict
+        multiple_candidates_above_threshold + stats-räknare ökar."""
+        missing = [{
+            "id": 200, "description": "MIKKO: ANTHROPIC, US 100.00 EUR",
+            "amount": 100.00, "currency": "EUR", "date": "2026-04-14",
+        }]
+        cand1 = MagicMock(
+            id=201, message_id="m-201", vendor="Anthropic",
+            amount=100.00, currency="EUR", receipt_date="2026-04-14",
+            file_name="a1.pdf",
+        )
+        cand2 = MagicMock(
+            id=202, message_id="m-202", vendor="Anthropic",
+            amount=100.00, currency="EUR", receipt_date="2026-04-13",
+            file_name="a2.pdf",
+        )
+        report = self._build(
+            missing=missing, candidates=[cand1, cand2],
+            gmail_with=[], gmail_without=[],
+        )
+        self.assertEqual(
+            report["stats"]["multiple_candidates_above_threshold"], 1,
+        )
+        # Matched_correctly ska INTE öka i samma rad.
+        self.assertEqual(report["stats"]["matched_correctly"], 0)
+
+    def test_stats_total_equals_sum_of_categories(self):
+        """Invariant: stats.total == summan av alla ömsesidigt
+        uteslutande verdict-räknare. `auto_match_confident` är en
+        OVERLAPPANDE signalräknare och ingår INTE i summan."""
+        missing = [
+            # 1. matched_correctly + auto_match_confident
+            {"id": 1, "description": "MIKKO: MOOVY, FI 73.49 EUR",
+             "amount": 73.49, "currency": "EUR", "date": "2026-05-09"},
+            # 2. no_receipt_exists
+            {"id": 2, "description": "MIKKO: LOVABLE, US 200.00 EUR",
+             "amount": 200.00, "currency": "EUR", "date": "2026-05-05"},
+            # 3. processed_but_no_candidate (kandidat finns men score 0)
+            {"id": 3, "description": "MIKKO: VENDORQ 50.00 EUR",
+             "amount": 50.00, "currency": "EUR", "date": "2026-04-01"},
+        ]
+        cand_for_1 = MagicMock(
+            id=11, message_id="m-1", vendor="Finavia",
+            sender="receipts@finavia.fi", amount=73.49, currency="EUR",
+            receipt_date="2026-04-24", file_name="finavia.pdf",
+        )
+        report = self._build(
+            missing=missing, candidates=[cand_for_1],
+            gmail_with=[], gmail_without=[],
+        )
+        stats = report["stats"]
+        total = stats["total"]
+        self.assertEqual(total, 3)
+        # Summera över ömsesidigt uteslutande kategorier (utan
+        # auto_match_confident, som är en parallell signal).
+        verdict_keys = (
+            "matched_correctly", "gmail_miss", "ai_extraction_wrong",
+            "match_algorithm_failed", "no_receipt_exists", "gmail_error",
+            "multiple_candidates_above_threshold", "best_below_threshold",
+            "processed_but_no_candidate", "gmail_found_not_processed",
+            "gmail_filtered_or_excluded", "already_matched",
+        )
+        verdict_sum = sum(stats[k] for k in verdict_keys)
+        self.assertEqual(verdict_sum, total)
+        # auto_match_confident ≥ 1 (rad 1) men ingår inte i summan.
+        self.assertGreaterEqual(stats["auto_match_confident"], 1)
+
 
 # ---------- Endpoint-integration ----------
 
