@@ -2792,6 +2792,15 @@ def upload_message_to_bezala(
             db.commit()
             raise HTTPException(status_code=502, detail=msg)
         metadata = fetch_bezala_metadata(bezala)
+        # FAS 5.10 — hämta vendor→account+VAT-overrides från config-tabellen.
+        from app.services.bezala_config import list_mappings as _list_mappings
+        try:
+            vendor_mappings = _list_mappings(db)
+        except Exception:  # noqa: BLE001 — config-fel får inte blockera upload
+            logger.exception(
+                "Kunde inte ladda bezala_vendor_mappings vid manuell upload",
+            )
+            vendor_mappings = []
         # FAS 5.9 — prioritera engelsk AI-beskrivning, fall tillbaka på
         # svensk summary för legacy-rader (innan ai_description_en fanns).
         description_override = row.ai_description_en or row.summary
@@ -2808,6 +2817,7 @@ def upload_message_to_bezala(
             cost_centers=metadata["cost_centers"],
             vat_rates=metadata["vat_rates"],
             description_override=description_override,
+            vendor_mappings=vendor_mappings,
         )
         # Förbereder för PR 2 (mappnings-jämförelse) — logga komplett
         # params-payload så vi kan se exakt vad Bezala får i upload-flödet.
