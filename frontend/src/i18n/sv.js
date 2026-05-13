@@ -85,7 +85,7 @@ export default {
     ai: {
       analysisComplete: 'Analys klar',
       extractedFields: 'Extraherade fält',
-      descriptionEn: 'AI-beskrivning (EN)',
+      descriptionEn: 'AI-beskrivning (engelska)',
       reasoning: 'AI-resonemang',
       vendor: 'Leverantör',
       date: 'Datum',

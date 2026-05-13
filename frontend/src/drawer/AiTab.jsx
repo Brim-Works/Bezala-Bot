@@ -64,7 +64,7 @@ export default function AiTab({ message }) {
       {message.ai_description_en ? (
         <>
           <div className="drawer-section__label">{t.drawer.ai.descriptionEn}</div>
-          <p className="drawer-reasoning">{message.ai_description_en}</p>
+          <p className="drawer-reasoning drawer-reasoning--subtle">{message.ai_description_en}</p>
         </>
       ) : null}
 
