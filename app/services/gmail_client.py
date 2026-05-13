@@ -36,14 +36,32 @@ SCOPES = [
 
 DONE_LABEL = "Bezala-Klar"
 
+GMAIL_MAX_AGE = "1y"  # Don't fetch emails older than this
+
 # Gmail-query: minst en bilaga, inte i Promotions/Social/Updates/Spam/Trash,
 # inte redan bearbetad. Gmail auto-expanderar varianter av etikettnamnet.
 DEFAULT_QUERY = (
     "has:attachment "
     "-category:promotions -category:social -category:updates "
     "-in:spam -in:trash "
-    f'-label:"{DONE_LABEL}"'
+    f'-label:"{DONE_LABEL}" '
+    f"newer_than:{GMAIL_MAX_AGE}"
 )
+
+
+def _has_explicit_date_clause(query: str) -> bool:
+    """True om callern har satt ett eget datumfönster (after:/before:/
+    newer_than:/older_than:). Då injicerar vi inte GMAIL_MAX_AGE."""
+    q = query.lower()
+    return any(tok in q for tok in ("after:", "before:", "newer_than:", "older_than:"))
+
+
+def _apply_max_age(query: str) -> str:
+    """Lägg till `newer_than:GMAIL_MAX_AGE` om query saknar explicit datum.
+    Skyddar pipelinen från att hämta urgamla mail (t.ex. 2021-kvitton)."""
+    if _has_explicit_date_clause(query):
+        return query
+    return f"{query} newer_than:{GMAIL_MAX_AGE}".strip()
 
 
 @dataclass
@@ -153,6 +171,7 @@ class GmailClient:
     def list_candidate_message_ids(
         self, query: str = DEFAULT_QUERY, max_results: int = 50
     ) -> list[str]:
+        query = _apply_max_age(query)
         ids: list[str] = []
         page_token: str | None = None
         while True:
