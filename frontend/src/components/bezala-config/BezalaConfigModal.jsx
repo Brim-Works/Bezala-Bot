@@ -53,7 +53,7 @@ export default function BezalaConfigModal({
 
   return (
     <div
-      className="modal-overlay"
+      className="modal-shell"
       role="dialog"
       aria-label={isEdit ? strings.modal.editTitle : strings.modal.addTitle}
       data-testid="bezala-config-modal"
