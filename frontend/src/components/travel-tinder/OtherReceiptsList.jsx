@@ -51,6 +51,14 @@ function ReceiptRow({ message, onClick, isAiSuggestion, isSelectedCandidate, sco
   ]
     .filter(Boolean)
     .join(' ');
+  const coupledTooltip = coupled
+    ? (t.travelTinder.coupledTooltip || '').replace(
+        '{txId}',
+        message.bezala_transaction_id != null
+          ? String(message.bezala_transaction_id)
+          : '—',
+      )
+    : null;
   return (
     <button
       type="button"
@@ -59,6 +67,8 @@ function ReceiptRow({ message, onClick, isAiSuggestion, isSelectedCandidate, sco
       data-testid={`tt-receipt-${message.id}`}
       data-coupled={coupled || false}
       data-selected={isSelectedCandidate || false}
+      title={coupledTooltip || undefined}
+      aria-label={coupledTooltip || undefined}
     >
       <VendorLogo name={message.vendor || message.sender} size={20} />
       <div className="tt-receipt__body">
@@ -68,8 +78,11 @@ function ReceiptRow({ message, onClick, isAiSuggestion, isSelectedCandidate, sco
             <span className="muted">—</span>
           )}
           {coupled ? (
-            <span className="tt-receipt__tag mono">
-              {t.travelTinder.coupledTag}
+            <span
+              className="tt-receipt__tag tt-receipt__tag--coupled mono"
+              data-testid={`tt-receipt-coupled-${message.id}`}
+            >
+              🔗 {t.travelTinder.coupledTag}
             </span>
           ) : null}
           {isSelectedCandidate ? (

@@ -719,6 +719,7 @@ export default {
     skipped: 'Hoppade över förslag',
     noMoreSuggestions: 'Ingen AI-match — välj manuellt',
     coupledTag: 'Kopplad',
+    coupledTooltip: 'Redan kopplad till Bezala-rad {txId} — kan inte kopplas igen',
     otherReceipts: 'Andra kvitton',
     receiptsCount: '{shown} av {total} kvitton',
     search: 'Sök leverantör, filnamn, belopp…',

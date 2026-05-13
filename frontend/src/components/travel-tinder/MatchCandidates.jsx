@@ -135,14 +135,24 @@ function CandidateCard({
         </button>
         <button
           type="button"
-          className="btn primary"
+          className="btn primary tt-candidate-couple-btn"
           onClick={onCouple}
           disabled={coupling}
+          aria-busy={coupling || undefined}
           data-testid="tt-candidate-couple"
         >
-          {coupling
-            ? t.match.matching
-            : t.travelTinder.candidates.couple + ' →'}
+          {coupling ? (
+            <>
+              <span
+                className="tt-spinner"
+                aria-hidden="true"
+                data-testid="tt-candidate-couple-spinner"
+              />
+              <span>{t.match.matching}</span>
+            </>
+          ) : (
+            t.travelTinder.candidates.couple + ' →'
+          )}
         </button>
       </div>
     </article>

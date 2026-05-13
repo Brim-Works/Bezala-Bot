@@ -148,13 +148,6 @@ export default function FeedbackModal({ open, onClose, onSaved, messageId, messa
           <div
             className="feedback-info-banner"
             data-testid="feedback-not-receipt-info"
-            style={{
-              padding: '12px',
-              background: 'var(--bg-info, #f0f4ff)',
-              borderRadius: '6px',
-              fontSize: '13px',
-              marginBottom: '16px',
-            }}
           >
             {notReceiptInfo}
           </div>

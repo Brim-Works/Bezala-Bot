@@ -718,6 +718,7 @@ export default {
     skipped: 'Skipped suggestion',
     noMoreSuggestions: 'No AI match — pick manually',
     coupledTag: 'Coupled',
+    coupledTooltip: 'Already coupled to Bezala row {txId} — cannot be re-coupled',
     otherReceipts: 'Other receipts',
     receiptsCount: '{shown} of {total} receipts',
     search: 'Search vendor, filename, amount…',
