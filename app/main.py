@@ -2439,18 +2439,49 @@ def match_message_to_bezala(
                 detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
             )
 
-        description = row.file_name
-        if description.lower().endswith(".pdf"):
-            description = description[:-4]
+        # FAS 5.17 — description-prioritet i match-flödet (samma logik
+        # som upload-flödet, så Bezala-draften alltid får en meningsfull
+        # beskrivning):
+        #   1. mapping.description_override (bezala_vendor_mappings)
+        #   2. row.ai_description_en  (engelsk AI-beskrivning, PR #30)
+        #   3. row.summary            (legacy-rader innan ai_description_en)
+        #   4. file_name utan .pdf    (sista failsafe)
+        from app.services.bezala_config import list_mappings as _list_mappings
+        from app.services.bezala_field_mapper import find_vendor_mapping
+        try:
+            vendor_mappings = _list_mappings(db)
+        except Exception:  # noqa: BLE001 — config-fel får inte blockera match
+            logger.exception(
+                "match-to-bezala: kunde inte ladda bezala_vendor_mappings"
+            )
+            vendor_mappings = []
+        mapping = find_vendor_mapping(row.vendor, vendor_mappings)
+        if mapping is None:
+            mapping_desc_raw = None
+        elif isinstance(mapping, dict):
+            mapping_desc_raw = mapping.get("description_override")
+        else:
+            mapping_desc_raw = getattr(mapping, "description_override", None)
+        mapping_desc = (mapping_desc_raw or "").strip() if mapping_desc_raw else ""
+        filename_desc = row.file_name
+        if filename_desc and filename_desc.lower().endswith(".pdf"):
+            filename_desc = filename_desc[:-4]
+        description = (
+            mapping_desc
+            or (row.ai_description_en or "").strip()
+            or (row.summary or "").strip()
+            or filename_desc
+        )
         # Förbereder för PR 2 (återinför metadata i match-flödet) — logga
         # den effektiva payload som skickas idag så vi kan jämföra mot
         # framtida varianter. Mikko kontrollerar denna rad i prod-logs.
         logger.info(
             "MATCH-TO-BEZALA payload: message_id=%s bill_line_id=%s "
             "description=%r vendor=%r category=%r amount=%s currency=%s "
-            "receipt_date=%s sender=%r",
+            "receipt_date=%s sender=%r mapping=%s",
             msg_id, bill_line_id, description, row.vendor, row.category,
             row.amount, row.currency, row.receipt_date, row.sender,
+            bool(mapping),
         )
         bezala.attach_file(
             bill_line_id, row.file_name, pdf_bytes,

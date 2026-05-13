@@ -1158,11 +1158,10 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertIn("missing_receipt", body[0])
         self.assertIn("suggestions", body[0])
 
-    def test_match_to_bezala_links_via_bill_line_id(self):
-        """Match-flödet anropar attach_file med bill_line_id (UI:s
-        'Koppla till existerande'-flöde) — inga metadata, inga PUT."""
-        mid = self._seed_processed()
-
+    def _run_match(self, mid: int, missing_receipt_id: int = 2163467):
+        """Helper — mockar Drive + Bezala och kör match-to-bezala-endpointen.
+        Returnerar (response, fake_bezala) så tester kan inspektera
+        attach_file-anropet."""
         fake_drive = MagicMock()
         fake_drive.download_pdf.return_value = PDF_BYTES
 
@@ -1175,8 +1174,15 @@ class CardMatchingEndpointsTest(unittest.TestCase):
              patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
             resp = self.client.post(
                 f"/api/messages/{mid}/match-to-bezala",
-                json={"missing_receipt_id": 2163467},
+                json={"missing_receipt_id": missing_receipt_id},
             )
+        return resp, fake_bezala
+
+    def test_match_to_bezala_links_via_bill_line_id(self):
+        """Match-flödet anropar attach_file med bill_line_id (UI:s
+        'Koppla till existerande'-flöde) — inga metadata, inga PUT."""
+        mid = self._seed_processed()
+        resp, fake_bezala = self._run_match(mid)
 
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
@@ -1191,11 +1197,77 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         fake_bezala.list_vat_rates.assert_not_called()
 
         # attach_file anropas med bill_line_id + filename + pdf +
-        # description (filnamn utan .pdf) — inga andra metadata
+        # description. När varken mapping, ai_description_en eller
+        # summary finns faller vi tillbaka på filnamnet (utan .pdf).
         fake_bezala.attach_file.assert_called_once_with(
             "2163467", "20260414 Anthropic API.pdf", PDF_BYTES,
             description="20260414 Anthropic API",
         )
+
+    def test_match_flow_passes_ai_description_en(self):
+        """FAS 5.17 — match-flödet skickar row.ai_description_en till
+        Bezala när inget mapping-override finns. Detta är fix:en för
+        bugg: Bezala-draft hade tomt description-fält efter Couple."""
+        mid = self._seed_processed(
+            vendor="Lovable",
+            ai_description_en="Lovable Pro 3 subscription, May 5–Jun 5, 2026",
+            file_name="20260505 Lovable.pdf",
+        )
+        resp, fake_bezala = self._run_match(mid)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        fake_bezala.attach_file.assert_called_once_with(
+            "2163467", "20260505 Lovable.pdf", PDF_BYTES,
+            description="Lovable Pro 3 subscription, May 5–Jun 5, 2026",
+        )
+
+    def test_match_flow_uses_mapping_override_when_present(self):
+        """mapping.description_override har högsta prio — överstyr även
+        ai_description_en."""
+        from app.models import BezalaVendorMapping
+        with self.SessionLocal() as db:
+            db.add(BezalaVendorMapping(
+                vendor_pattern="lovable",
+                bezala_account_id=4000,
+                vat_rate=0,
+                description_override="Lovable AI subscription (mapped)",
+            ))
+            db.commit()
+        mid = self._seed_processed(
+            vendor="Lovable",
+            ai_description_en="Lovable Pro 3 subscription, May 5–Jun 5, 2026",
+        )
+        resp, fake_bezala = self._run_match(mid)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        self.assertEqual(kwargs["description"], "Lovable AI subscription (mapped)")
+
+    def test_match_flow_falls_back_to_summary_for_legacy_rows(self):
+        """Legacy-rader saknar ai_description_en men har row.summary
+        (svensk AI-sammanfattning från tidigare versioner)."""
+        mid = self._seed_processed(
+            vendor="Finnair",
+            ai_description_en=None,
+            summary="Flygbiljett HEL–ARN 14 april 2026",
+            file_name="20260414 Finnair.pdf",
+        )
+        resp, fake_bezala = self._run_match(mid)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        self.assertEqual(kwargs["description"], "Flygbiljett HEL–ARN 14 april 2026")
+
+    def test_match_flow_payload_includes_description_field(self):
+        """Integrationssäkring: attach_file-anropet (mockad Bezala-API)
+        innehåller faktiskt description-kwarg — inte bara file/bill_line_id.
+        Förhindrar regression där description tappas på vägen."""
+        mid = self._seed_processed(
+            ai_description_en="Anthropic API usage — april 2026",
+        )
+        resp, fake_bezala = self._run_match(mid)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(fake_bezala.attach_file.call_count, 1)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        self.assertIn("description", kwargs)
+        self.assertEqual(kwargs["description"], "Anthropic API usage — april 2026")
 
     def test_match_to_bezala_404_for_missing_message(self):
         resp = self.client.post(
