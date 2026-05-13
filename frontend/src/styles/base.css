@@ -3302,9 +3302,24 @@ html[data-theme='B'] .modal__title {
 
 .tt-receipts__toolbar {
   display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tt-receipts__toolbar-row {
+  display: flex;
   flex-wrap: wrap;
   gap: 8px;
   align-items: center;
+}
+
+.tt-receipts__toolbar-row--search .tt-search {
+  width: 100%;
+  flex: 1 1 100%;
+}
+
+.tt-receipts__toolbar-spacer {
+  flex: 1 1 auto;
 }
 
 .tt-search {

@@ -155,83 +155,6 @@ export default function OtherReceiptsList({
 
   return (
     <div className="tt-receipts" data-testid="tt-receipts">
-      <div className="tt-receipts__toolbar">
-        <input
-          type="search"
-          className="tt-search"
-          placeholder={t.travelTinder.search}
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          data-testid="tt-search"
-          aria-label={t.travelTinder.search}
-        />
-        <select
-          className="tt-select"
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          data-testid="tt-filter-status"
-          aria-label={t.travelTinder.filterStatus}
-        >
-          <option value="all">{t.travelTinder.filterStatusAll}</option>
-          <option value="uncoupled">
-            {t.travelTinder.filterStatusUncoupled}
-          </option>
-          <option value="coupled">{t.travelTinder.filterStatusCoupled}</option>
-        </select>
-        <select
-          className="tt-select"
-          value={dateFilter}
-          onChange={(e) => setDateFilter(e.target.value)}
-          data-testid="tt-filter-date"
-          aria-label={t.travelTinder.filterDate}
-        >
-          <option value="7d">{t.travelTinder.filterDate7d}</option>
-          <option value="30d">{t.travelTinder.filterDate30d}</option>
-          <option value="90d">{t.travelTinder.filterDate90d}</option>
-          <option value="all">{t.travelTinder.filterDateAll}</option>
-        </select>
-        <select
-          className="tt-select"
-          value={currencyFilter}
-          onChange={(e) => setCurrencyFilter(e.target.value)}
-          data-testid="tt-filter-currency"
-          aria-label={t.travelTinder.filterCurrency}
-        >
-          <option value="all">{t.travelTinder.filterStatusAll}</option>
-          {currencies.map((c) => (
-            <option key={c} value={c}>
-              {c}
-            </option>
-          ))}
-        </select>
-        <select
-          className="tt-select"
-          value={sortBy}
-          onChange={(e) => setSortBy(e.target.value)}
-          data-testid="tt-sort-by"
-          aria-label={t.travelTinder.sort}
-        >
-          <option value="processed_at">{t.travelTinder.sortProcessed}</option>
-          <option value="receipt_date">{t.travelTinder.sortDate}</option>
-          <option value="amount">{t.travelTinder.sortAmount}</option>
-          <option value="vendor">{t.travelTinder.sortVendor}</option>
-        </select>
-        <button
-          type="button"
-          className="tt-sort-dir"
-          onClick={() => setSortDir(sortDir === 'desc' ? 'asc' : 'desc')}
-          data-testid="tt-sort-dir"
-          aria-label={
-            sortDir === 'desc' ? t.travelTinder.sortDesc : t.travelTinder.sortAsc
-          }
-          title={
-            sortDir === 'desc' ? t.travelTinder.sortDesc : t.travelTinder.sortAsc
-          }
-        >
-          {sortDir === 'desc' ? '↓' : '↑'}
-        </button>
-      </div>
-
       <div className="tt-receipts__main">
         {selected ? (
           tinderCard
@@ -253,6 +176,88 @@ export default function OtherReceiptsList({
                 String(allMessages.filter((m) => m.id !== aiSuggestionId).length),
               )}
           </span>
+        </div>
+
+        <div className="tt-receipts__toolbar">
+          <div className="tt-receipts__toolbar-row tt-receipts__toolbar-row--search">
+            <input
+              type="search"
+              className="tt-search"
+              placeholder={t.travelTinder.search}
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              data-testid="tt-search"
+              aria-label={t.travelTinder.search}
+            />
+          </div>
+          <div className="tt-receipts__toolbar-row tt-receipts__toolbar-row--filters">
+            <select
+              className="tt-select"
+              value={statusFilter}
+              onChange={(e) => setStatusFilter(e.target.value)}
+              data-testid="tt-filter-status"
+              aria-label={t.travelTinder.filterStatus}
+            >
+              <option value="all">{t.travelTinder.filterStatusAll}</option>
+              <option value="uncoupled">
+                {t.travelTinder.filterStatusUncoupled}
+              </option>
+              <option value="coupled">{t.travelTinder.filterStatusCoupled}</option>
+            </select>
+            <select
+              className="tt-select"
+              value={dateFilter}
+              onChange={(e) => setDateFilter(e.target.value)}
+              data-testid="tt-filter-date"
+              aria-label={t.travelTinder.filterDate}
+            >
+              <option value="7d">{t.travelTinder.filterDate7d}</option>
+              <option value="30d">{t.travelTinder.filterDate30d}</option>
+              <option value="90d">{t.travelTinder.filterDate90d}</option>
+              <option value="all">{t.travelTinder.filterDateAll}</option>
+            </select>
+            <select
+              className="tt-select"
+              value={currencyFilter}
+              onChange={(e) => setCurrencyFilter(e.target.value)}
+              data-testid="tt-filter-currency"
+              aria-label={t.travelTinder.filterCurrency}
+            >
+              <option value="all">{t.travelTinder.filterStatusAll}</option>
+              {currencies.map((c) => (
+                <option key={c} value={c}>
+                  {c}
+                </option>
+              ))}
+            </select>
+            <span className="tt-receipts__toolbar-spacer" aria-hidden="true" />
+            <select
+              className="tt-select"
+              value={sortBy}
+              onChange={(e) => setSortBy(e.target.value)}
+              data-testid="tt-sort-by"
+              aria-label={t.travelTinder.sort}
+            >
+              <option value="processed_at">{t.travelTinder.sortProcessed}</option>
+              <option value="receipt_date">{t.travelTinder.sortDate}</option>
+              <option value="amount">{t.travelTinder.sortAmount}</option>
+              <option value="vendor">{t.travelTinder.sortVendor}</option>
+            </select>
+            <button
+              type="button"
+              className="tt-sort-dir"
+              onClick={() => setSortDir(sortDir === 'desc' ? 'asc' : 'desc')}
+              data-testid="tt-sort-dir"
+              aria-label={
+                sortDir === 'desc' ? t.travelTinder.sortDesc : t.travelTinder.sortAsc
+              }
+              title={
+                sortDir === 'desc' ? t.travelTinder.sortDesc : t.travelTinder.sortAsc
+              }
+            >
+              {sortDir === 'desc' ? '↓' : '↑'}
+            </button>
+          </div>
         </div>
 
         {isLoading ? (
