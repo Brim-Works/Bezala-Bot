@@ -236,11 +236,14 @@ def run_scan(max_results: int = 50) -> ScanResult:
             )
             # Hämta referensdata en gång per scan — inte per kvitto.
             bezala_metadata = fetch_bezala_metadata(bezala)
+            bezala_metadata["vendor_mappings"] = _load_vendor_mappings()
             logger.info(
-                "Bezala metadata: accounts=%d cost_centers=%d vat_rates=%d",
+                "Bezala metadata: accounts=%d cost_centers=%d vat_rates=%d "
+                "vendor_mappings=%d",
                 len(bezala_metadata["accounts"]),
                 len(bezala_metadata["cost_centers"]),
                 len(bezala_metadata["vat_rates"]),
+                len(bezala_metadata["vendor_mappings"]),
             )
         except BezalaError as exc:
             logger.warning("Bezala-klienten kunde inte initialiseras: %s", exc)
@@ -355,6 +358,28 @@ def fetch_bezala_metadata(bezala: BezalaClient) -> dict:
     }
 
 
+def _load_vendor_mappings() -> list:
+    """Hämta bezala_vendor_mappings en gång per scan. Sväljer DB-fel —
+    upload-flödet ska INTE krascha om config-tabellen är otillgänglig,
+    bara faller tillbaka på kategori-baserad logik."""
+    try:
+        from app.services.bezala_config import list_mappings
+        with session_scope() as db:
+            rows = list_mappings(db)
+            return [
+                {
+                    "vendor_pattern": r.vendor_pattern,
+                    "bezala_account_id": r.bezala_account_id,
+                    "vat_rate": r.vat_rate,
+                    "description_override": r.description_override,
+                }
+                for r in rows
+            ]
+    except Exception:  # noqa: BLE001
+        logger.exception("Kunde inte ladda bezala_vendor_mappings — fortsätter utan")
+        return []
+
+
 def _attempt_bezala_upload(
     bezala: BezalaClient | None,
     analysis: ReceiptAnalysis | None,
@@ -413,6 +438,8 @@ def _attempt_bezala_upload(
         vat_rates=meta["vat_rates"],
         # FAS 5.9 — använd AI-genererad engelsk Bezala-beskrivning
         description_override=analysis.description_en,
+        # FAS 5.10 — vendor→account+VAT-overrides (Moovy/Finavia → 67113 25.5%)
+        vendor_mappings=meta.get("vendor_mappings") or [],
     )
     # vat_lines=[] är OK — Bezala använder kontots default_vat_id
     # automatiskt. Vi fortsätter med upload.
@@ -1047,6 +1074,7 @@ def reprocess_gmail_window(
         try:
             bezala = BezalaClient()
             bezala_metadata = fetch_bezala_metadata(bezala)
+            bezala_metadata["vendor_mappings"] = _load_vendor_mappings()
         except BezalaError as exc:
             logger.warning(
                 "reprocess_gmail_window: Bezala-init misslyckades: %s", exc,

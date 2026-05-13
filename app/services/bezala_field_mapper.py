@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import logging
 import os
-from typing import Iterable
+from decimal import Decimal, InvalidOperation
+from typing import Any, Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -709,6 +710,78 @@ def build_vat_lines_attributes(
     return [entry]
 
 
+def _mapping_attr(mapping: Any, key: str) -> Any:
+    """Plocka ut attribut/key från ett mapping-objekt. Funkar både för
+    SQLAlchemy-rader (BezalaVendorMapping) och dict-likt-objekt — så
+    bezala_field_mapper kan förbli pure (utan ORM-import)."""
+    if mapping is None:
+        return None
+    if isinstance(mapping, dict):
+        return mapping.get(key)
+    return getattr(mapping, key, None)
+
+
+def find_vendor_mapping(
+    vendor: str | None, mappings: Iterable[Any] | None,
+) -> Any | None:
+    """Substring-match (case-insensitive) vendor mot vendor_pattern. Första
+    träffen vinner — anropare ska sortera om de vill ha deterministisk
+    prioritering."""
+    if not vendor or not mappings:
+        return None
+    needle = vendor.lower()
+    for m in mappings:
+        pattern = _mapping_attr(m, "vendor_pattern")
+        if pattern and str(pattern).lower() in needle:
+            return m
+    return None
+
+
+def _rate_to_decimal_string(rate: Any) -> str | None:
+    """Översätt en VAT-procent (t.ex. Decimal('25.50')) till Bezalas
+    tax_percentage-format (t.ex. '0.255'). Returnerar None om input
+    inte är numerisk."""
+    if rate is None:
+        return None
+    try:
+        d = Decimal(str(rate)) / Decimal("100")
+    except (InvalidOperation, ValueError):
+        return None
+    normalized = d.normalize()
+    s = format(normalized, "f")
+    if "." not in s:
+        s += ".0"
+    return s
+
+
+def _vat_code_for_rate(rate: Any) -> int | None:
+    """Reverse-lookup: vilket vat_code_id matchar den här procenten?
+    Använder VAT_PERCENTAGE_BY_CODE för FI-verifierade koder. Returnerar
+    None om ingen match (då faller vi tillbaka på account.default_vat_id)."""
+    target_str = _rate_to_decimal_string(rate)
+    if target_str is None:
+        return None
+    target = Decimal(target_str)
+    for code, pct_str in VAT_PERCENTAGE_BY_CODE.items():
+        if pct_str is None:
+            continue
+        try:
+            if Decimal(pct_str) == target:
+                return code
+        except InvalidOperation:
+            continue
+    return None
+
+
+def _find_account_by_id(accounts: Iterable[dict], target_id: int) -> dict | None:
+    for row in accounts or ():
+        if not isinstance(row, dict):
+            continue
+        if row.get("id") == target_id or row.get("account_id") == target_id:
+            return row
+    return None
+
+
 def build_receipt_params(
     *,
     file_name: str | None,
@@ -725,6 +798,7 @@ def build_receipt_params(
     preferred_cost_center: str | None = None,
     preferred_cost_center_id: int | None = None,
     description_override: str | None = None,
+    vendor_mappings: Iterable[Any] | None = None,
 ) -> dict:
     """Bygger en komplett kwargs-dict för BezalaClient.upload_receipt().
 
@@ -740,16 +814,29 @@ def build_receipt_params(
     vat_lines_attributes. Dessutom amount/currency/vendor för logging/UI
     (inte skickade till Bezala men användbara för UI-toast)."""
     country = sender_to_country(sender, vendor)
-    account = select_account(accounts, category)
+    mapping = find_vendor_mapping(vendor, vendor_mappings)
+
+    if mapping is not None:
+        forced_account_id = _mapping_attr(mapping, "bezala_account_id")
+        account = _find_account_by_id(accounts, forced_account_id) or {
+            "id": forced_account_id,
+            "name": None,
+            "default_vat_id": None,
+        }
+    else:
+        account = select_account(accounts, category)
+
     cost_center = select_default_cost_center(
         cost_centers,
         preferred_name=preferred_cost_center,
         preferred_id=preferred_cost_center_id,
     )
 
-    # Välj vat_rate för fallback om account.default_vat_id saknas
+    # Välj vat_rate för fallback om account.default_vat_id saknas.
+    # Mapping forcerar sin egen rate efter att linjerna byggts, så vi
+    # behöver inte slå upp Bezalas vat_rates-lista när mapping finns.
     vat_rate_fallback: dict | None = None
-    if vat_rates and account and account.get("default_vat_id") is None:
+    if mapping is None and vat_rates and account and account.get("default_vat_id") is None:
         vat_rate_fallback = select_vat_rate(
             vat_rates, country=country, category=category,
         )
@@ -762,11 +849,40 @@ def build_receipt_params(
         vat_rate=vat_rate_fallback,
     )
 
-    # FAS 5.9 — engelsk Bezala-beskrivning prioriteras när AI:n producerade
-    # en. description_override kan vara analysis.description_en (nya rader)
-    # eller row.ai_description_en/row.summary (legacy/manuell omladdning).
-    override = (description_override or "").strip() if description_override else ""
-    description = override or build_description(
+    if mapping is not None:
+        mapped_rate = _mapping_attr(mapping, "vat_rate")
+        mapped_tax_pct = _rate_to_decimal_string(mapped_rate)
+        mapped_vat_code_id = _vat_code_for_rate(mapped_rate)
+        if not vat_lines_attributes and amount is not None:
+            entry: dict = {
+                "taxable": f"{float(amount):.2f}",
+                "tax_percentage": mapped_tax_pct or "0.0",
+                "currency": currency or "EUR",
+                "expense_account_id": forced_account_id,
+            }
+            if mapped_vat_code_id is not None:
+                entry["vat_code_id"] = mapped_vat_code_id
+            if cost_center is not None:
+                cc_id = cost_center.get("id") or cost_center.get("cost_center_id")
+                if cc_id is not None:
+                    entry["cost_center_ids"] = [cc_id]
+            vat_lines_attributes = [entry]
+        else:
+            for entry in vat_lines_attributes:
+                if mapped_tax_pct is not None:
+                    entry["tax_percentage"] = mapped_tax_pct
+                entry["expense_account_id"] = forced_account_id
+                if mapped_vat_code_id is not None:
+                    entry["vat_code_id"] = mapped_vat_code_id
+
+    # Description-prioritet:
+    #   1. mapping.description_override (bezala_vendor_mappings)
+    #   2. description_override (ai_description_en eller row.summary)
+    #   3. build_description(file_name, ...)
+    mapping_desc_raw = _mapping_attr(mapping, "description_override")
+    mapping_desc = (mapping_desc_raw or "").strip() if mapping_desc_raw else ""
+    caller_override = (description_override or "").strip() if description_override else ""
+    description = mapping_desc or caller_override or build_description(
         file_name, vendor=vendor, subject=subject, receipt_date=receipt_date,
     )
     params: dict = {
@@ -795,6 +911,13 @@ def build_receipt_params(
         DEFAULT_CREDIT_ACCOUNT_ID,
         len(vat_lines_attributes),
     )
+    if mapping is not None:
+        logger.info(
+            "Applied vendor mapping: %s → account %s, VAT %s%%",
+            _mapping_attr(mapping, "vendor_pattern"),
+            _mapping_attr(mapping, "bezala_account_id"),
+            _mapping_attr(mapping, "vat_rate"),
+        )
     return params
 
 
