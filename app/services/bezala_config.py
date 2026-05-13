@@ -20,10 +20,15 @@ from app.models import BezalaVendorMapping, MaintenanceTask
 logger = logging.getLogger(__name__)
 
 
-SEED_TASK_NAME = "seed_bezala_vendor_mappings_v1"
+SEED_TASK_NAME = "seed_bezala_vendor_mappings_v2"
 
 
 # (vendor_pattern, bezala_account_id, vat_rate, description_override)
+#
+# AI-verktyg (Lovable, Anthropic, Cursor) bokförs på "AI työkalut" (166648)
+# med VAT 0% — alla tre fakturerar Mikko som EU-OSS-registrerade leverantörer
+# vilket innebär omvänd skattskyldighet ("Purchases Abroad (EU)") i Bezala.
+# description_override=None → ai_description_en flödar genom (C8).
 DEFAULT_MAPPINGS: tuple[tuple[str, int, str, str | None], ...] = (
     (
         "moovy",
@@ -36,6 +41,24 @@ DEFAULT_MAPPINGS: tuple[tuple[str, int, str, str | None], ...] = (
         67113,
         "25.50",
         "Parking at Helsinki-Vantaa Airport P2",
+    ),
+    (
+        "lovable",
+        166648,
+        "0.00",
+        None,
+    ),
+    (
+        "anthropic",
+        166648,
+        "0.00",
+        None,
+    ),
+    (
+        "cursor",
+        166648,
+        "0.00",
+        None,
     ),
 )
 
