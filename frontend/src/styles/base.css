@@ -2707,6 +2707,12 @@ html[data-theme='B'] .chip-editor__box {
   padding: 12px 14px;
 }
 
+.drawer-reasoning--subtle {
+  font-size: 11.5px;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .drawer-drive-preview {
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
