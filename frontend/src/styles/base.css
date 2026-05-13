@@ -3068,6 +3068,43 @@ html[data-theme='B'] .modal__title {
   margin-top: 4px;
 }
 
+.feedback-info-banner {
+  padding: 12px;
+  background: color-mix(in oklch, var(--info) 12%, var(--surface-2));
+  border: 1px solid color-mix(in oklch, var(--info) 25%, var(--border));
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 16px;
+}
+
+.tt-candidate-couple-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.tt-spinner {
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 50%;
+  animation: tt-spinner-rotate 0.7s linear infinite;
+}
+
+@keyframes tt-spinner-rotate {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tt-spinner {
+    animation-duration: 2.5s;
+  }
+}
+
 /* ========== Print ========== */
 @media print {
   body {
@@ -3448,6 +3485,12 @@ html[data-theme='B'] .modal__title {
   color: var(--muted);
   padding: 1px 6px;
   border-radius: 999px;
+}
+
+.tt-receipt__tag--coupled {
+  background: color-mix(in oklch, var(--warn) 18%, var(--surface-3));
+  color: var(--text-2);
+  border: 1px solid color-mix(in oklch, var(--warn) 30%, var(--border));
 }
 
 .tt-receipt__meta {

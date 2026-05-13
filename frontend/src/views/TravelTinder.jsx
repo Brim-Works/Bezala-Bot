@@ -123,6 +123,10 @@ export default function TravelTinder() {
   const [sortDir, setSortDir] = useState(persisted.sortDir || 'desc');
 
   const [matching, setMatching] = useState(false);
+  // Synchronous re-entry guard. setMatching(true) is async — a rapid
+  // second click on Couple can fire onConfirm before React re-renders
+  // with disabled=true. The ref blocks that path synchronously.
+  const matchingLockRef = useRef(false);
   const [pdfPreviewMessage, setPdfPreviewMessage] = useState(null);
 
   // FAS 8.5 — Matchade-vy state. mode persistas separat så användaren
@@ -381,9 +385,16 @@ export default function TravelTinder() {
   // aiContext: { score, score_breakdown } när det kommer från AI-kortet,
   // null vid manuell koppling. Vid framgång rensas båda valen, nästa
   // korttrans väljs och listorna uppdateras.
+  //
+  // FAS 5.19 — matchingLockRef ger synkront re-entry-skydd. setMatching
+  // är async, så en snabb dubbel-klick hinner annars fyra fram en andra
+  // onClick innan React renderar disabled=true → två rader kopplas till
+  // samma bill_line. Refen blockerar det synkront.
   const couple = useCallback(
     async (messageRow, missingReceiptId, aiContext = null) => {
       if (matching || !messageRow || !missingReceiptId) return;
+      if (matchingLockRef.current) return;
+      matchingLockRef.current = true;
       setMatching(true);
       try {
         await api.matchToBezala(messageRow.id, missingReceiptId);
@@ -418,6 +429,7 @@ export default function TravelTinder() {
         });
       } finally {
         setMatching(false);
+        matchingLockRef.current = false;
       }
     },
     [
