@@ -3,13 +3,13 @@ import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount } from '../../lib/format.js';
 import VendorLogo from '../VendorLogo.jsx';
 
-/* Höger panel: toolbar (sök/filter/sort), tinder-kort (slot), listrubrik
- * "Andra kvitton" och raderna. Coupled-rader visas grayade om
+/* Höger panel: toolbar (sök/filter/sort), match-kandidat-block (slot),
+ * listrubrik "Andra kvitton" och raderna. Coupled-rader visas grayade om
  * statusFilter inte exkluderar dem. AI-förslaget filtreras bort från
  * andra-listan eftersom det visas separat ovanför.
  *
  * När ingen korttrans är vald visas UploadCard som default-content
- * istället för TinderCard. */
+ * istället för kandidat-korten. */
 
 const DATE_BUCKETS = {
   '7d': 7,
@@ -40,18 +40,25 @@ function compareBy(a, b, key, dir) {
   return String(av).localeCompare(String(bv)) * sign;
 }
 
-function ReceiptRow({ message, onClick, isAiSuggestion, score }) {
+function ReceiptRow({ message, onClick, isAiSuggestion, isSelectedCandidate, score }) {
   const { t, lang } = useI18n();
   const coupled = message.coupled;
+  const classes = [
+    'tt-receipt',
+    coupled ? 'is-coupled' : '',
+    isAiSuggestion ? 'is-ai-suggestion' : '',
+    isSelectedCandidate ? 'is-selected-candidate' : '',
+  ]
+    .filter(Boolean)
+    .join(' ');
   return (
     <button
       type="button"
-      className={`tt-receipt ${coupled ? 'is-coupled' : ''} ${
-        isAiSuggestion ? 'is-ai-suggestion' : ''
-      }`}
+      className={classes}
       onClick={() => onClick(message)}
       data-testid={`tt-receipt-${message.id}`}
       data-coupled={coupled || false}
+      data-selected={isSelectedCandidate || false}
     >
       <VendorLogo name={message.vendor || message.sender} size={20} />
       <div className="tt-receipt__body">
@@ -63,6 +70,11 @@ function ReceiptRow({ message, onClick, isAiSuggestion, score }) {
           {coupled ? (
             <span className="tt-receipt__tag mono">
               {t.travelTinder.coupledTag}
+            </span>
+          ) : null}
+          {isSelectedCandidate ? (
+            <span className="tt-receipt__tag tt-receipt__tag--selected mono">
+              {t.travelTinder.candidates.selectedBadge}
             </span>
           ) : null}
           {isAiSuggestion ? (
@@ -88,6 +100,7 @@ export default function OtherReceiptsList({
   allMessages,
   selected,
   activeSuggestion,
+  selectedCandidateMessageId,
   onClickReceipt,
   onShowPdfPreview, // eslint-disable-line no-unused-vars
   search,
@@ -275,6 +288,7 @@ export default function OtherReceiptsList({
                 message={m}
                 onClick={onClickReceipt}
                 isAiSuggestion={false}
+                isSelectedCandidate={m.id === selectedCandidateMessageId}
                 score={null}
               />
             ))}
