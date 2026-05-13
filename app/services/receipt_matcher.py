@@ -283,37 +283,40 @@ def _date_score_dual(
     receipt_date: str | None,
     received_at: str | None,
 ) -> tuple[int, str | None, int | None]:
-    """FAS 8.5a fix — dual-date scoring.
+    """FAS 5.12 — föredra receipt_date framför received_at.
 
-    För flyg/hotell/event är "riktiga köpdatumet" oftast received_at
-    (när bekräftelsen kom in) — inte receipt_date (resedatum). Den här
-    funktionen försöker båda fälten och plockar den bästa matchen.
+    receipt_date är det faktiska kvittodatumet (från PDF/HTML) och är
+    alltid mer relevant än received_at (när Gmail tog emot mejlet) när
+    båda finns. Tidigare dual-date-logik plockade fältet med minst diff
+    mot kortransaktionen, vilket gav fel matched_field i fall som Moovy
+    (kvitto 2026-04-16, mejl 2026-04-17, kortrad 2026-04-15) — då vann
+    received_at trots att receipt_date är det "sanna" datumet.
+
+    Regel (FAS 5.12):
+      - receipt_date finns → använd det
+      - annars → fall back till received_at
 
     Returnerar (score, matched_field, days_off):
       - matched_field: 'receipt_date' | 'received_at' | None
-      - None när inget gav score > 0 (eller båda fälten saknas)
-      - days_off: best diff i dagar (None bara när båda fälten saknas)
+      - None när varken receipt_date eller received_at gav ett datum
+        att jämföra med
+      - days_off: diff i dagar för det valda fältet (None bara när
+        inget fält fanns att jämföra)
     """
     primary = _date_diff_days(missing_date, receipt_date)
     fallback = _date_diff_days(missing_date, received_at)
 
-    if primary is None and fallback is None:
-        return 0, None, None
-    if fallback is None:
+    if primary is not None:
         best_diff, best_field = primary, "receipt_date"
-    elif primary is None:
+    elif fallback is not None:
         best_diff, best_field = fallback, "received_at"
     else:
-        # Vid lika diff föredrar vi receipt_date (mer specifik).
-        if primary <= fallback:
-            best_diff, best_field = primary, "receipt_date"
-        else:
-            best_diff, best_field = fallback, "received_at"
+        return 0, None, None
 
     for threshold, score in DATE_BUCKETS:
         if best_diff <= threshold:
             return score, best_field, best_diff
-    # Bortom 7 dagar — ingen meningsfull match. matched_field=None
+    # Bortom största bucket — ingen meningsfull match. matched_field=None
     # signalerar UI att visa varningstext istället för ✓.
     return 0, None, best_diff
 

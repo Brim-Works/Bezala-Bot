@@ -214,9 +214,14 @@ class ScoreMatchTest(unittest.TestCase):
         self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
         self.assertEqual(s["breakdown"]["date_days_off"], 0)
 
-    def test_dual_date_uses_received_at_when_better(self):
-        """Finnair-case: card_trans 24 april, receipt_date 30 april
-        (resedag), received_at 24 april (bokning) → matcha via received_at."""
+    def test_dual_date_prefers_receipt_date_even_when_received_at_is_closer(self):
+        """FAS 5.12: receipt_date är källa-för-sanning. Även när received_at
+        ligger närmare kortransaktionen ska receipt_date väljas — annars
+        rapporterar Match Health fel matched_field.
+
+        Finnair-case: card_trans 24 april, receipt_date 30 april (resedag),
+        received_at 24 april (bokning). Gamla beteendet plockade received_at
+        (0 dagar). Nu väljs receipt_date (6 dagar → 4-7d-bucket → 25p)."""
         from app.services.receipt_matcher import score_match
         s = score_match(
             self._missing(date="2026-04-24"),
@@ -225,16 +230,16 @@ class ScoreMatchTest(unittest.TestCase):
                 received_at="2026-04-24T18:42:00+00:00",
             ),
         )
-        self.assertEqual(s["breakdown"]["date"], 30)
-        self.assertEqual(s["breakdown"]["date_matched_field"], "received_at")
-        self.assertEqual(s["breakdown"]["date_days_off"], 0)
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+        self.assertEqual(s["breakdown"]["date_days_off"], 6)
+        self.assertEqual(s["breakdown"]["date"], 25)
 
-    def test_dual_date_picks_smaller_diff(self):
-        """När båda finns men ingen är exakt: välj fältet med minst diff."""
+    def test_dual_date_uses_receipt_date_diff_not_smaller_received_at(self):
+        """FAS 5.12 regression: dual-date plockar inte längre fältet med
+        minst diff. receipt_date 11 dagar bort vinner över received_at
+        8 dagar bort — diff används bara för score-bucket, inte för
+        fältval."""
         from app.services.receipt_matcher import score_match
-        # card_trans 14 april, receipt_date 25 april (11 dagar),
-        # received_at 22 april (8 dagar) — båda i samma bucket men
-        # received_at är närmare. Match algorithm 3.0: 8-14d → 15p.
         s = score_match(
             self._missing(date="2026-04-14"),
             self._candidate(
@@ -242,8 +247,8 @@ class ScoreMatchTest(unittest.TestCase):
                 received_at="2026-04-22T10:00:00+00:00",
             ),
         )
-        self.assertEqual(s["breakdown"]["date_matched_field"], "received_at")
-        self.assertEqual(s["breakdown"]["date_days_off"], 8)
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+        self.assertEqual(s["breakdown"]["date_days_off"], 11)
         self.assertEqual(s["breakdown"]["date"], 15)
 
     def test_dual_date_neither_matches(self):
@@ -280,6 +285,62 @@ class ScoreMatchTest(unittest.TestCase):
         self.assertEqual(s["breakdown"]["date"], 0)
         self.assertIsNone(s["breakdown"]["date_matched_field"])
         self.assertIsNone(s["breakdown"]["date_days_off"])
+
+    def test_prefers_receipt_date_when_available(self):
+        """FAS 5.12: receipt_date är alltid källa-för-sanning när den finns.
+        Även när received_at är exakt lika med kortdatumet ska matched_field
+        peka på receipt_date — Match Health rapporterar då rätt diff."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-04-14"),
+            self._candidate(
+                receipt_date="2026-04-16",
+                received_at="2026-04-14T10:00:00+00:00",
+            ),
+        )
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+        self.assertEqual(s["breakdown"]["date_days_off"], 2)
+
+    def test_falls_back_to_received_at_when_receipt_date_is_null(self):
+        """FAS 5.12: när PDF-parsern inte hittat receipt_date används
+        received_at som fallback. matched_field ska signalera detta."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            self._missing(date="2026-04-14"),
+            self._candidate(
+                receipt_date=None,
+                received_at="2026-04-15T08:00:00+00:00",
+            ),
+        )
+        self.assertEqual(s["breakdown"]["date_matched_field"], "received_at")
+        self.assertEqual(s["breakdown"]["date_days_off"], 1)
+        self.assertEqual(s["breakdown"]["date"], 30)
+
+    def test_moovy_case_uses_receipt_date_not_received_at(self):
+        """FAS 5.12 konkret Match Health-case: Moovy-kvitto har
+        receipt_date 2026-04-16 (parkeringsdag) men received_at 2026-04-17
+        (mejlet kom dagen efter). Kortdebitering 2026-04-15.
+
+        Gamla logiken plockade received_at (2 dagars diff) över
+        receipt_date (1 dags diff) eftersom båda hade lika små diffar
+        och tie-break gick på receipt_date. Men: även om received_at
+        gett mindre diff ska receipt_date vinna — det är kvittots
+        sanna datum, inte mejlets ankomsttid."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 12.50, "currency": "EUR", "date": "2026-04-15",
+                "description": "MIKKO KEINONEN: MOOVY, HELSINKI, FI 12.50 EUR",
+            },
+            {
+                "amount": 12.50, "currency": "EUR",
+                "receipt_date": "2026-04-16",
+                "received_at": "2026-04-17T07:23:00+00:00",
+                "vendor": "Moovy",
+            },
+        )
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+        self.assertEqual(s["breakdown"]["date_days_off"], 1)
 
     def test_dual_date_strips_time_component(self):
         """received_at är full ISO-timestamp — jämförelse görs på datum-nivå
@@ -444,6 +505,73 @@ class ScoreMatchTest(unittest.TestCase):
             },
         )
         self.assertEqual(s["breakdown"]["vendor"], 30)
+
+    # ---------- FAS 5.12 — regressionsskydd för alias-träffar ----------
+
+    def test_regression_alias_match_total_110_unchanged(self):
+        """FAS 5.12: ändrad date-field-prioritering ska inte påverka
+        score-summan. Exact amount + exact date + alias = 50+30+30 = 110."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 100.0, "currency": "EUR", "date": "2026-04-25",
+                "description": "MIKKO KEINONEN: LOVABLE, DOVER, US 100.00 EUR",
+            },
+            {
+                "amount": 100.0, "currency": "EUR",
+                "receipt_date": "2026-04-25",
+                "received_at": "2026-04-26T09:00:00+00:00",
+                "vendor": "Lovable",
+                "sender": "billing@lovable.dev",
+            },
+        )
+        self.assertEqual(s["total"], 110)
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+
+    def test_regression_alias_match_total_95_unchanged(self):
+        """FAS 5.12: alias-träff + amount-bonus + 4-7d-bucket (25p) =
+        50+25+30 = 105. Tidigare gav identiska siffror — testet säkrar
+        att FAS 5.12 inte gör received_at-baserade nedgraderingar för
+        de pairs som algo 3.1 redan accepterat."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 100.0, "currency": "EUR", "date": "2026-04-25",
+                "description": "MIKKO KEINONEN: LOVABLE, DOVER, US 100.00 EUR",
+            },
+            {
+                "amount": 100.0, "currency": "EUR",
+                "receipt_date": "2026-04-30",
+                "received_at": "2026-04-25T09:00:00+00:00",
+                "vendor": "Lovable",
+            },
+        )
+        # receipt_date vinner alltid (5 dagar) — received_at exakt 0 dagar
+        # ignoreras enligt FAS 5.12.
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+        self.assertEqual(s["breakdown"]["date"], 25)
+        self.assertGreaterEqual(s["total"], 95)
+
+    def test_regression_moovy_alias_still_reaches_threshold(self):
+        """FAS 5.12: Moovy bug 1-fixet (15 dagars fördröjd debitering)
+        ska fortfarande nå tröskel. Bankrad 2026-05-09, kvitto receipt_date
+        2026-04-24, ingen received_at. Total ≥80 (50 amount + 10 date + 30
+        alias)."""
+        from app.services.receipt_matcher import score_match
+        s = score_match(
+            {
+                "amount": 73.49, "currency": "EUR", "date": "2026-05-09",
+                "description": "MIKKO KEINONEN: MOOVY, HELSINKI, FI 73.49 EUR",
+            },
+            {
+                "amount": 73.49, "currency": "EUR",
+                "receipt_date": "2026-04-24",
+                "received_at": "2026-04-25T08:00:00+00:00",
+                "vendor": "Finavia",
+            },
+        )
+        self.assertEqual(s["breakdown"]["date_matched_field"], "receipt_date")
+        self.assertGreaterEqual(s["total"], 80)
 
     # ---------- Match algorithm 3.0 — currency-check ----------
 
