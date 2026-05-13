@@ -826,10 +826,19 @@ def _classify_diagnostic_v2(
     gmail_status: dict,
     vendor_name: str | None,
     strong_threshold: int,
+    bill_line_id=None,
 ) -> tuple[dict, dict]:
     """Klassificera bill_line:n med utökad verdict-lista (Match Health 2.0).
 
     Returnerar (verdict_dict, diagnostic_summary_dict).
+
+    Skillnad mellan 'matched_correctly' och 'already_matched':
+      - matched_correctly: exakt 1 kandidat över score-tröskel; redo att
+        kopplas men ÄR INTE kopplad än (bezala_transaction_id saknas eller
+        pekar inte mot denna bill_line).
+      - already_matched: en kandidat har redan
+        bezala_transaction_id == bill_line.id i DB — kopplingen är klar,
+        ingen åtgärd behövs.
     """
     above = [c for c in scored_candidates if c["above_threshold"]]
     has_processed = bool(scored_candidates)
@@ -842,19 +851,17 @@ def _classify_diagnostic_v2(
     n_filtered = sum(
         1 for g in gmail_messages if g.get("is_filtered_not_receipt")
     )
-    # already_matched: någon kandidat har redan denna bill_line som
-    # bezala_transaction_id.
-    already_matched = next(
-        (c for c in scored_candidates
-         if c.get("bezala_transaction_id")
-         and str(c["bezala_transaction_id"])
-             == str(scored_candidates[0].get("bezala_transaction_id"))
-         and c.get("match_score_total", 0) > 0),
-        None,
-    )
+    # coupled_to_this: kandidater vars bezala_transaction_id pekar mot
+    # PRECIS DENNA bill_line. Tidigare bug: villkoret var bara "har något
+    # bezala_transaction_id satt", vilket plockade upp kandidater
+    # kopplade till ANDRA bill_lines (de kommer in i listan via amount/
+    # date/vendor-match i _find_extended_candidates).
+    bill_id_str = str(bill_line_id) if bill_line_id is not None else None
     coupled_to_this = [
         c for c in scored_candidates
-        if c.get("bezala_transaction_id")
+        if c.get("bezala_transaction_id") is not None
+        and bill_id_str is not None
+        and str(c["bezala_transaction_id"]) == bill_id_str
     ]
 
     summary = {
@@ -893,10 +900,10 @@ def _classify_diagnostic_v2(
         return verdict, summary
 
     # auto_match_confident (Match algorithm 3.0): exakt belopp + samma
-    # valuta + vendor 95%+ + datum ≤60d → övertrumfar tröskeln.
-    auto_confident = [
-        c for c in scored_candidates if c.get("auto_match_confident")
-    ]
+    # valuta + vendor 95%+ + datum ≤60d → övertrumfar tröskeln. Vi har
+    # INGEN egen verdict-kategori för detta längre — flaggan finns per
+    # processed_receipt och räknas separat i stats (kan överlappa med
+    # matched_correctly/multiple_candidates_above_threshold).
     if len(above) >= 2:
         verdict = {
             "category": "multiple_candidates_above_threshold",
@@ -904,19 +911,6 @@ def _classify_diagnostic_v2(
             "suggested_action": (
                 f"{len(above)} kvitton över tröskeln {strong_threshold}. "
                 "Välj manuellt i Travel Tinder."
-            ),
-        }
-    elif len(auto_confident) == 1 and len(above) == 1 \
-            and above[0] is auto_confident[0] \
-            and best is auto_confident[0] \
-            and best["match_score_total"] < strong_threshold:
-        verdict = {
-            "category": "auto_match_confident",
-            "confidence": "high",
-            "suggested_action": (
-                f"Exakt belopp + vendor-alias + datum inom 60d → "
-                f"auto-match (score {best['match_score_total']}, under "
-                f"tröskel {strong_threshold} men signalerna är entydiga)."
             ),
         }
     elif len(above) == 1:
@@ -1000,6 +994,54 @@ def _classify_diagnostic_v2(
 # ---------------------------------------------------------------------------
 
 
+# Verdict-kategorier som är ömsesidigt uteslutande — varje rad får exakt
+# en. Summan av dessa räknare == stats.total.
+_VERDICT_CATEGORIES: tuple[str, ...] = (
+    "matched_correctly",
+    "gmail_miss",
+    "ai_extraction_wrong",
+    "match_algorithm_failed",
+    "no_receipt_exists",
+    "gmail_error",
+    "multiple_candidates_above_threshold",
+    "best_below_threshold",
+    "processed_but_no_candidate",
+    "gmail_found_not_processed",
+    "gmail_filtered_or_excluded",
+    "already_matched",
+)
+
+
+def _compute_stats(rows: list[dict]) -> dict:
+    """Aggregera stats från rows. Iterar bill_lines och deras nested
+    fält — räknar INTE bara verdict.category eftersom signaler som
+    auto_match_confident lever på processed_receipts och kan finnas på
+    rader vars verdict är t.ex. matched_correctly eller
+    multiple_candidates_above_threshold.
+
+    Räknare:
+      - total: alla bill_lines
+      - <verdict-kategori>: rader vars verdict.category == nyckeln.
+        Mutually exclusive — summan == total.
+      - auto_match_confident: rader där MINST en processed_receipt har
+        auto_match_confident=True. ÖVERLAPPAR med verdict-räknarna; ingår
+        INTE i sum-equals-total-formeln.
+    """
+    stats: dict = {"total": len(rows)}
+    for cat in _VERDICT_CATEGORIES:
+        stats[cat] = 0
+    auto_rows = 0
+    for row in rows:
+        cat = (row.get("verdict") or {}).get("category")
+        if cat in stats:
+            stats[cat] += 1
+        receipts = row.get("processed_receipts") or []
+        if any(r.get("auto_match_confident") for r in receipts):
+            auto_rows += 1
+    stats["auto_match_confident"] = auto_rows
+    return stats
+
+
 def build_match_health_report(
     db: Session,
     *,
@@ -1061,26 +1103,6 @@ def build_match_health_report(
         html_only_patterns = []
 
     rows: list[dict] = []
-    stats: dict = {
-        "total": 0,
-        # Behåll legacy-nycklar så befintliga frontend-vyer + tester inte
-        # bryts; UI:t använder dem för stats-baren.
-        "matched_correctly": 0,
-        "gmail_miss": 0,
-        "ai_extraction_wrong": 0,
-        "match_algorithm_failed": 0,
-        "no_receipt_exists": 0,
-        "gmail_error": 0,
-        # Match Health 2.0 — nya kategorier
-        "multiple_candidates_above_threshold": 0,
-        "best_below_threshold": 0,
-        "processed_but_no_candidate": 0,
-        "gmail_found_not_processed": 0,
-        "gmail_filtered_or_excluded": 0,
-        "already_matched": 0,
-        # Match algorithm 3.0
-        "auto_match_confident": 0,
-    }
 
     for raw in missing_raw:
         missing = normalize_missing_receipt(raw)
@@ -1134,10 +1156,8 @@ def build_match_health_report(
             gmail_status=gmail,
             vendor_name=vendor_name,
             strong_threshold=STRONG_MATCH_THRESHOLD,
+            bill_line_id=missing.get("id"),
         )
-
-        stats[verdict["category"]] = stats.get(verdict["category"], 0) + 1
-        stats["total"] += 1
 
         rows.append({
             "bill_line": {
@@ -1158,6 +1178,8 @@ def build_match_health_report(
             "gmail_messages": gmail_messages,
             "diagnostic_summary": diagnostic_summary,
         })
+
+    stats = _compute_stats(rows)
 
     report = {
         "generated_at": datetime.utcnow().isoformat(),
