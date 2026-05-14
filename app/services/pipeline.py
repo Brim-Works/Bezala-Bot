@@ -78,6 +78,9 @@ FILTERED_REASON_HTML_PDF_FAILED = "html_pdf_failed"
 FILTERED_REASON_EXCLUDED_SUBJECT = "excluded_subject"
 FILTERED_REASON_NO_LINK = "no_link"
 FILTERED_REASON_ALREADY_PROCESSED = "already_processed"
+FILTERED_REASON_FILENAME_ALREADY_SAVED = "filename_already_saved"
+FILTERED_REASON_DRIVE_FILENAME_EXISTS = "drive_filename_exists"
+FILTERED_REASON_INTEGRITY_RACE = "integrity_race"
 
 
 def _record_filtered(
@@ -478,6 +481,7 @@ def _process_one_message(
     link_fetch_senders: list[str] | None = None,
     html_to_pdf_enabled: bool = True,
     bezala_metadata: dict | None = None,
+    force: bool = False,
 ) -> None:
     with session_scope() as db:
         existing = (
@@ -748,16 +752,36 @@ def _process_one_message(
 
         date_str = (msg.received_at or datetime.utcnow()).strftime("%Y%m%d")
 
-        with session_scope() as db:
-            if _filename_already_saved(db, new_name, date_str):
-                result.skipped += 1
-                logger.info("Dubblett (filnamn+datum): %s", new_name)
-                continue
+        if force:
+            # Force-läget kringgår SavedFile- och Drive-filnamnsdubbletter
+            # och rensar ev. blockerande SavedFile-rader så uploaden går
+            # igenom även när tidigare körningar lämnat hängande rader.
+            with session_scope() as db:
+                db.query(SavedFile).filter(
+                    SavedFile.file_name == new_name,
+                    SavedFile.file_date == date_str,
+                ).delete(synchronize_session=False)
+        else:
+            with session_scope() as db:
+                if _filename_already_saved(db, new_name, date_str):
+                    result.skipped += 1
+                    _record_filtered(
+                        result, msg,
+                        FILTERED_REASON_FILENAME_ALREADY_SAVED,
+                        detail=f"{new_name} @ {date_str}",
+                    )
+                    logger.info("Dubblett (filnamn+datum): %s", new_name)
+                    continue
 
-        if drive.filename_exists(new_name):
-            result.skipped += 1
-            logger.info("Filnamn finns redan i Drive: %s", new_name)
-            continue
+            if drive.filename_exists(new_name):
+                result.skipped += 1
+                _record_filtered(
+                    result, msg,
+                    FILTERED_REASON_DRIVE_FILENAME_EXISTS,
+                    detail=new_name,
+                )
+                logger.info("Filnamn finns redan i Drive: %s", new_name)
+                continue
 
         upload = drive.upload_pdf(new_name, att.data)
 
@@ -808,6 +832,9 @@ def _process_one_message(
         except IntegrityError:
             logger.warning("Race: %s redan loggat — hoppar", msg.message_id)
             result.skipped += 1
+            _record_filtered(
+                result, msg, FILTERED_REASON_INTEGRITY_RACE,
+            )
             break
 
     if saved_any or any_non_receipt:
@@ -1158,17 +1185,21 @@ def force_process_message_ids(
 ) -> dict:
     """Kör pipelinens orkestrering på en explicit lista message_id, helt
     förbi Gmail-queryns filter (has:attachment / Bezala-Klar / Promotions
-    osv.). Används som maintenance-utväg för mail som missades p.g.a.
-    label eller kategori.
+    osv.) OCH förbi alla lokala dedup-paths (SavedFile-rad,
+    drive.filename_exists). Den ENDA filterkanal som behålls är AI-gaten
+    "is_receipt=false" / låg confidence — om Claude säger att det inte är
+    ett kvitto vill vi fortfarande hoppa över det.
 
     För varje id:
       1. (Valfritt) Ta bort Bezala-Klar-etiketten i Gmail.
       2. (Valfritt) Radera ev. ProcessedMessage-rad så pipeline-dedupen
          tillåter en ny körning.
-      3. Kör `_process_one_message` (samma html_to_pdf → AI → Drive →
-         ProcessedMessage-flöde som vanlig scan).
+      3. Kör `_process_one_message(..., force=True)` — vilket även rensar
+         eventuella SavedFile-rader som annars hade tystat uploaden.
 
-    Returnerar samma form som reprocess_gmail_window."""
+    Returnerar samma form som reprocess_gmail_window, plus per-detail
+    fält `skip_reason` + `skip_detail` + `filtered_entries` så caller
+    ser EXAKT varför ett mail hamnade som skipped."""
     cleaned = [m.strip() for m in (message_ids or []) if m and m.strip()]
     if not cleaned:
         return {
@@ -1246,6 +1277,7 @@ def force_process_message_ids(
         before_processed = result.processed
         before_errors = result.errors
         before_skipped = result.skipped
+        before_filtered = len(result.filtered)
         detail: dict = {"message_id": mid}
         try:
             _process_one_message(
@@ -1258,6 +1290,7 @@ def force_process_message_ids(
                 link_fetch_senders=link_fetch_senders,
                 html_to_pdf_enabled=html_to_pdf_enabled,
                 bezala_metadata=bezala_metadata,
+                force=True,
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("force_process: fel under %s", mid)
@@ -1276,6 +1309,16 @@ def force_process_message_ids(
             detail["outcome"] = "skipped"
         else:
             detail["outcome"] = "skipped"
+
+        # Plocka senaste filtered-entry för detta meddelande så caller får
+        # en konkret skip_reason istället för bara "skipped". Bryts av om
+        # två entries skapades (icke-kvitto + filename-dubblett t.ex.) —
+        # rapportera alla i nya fältet.
+        new_filtered = result.filtered[before_filtered:]
+        if new_filtered:
+            detail["skip_reason"] = new_filtered[-1].get("reason")
+            detail["skip_detail"] = new_filtered[-1].get("detail")
+            detail["filtered_entries"] = new_filtered
 
         try:
             with session_scope() as db:
