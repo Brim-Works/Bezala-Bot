@@ -716,6 +716,8 @@ export default {
     actionMatch: 'Match',
     matchSuccess: '✓ Matchat: {vendor}',
     matchFailed: 'Kunde inte koppla',
+    alreadyCoupled: 'Redan kopplad — uppdaterar',
+    rowMatching: 'kopplar…',
     skipped: 'Hoppade över förslag',
     noMoreSuggestions: 'Ingen AI-match — välj manuellt',
     coupledTag: 'Kopplad',

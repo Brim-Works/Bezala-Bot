@@ -21,6 +21,10 @@ export default function MissingPaymentsList({
   onModeChange,
   unmatchedCount,
   matchedTotalCount,
+  // C14 — payment-id som just nu har en Couple-POST i flight. Visas
+  // med deemfas + "kopplar…"-indikator. Klick blockeras tills POST
+  // returnerat.
+  inFlightPaymentId,
 }) {
   const { t, lang } = useI18n();
 
@@ -95,14 +99,28 @@ export default function MissingPaymentsList({
               {rows.map((row) => {
                 const m = row.missing_receipt;
                 const isActive = m.id === selectedId;
+                const isMatching = inFlightPaymentId === m.id;
+                const cls = [
+                  'tt-payment',
+                  isActive ? 'is-active' : '',
+                  isMatching ? 'is-matching' : '',
+                ]
+                  .filter(Boolean)
+                  .join(' ');
                 return (
                   <button
                     key={m.id}
                     type="button"
-                    className={`tt-payment ${isActive ? 'is-active' : ''}`}
-                    onClick={() => onSelect(m.id)}
+                    className={cls}
+                    onClick={() => {
+                      if (isMatching) return;
+                      onSelect(m.id);
+                    }}
                     aria-pressed={isActive}
+                    aria-busy={isMatching || undefined}
+                    disabled={isMatching}
                     data-testid={`tt-payment-${m.id}`}
+                    data-matching={isMatching ? 'true' : undefined}
                   >
                     <VendorLogo name={m.description} size={24} />
                     <div className="tt-payment__body">
@@ -112,7 +130,20 @@ export default function MissingPaymentsList({
                         )}
                       </div>
                       <div className="tt-payment__meta mono muted">
-                        {m.date || '—'}
+                        {isMatching ? (
+                          <span
+                            className="tt-payment__matching"
+                            data-testid={`tt-payment-matching-${m.id}`}
+                          >
+                            <span
+                              className="tt-payment__spinner"
+                              aria-hidden="true"
+                            />
+                            {t.travelTinder.rowMatching}
+                          </span>
+                        ) : (
+                          m.date || '—'
+                        )}
                       </div>
                     </div>
                     <div className="tt-payment__amount mono">

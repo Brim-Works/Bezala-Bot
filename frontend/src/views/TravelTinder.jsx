@@ -129,6 +129,16 @@ export default function TravelTinder() {
   const matchingLockRef = useRef(false);
   const [pdfPreviewMessage, setPdfPreviewMessage] = useState(null);
 
+  // C14 — optimistic UI för Couple. inFlightPaymentIds = vilka rader
+  // som har en POST i flight (deemfas + "kopplar…"-indikator).
+  // completedPaymentIds = rader som lokalt klarats men där refresh inte
+  // hunnit synka från servern — dölj direkt så användaren får
+  // omedelbar bekräftelse.
+  const [inFlightPaymentId, setInFlightPaymentId] = useState(null);
+  const [completedPaymentIds, setCompletedPaymentIds] = useState(
+    () => new Set(),
+  );
+
   // FAS 8.5 — Matchade-vy state. mode persistas separat så användaren
   // hamnar tillbaka i rätt läge nästa session.
   const [mode, setMode] = useState(() => {
@@ -320,7 +330,15 @@ export default function TravelTinder() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  const missingRows = data.missing_receipts;
+  // C14 — dölj rader som lokalt klarats men där refresh inte hunnit
+  // hämta servern. inFlight-raden hålls kvar i listan med deemfas.
+  const missingRows = useMemo(
+    () =>
+      data.missing_receipts.filter(
+        (r) => !completedPaymentIds.has(r.missing_receipt.id),
+      ),
+    [data.missing_receipts, completedPaymentIds],
+  );
 
   // Auto-välj första saknade kortbetalning om inget är valt
   useEffect(() => {
@@ -337,8 +355,10 @@ export default function TravelTinder() {
   );
 
   const matchedCount = useMemo(
-    () => data.all_messages.filter((m) => m.coupled).length,
-    [data.all_messages],
+    () =>
+      data.all_messages.filter((m) => m.coupled).length +
+      completedPaymentIds.size,
+    [data.all_messages, completedPaymentIds],
   );
   const totalCount = data.all_messages.length;
 
@@ -396,6 +416,54 @@ export default function TravelTinder() {
       if (matchingLockRef.current) return;
       matchingLockRef.current = true;
       setMatching(true);
+      // C14 — visa deemfas + "kopplar…"-indikator på raden direkt så
+      // användaren ser att klicket registrerats även om POST tar tid.
+      setInFlightPaymentId(missingReceiptId);
+
+      // C14 — auto-välj nästa korttrans direkt (innan POST returnerar)
+      // så användaren kan fortsätta utan att vänta. Söker i rå-listan
+      // för att hoppa över rader som redan är completed eller in-flight.
+      const rawMissing = data.missing_receipts;
+      const idx = rawMissing.findIndex(
+        (r) => r.missing_receipt.id === missingReceiptId,
+      );
+      const findCandidate = (predicate) =>
+        rawMissing.find(
+          (r) =>
+            r.missing_receipt.id !== missingReceiptId &&
+            !completedPaymentIds.has(r.missing_receipt.id) &&
+            predicate(r),
+        );
+      const nextRow =
+        findCandidate((_r) => rawMissing.indexOf(_r) > idx) ||
+        findCandidate(() => true) ||
+        null;
+
+      // Rensa kandidatpanelen direkt (modal är redan borta i FAS 5.16).
+      setSkippedSuggestionIds([]);
+      setSelectedCandidateMessageId(null);
+      setSelectedPaymentId(nextRow ? nextRow.missing_receipt.id : null);
+
+      const markCompletedAndRefresh = async () => {
+        setCompletedPaymentIds((prev) => {
+          const next = new Set(prev);
+          next.add(missingReceiptId);
+          return next;
+        });
+        try {
+          await refresh({ silent: true });
+        } finally {
+          // Ta bort optimistic-flaggan när serverstate hunnit in så
+          // raden inte längre styrs av lokala overlays.
+          setCompletedPaymentIds((prev) => {
+            if (!prev.has(missingReceiptId)) return prev;
+            const next = new Set(prev);
+            next.delete(missingReceiptId);
+            return next;
+          });
+        }
+      };
+
       try {
         await api.matchToBezala(messageRow.id, missingReceiptId);
         sendMatchFeedback({
@@ -412,34 +480,42 @@ export default function TravelTinder() {
             messageRow.vendor || messageRow.file_name || '',
           ),
         });
-        setSkippedSuggestionIds([]);
-        setSelectedCandidateMessageId(null);
-        // Markera nästa korttrans automatiskt
-        const idx = missingRows.findIndex(
-          (r) => r.missing_receipt.id === selectedPaymentId,
-        );
-        const nextRow = missingRows[idx + 1] || null;
-        setSelectedPaymentId(nextRow ? nextRow.missing_receipt.id : null);
-        refresh({ silent: true });
+        await markCompletedAndRefresh();
       } catch (err) {
-        const detail = err instanceof ApiError ? err.message : String(err);
-        toast.show({
-          kind: 'err',
-          message: `${t.travelTinder.matchFailed}: ${detail}`,
-        });
+        const status = err instanceof ApiError ? err.status : null;
+        if (status === 409) {
+          // C14 / memory #18 — backend säger att raden redan är
+          // kopplad (concurrent click eller stale UI). Behandla som
+          // success: dölj raden, refresha för att synka.
+          toast.show({
+            kind: 'ok',
+            message: t.travelTinder.alreadyCoupled,
+          });
+          await markCompletedAndRefresh();
+        } else {
+          const detail = err instanceof ApiError ? err.message : String(err);
+          toast.show({
+            kind: 'err',
+            message: `${t.travelTinder.matchFailed}: ${detail}`,
+          });
+          // Återställ urvalet — användaren ska kunna försöka igen.
+          setSelectedPaymentId(missingReceiptId);
+        }
       } finally {
         setMatching(false);
+        setInFlightPaymentId(null);
         matchingLockRef.current = false;
       }
     },
     [
       matching,
-      missingRows,
-      selectedPaymentId,
+      data.missing_receipts,
+      completedPaymentIds,
       refresh,
       sendMatchFeedback,
       t.travelTinder.matchSuccess,
       t.travelTinder.matchFailed,
+      t.travelTinder.alreadyCoupled,
       toast,
     ],
   );
@@ -516,6 +592,7 @@ export default function TravelTinder() {
           onModeChange={setMode}
           unmatchedCount={missingRows.length}
           matchedTotalCount={matchedData.stats?.total_all_time ?? 0}
+          inFlightPaymentId={inFlightPaymentId}
         />
 
         <div

@@ -3292,6 +3292,35 @@ html[data-theme='B'] .modal__title {
   box-shadow: 0 0 0 2px var(--ring);
 }
 
+/* C14 — payment-rad i flight: deemfas + slå av hover så användaren
+ * inte tror att den fortfarande är klickbar. */
+.tt-payment.is-matching {
+  opacity: 0.5;
+  cursor: wait;
+  pointer-events: none;
+}
+
+.tt-payment.is-matching:hover {
+  background: var(--bg-2);
+}
+
+.tt-payment__matching {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--accent);
+  font-weight: 500;
+}
+
+.tt-payment__spinner {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 1.5px solid currentColor;
+  border-top-color: transparent;
+  animation: scan-btn-spin 0.85s linear infinite;
+}
+
 .tt-payment__body {
   flex: 1;
   min-width: 0;

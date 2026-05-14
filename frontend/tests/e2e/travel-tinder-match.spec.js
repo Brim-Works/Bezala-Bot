@@ -272,3 +272,225 @@ test('Open in Drawer öppnar Drawer', async ({ page }) => {
 
   await expect(page.getByTestId('drawer')).toBeVisible({ timeout: 5000 });
 });
+
+/* C14 — Travel Tinder Couple visual feedback + immediate row removal.
+ *
+ * Verifierar att klick på Couple ger omedelbar visuell respons:
+ *  - payment-raden i "Att matcha"-listan deemfasas + visar "kopplar…"
+ *  - vid lyckat svar försvinner raden direkt (innan refresh) och en
+ *    success-toast visas
+ *  - vid 409 visas "Redan kopplad — uppdaterar" och raden tas bort
+ *  - vid generellt fel återställs UI:t så användaren kan försöka igen */
+
+function suggestionsWithCoupledFlag(coupled) {
+  const s = sampleSuggestions();
+  return {
+    missing_receipts: coupled ? [] : s.missing_receipts,
+    all_messages: s.all_messages,
+  };
+}
+
+test('C14 — payment-rad deemfasas med "kopplar…"-indikator under POST', async ({ page }) => {
+  await setupTinderMocks(page);
+
+  // Försena POST så vi hinner observera in-flight-state.
+  await page.route(
+    `**/api/messages/${AI_MESSAGE_ID}/match-to-bezala`,
+    async (route) => {
+      await new Promise((r) => setTimeout(r, 600));
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: AI_MESSAGE_ID,
+          bezala_upload_status: 'success',
+          bezala_transaction_id: String(MISSING_ID),
+        }),
+      });
+    },
+  );
+
+  await page.goto('/travel-tinder');
+  await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
+
+  await page
+    .getByTestId('tt-candidate-ai')
+    .getByTestId('tt-candidate-couple')
+    .click();
+
+  // Deemfas-indikatorn på raden ska visas direkt medan POST är pending.
+  await expect(
+    page.getByTestId(`tt-payment-matching-${MISSING_ID}`),
+  ).toBeVisible();
+  await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toHaveAttribute(
+    'data-matching',
+    'true',
+  );
+
+  // Couple-spinner inuti Card A
+  await expect(
+    page.getByTestId('tt-candidate-couple-spinner').first(),
+  ).toBeVisible();
+
+  // Efter POST: success-toast
+  await expect(page.getByText(/Matchat:\s*Moovy/i)).toBeVisible();
+});
+
+test('C14 — payment-raden tas bort omedelbart vid lyckad match', async ({ page }) => {
+  await setupApiMocks(page);
+
+  // Stateful mock — efter en lyckad POST tar backend bort bill_line
+  // ur missing_receipts (det är så servern beter sig i prod).
+  let coupled = false;
+  await page.route('**/api/bezala/match-suggestions**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(suggestionsWithCoupledFlag(coupled)),
+    }),
+  );
+  await page.route('**/api/bezala/matched-pairs**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        pairs: [],
+        total: 0,
+        stats: { total_all_time: 0, this_week: 0, estimated_minutes_saved: 0 },
+      }),
+    }),
+  );
+  await page.route('**/api/feedback/match-result', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+  );
+
+  await page.route(
+    `**/api/messages/${AI_MESSAGE_ID}/match-to-bezala`,
+    (route) => {
+      coupled = true;
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: AI_MESSAGE_ID,
+          bezala_upload_status: 'success',
+          bezala_transaction_id: String(MISSING_ID),
+        }),
+      });
+    },
+  );
+
+  await page.goto('/travel-tinder');
+  await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toBeVisible();
+
+  await page
+    .getByTestId('tt-candidate-ai')
+    .getByTestId('tt-candidate-couple')
+    .click();
+
+  await expect(page.getByText(/Matchat:\s*Moovy/i)).toBeVisible();
+  await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toHaveCount(0);
+});
+
+test('C14 — 409 Conflict visar "Redan kopplad" och tar bort raden', async ({ page }) => {
+  await setupApiMocks(page);
+
+  let alreadyCoupled = false;
+  await page.route('**/api/bezala/match-suggestions**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify(suggestionsWithCoupledFlag(alreadyCoupled)),
+    }),
+  );
+  await page.route('**/api/bezala/matched-pairs**', (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        pairs: [],
+        total: 0,
+        stats: { total_all_time: 0, this_week: 0, estimated_minutes_saved: 0 },
+      }),
+    }),
+  );
+  await page.route('**/api/feedback/match-result', (route) =>
+    route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }),
+  );
+
+  await page.route(
+    `**/api/messages/${AI_MESSAGE_ID}/match-to-bezala`,
+    (route) => {
+      alreadyCoupled = true;
+      route.fulfill({
+        status: 409,
+        contentType: 'application/json',
+        body: JSON.stringify({ detail: 'Redan kopplad' }),
+      });
+    },
+  );
+
+  await page.goto('/travel-tinder');
+  await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toBeVisible();
+  await page
+    .getByTestId('tt-candidate-ai')
+    .getByTestId('tt-candidate-couple')
+    .click();
+
+  await expect(page.getByText(/Redan kopplad — uppdaterar/i)).toBeVisible();
+  await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toHaveCount(0);
+});
+
+test('C14 — fel återställer UI så användaren kan försöka igen', async ({ page }) => {
+  await setupTinderMocks(page);
+
+  let calls = 0;
+  await page.route(
+    `**/api/messages/${AI_MESSAGE_ID}/match-to-bezala`,
+    (route) => {
+      calls += 1;
+      if (calls === 1) {
+        route.fulfill({
+          status: 500,
+          contentType: 'application/json',
+          body: JSON.stringify({ detail: 'Bezala nere' }),
+        });
+      } else {
+        route.fulfill({
+          status: 200,
+          contentType: 'application/json',
+          body: JSON.stringify({
+            id: AI_MESSAGE_ID,
+            bezala_upload_status: 'success',
+            bezala_transaction_id: String(MISSING_ID),
+          }),
+        });
+      }
+    },
+  );
+
+  await page.goto('/travel-tinder');
+  await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
+
+  await page
+    .getByTestId('tt-candidate-ai')
+    .getByTestId('tt-candidate-couple')
+    .click();
+
+  await expect(page.getByText(/Kunde inte koppla/i)).toBeVisible();
+
+  // Raden ska INTE vara borta, och Couple-knappen ska vara tillgänglig
+  // igen för retry.
+  await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toBeVisible();
+  await expect(
+    page.getByTestId('tt-candidate-ai').getByTestId('tt-candidate-couple'),
+  ).toBeEnabled();
+
+  // Retry → andra POST:en lyckas
+  await page
+    .getByTestId('tt-candidate-ai')
+    .getByTestId('tt-candidate-couple')
+    .click();
+  await expect(page.getByText(/Matchat:\s*Moovy/i)).toBeVisible();
+  expect(calls).toBe(2);
+});

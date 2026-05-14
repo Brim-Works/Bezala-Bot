@@ -715,6 +715,8 @@ export default {
     actionMatch: 'Match',
     matchSuccess: '✓ Matched: {vendor}',
     matchFailed: 'Could not match',
+    alreadyCoupled: 'Already coupled — refreshing',
+    rowMatching: 'matching…',
     skipped: 'Skipped suggestion',
     noMoreSuggestions: 'No AI match — pick manually',
     coupledTag: 'Coupled',
