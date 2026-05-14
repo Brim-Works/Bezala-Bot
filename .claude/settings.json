@@ -1,4 +1,15 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(railway:*)",
+      "Bash(git push:*)",
+      "Bash(git fetch:*)",
+      "Bash(gh pr:*)",
+      "Bash(gh api:*)",
+      "Bash(pytest:*)",
+      "Bash(npm run:*)"
+    ]
+  },
   "hooks": {
     "SessionStart": [
       {
