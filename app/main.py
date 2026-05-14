@@ -26,6 +26,7 @@ from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import (
     fetch_bezala_metadata,
+    force_process_message_ids,
     reprocess_gmail_window,
     run_scan,
 )
@@ -1428,6 +1429,66 @@ def reprocess_gmail_unprocessed(
     )
     logger.info(
         "Gmail reprocess klar: found=%s processed=%s failed=%s skipped=%s",
+        result.get("found"), result.get("processed"),
+        result.get("failed"), result.get("skipped"),
+    )
+    return result
+
+
+class ForceProcessPayload(BaseModel):
+    """Body för POST /api/messages/force-process.
+
+    message_ids: Gmail-message_id som ska tvångsprocessas. För varje id:
+      1. Bezala-Klar-etiketten tas bort (best-effort).
+      2. Ev. befintlig ProcessedMessage-rad raderas så pipeline-dedupen
+         släpper igenom körningen.
+      3. _process_one_message körs med html_to_pdf-grenen påslagen.
+
+    remove_done_label / delete_existing_row: stäng av om man manuellt
+    vill behålla nuvarande state (default båda true).
+    """
+    message_ids: list[str] = Field(default_factory=list)
+    remove_done_label: bool = True
+    delete_existing_row: bool = True
+
+
+@app.post("/api/messages/force-process")
+def force_process_messages(
+    payload: ForceProcessPayload,
+    _: None = Depends(require_auth),
+):
+    """Tvinga pipeline-körning på explicita Gmail-message_id, helt förbi
+    Gmail-queryns filter (has:attachment / Bezala-Klar / Promotions).
+
+    Används som maintenance-utväg för mail som matchar en konfigurerad
+    html_only_sender men ändå inte fångas av scan — t.ex. om Bezala-Klar
+    redan satts av tidigare buggad scan-runda, eller om Gmail kategoriserar
+    debit-notiserna som Promotions.
+
+    Body: {"message_ids": ["19e1...", "..."], "remove_done_label": true,
+           "delete_existing_row": true}.
+    Svar: {"found": N, "processed": M, "failed": K, "skipped": S,
+           "details": [...]}.
+    """
+    ids = [m.strip() for m in (payload.message_ids or []) if m and m.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="message_ids saknas")
+    if len(ids) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="max 50 message_ids per anrop",
+        )
+    logger.info(
+        "force-process startad: ids=%s remove_label=%s delete_row=%s",
+        ids, payload.remove_done_label, payload.delete_existing_row,
+    )
+    result = force_process_message_ids(
+        ids,
+        remove_done_label=payload.remove_done_label,
+        delete_existing_row=payload.delete_existing_row,
+    )
+    logger.info(
+        "force-process klar: found=%s processed=%s failed=%s skipped=%s",
         result.get("found"), result.get("processed"),
         result.get("failed"), result.get("skipped"),
     )
