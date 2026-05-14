@@ -1575,6 +1575,92 @@ def bulk_delete_messages(
     }
 
 
+class BackfillDescriptionsPayload(BaseModel):
+    """Body för POST /api/messages/backfill-descriptions.
+
+    Exakt EN av fälten måste anges:
+      - message_ids: explicit lista (heltal) — backfilla just dessa rader.
+      - all_missing: True → alla rader där ai_description_en IS NULL
+        AND status='saved' AND deleted_at IS NULL.
+    """
+    message_ids: list[int] | None = None
+    all_missing: bool | None = None
+
+
+@app.post("/api/messages/backfill-descriptions")
+def backfill_descriptions(
+    payload: BackfillDescriptionsPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 5.22 — backfilla ai_description_en för rader som processades
+    innan kolumnen fanns (pre-PR30) eller där AI:n inte producerade
+    en engelsk beskrivning.
+
+    Använder existerande Claude-klient + samma modell som extraction-
+    pipelinen. Skippar rader som redan har värde. Sekvenstellt med 200ms
+    delay mellan API-anrop (skydd mot rate-limit)."""
+    from app.services.description_backfill import (
+        DescriptionBackfiller,
+        backfill_rows,
+    )
+
+    has_ids = bool(payload.message_ids)
+    has_all = bool(payload.all_missing)
+    if has_ids == has_all:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Ange exakt EN av 'message_ids' (lista) eller "
+                "'all_missing' (true)."
+            ),
+        )
+
+    q = db.query(ProcessedMessage)
+    if has_ids:
+        ids = [int(i) for i in (payload.message_ids or []) if i]
+        if not ids:
+            raise HTTPException(
+                status_code=400,
+                detail="message_ids får inte vara tom",
+            )
+        q = q.filter(ProcessedMessage.id.in_(ids))
+    else:
+        q = q.filter(
+            ProcessedMessage.ai_description_en.is_(None),
+            ProcessedMessage.status == "saved",
+            ProcessedMessage.deleted_at.is_(None),
+        )
+
+    rows = q.order_by(ProcessedMessage.id.asc()).all()
+    if not rows:
+        return {"processed": 0, "failed": 0, "skipped": 0, "details": []}
+
+    backfiller = DescriptionBackfiller()
+    if not backfiller.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY saknas — backfill kan inte köras",
+        )
+
+    results = backfill_rows(rows, backfiller)
+    db.commit()
+
+    processed = sum(1 for r in results if r.status == "ok")
+    failed = sum(1 for r in results if r.status == "failed")
+    skipped = sum(1 for r in results if r.status == "skipped")
+    logger.info(
+        "Backfill ai_description_en klar: processed=%d failed=%d skipped=%d",
+        processed, failed, skipped,
+    )
+    return {
+        "processed": processed,
+        "failed": failed,
+        "skipped": skipped,
+        "details": [r.to_dict() for r in results],
+    }
+
+
 def _serialize_message(r: ProcessedMessage) -> dict:
     return {
         "id": r.id,
