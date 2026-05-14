@@ -25,6 +25,7 @@ from app.services.html_pdf_converter import HtmlToPdfError, html_to_pdf
 from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import (
+    _build_reprocess_query,
     fetch_bezala_metadata,
     force_process_message_ids,
     reprocess_gmail_window,
@@ -1493,6 +1494,61 @@ def force_process_messages(
         result.get("failed"), result.get("skipped"),
     )
     return result
+
+
+@app.get("/api/gmail/peek")
+def gmail_peek(
+    vendor_filter: str | None = None,
+    days: int = 14,
+    query: str | None = None,
+    _: None = Depends(require_auth),
+):
+    """Debug-endpoint: returnerar de råa message_ids som Gmail-sökningen
+    ger för samma query som /api/gmail/reprocess bygger, INNAN dedup-
+    filtrering mot ProcessedMessage. Read-only, inga sidoeffekter.
+
+    Query-params:
+      - vendor_filter: substring (from:/subject:), samma semantik som
+        reprocess-endpointet.
+      - days: hur många dagar bakåt (default 14, samma som reprocess
+        använder för Match Health-knapparna).
+      - query: rå Gmail-query som overrider allt annat (vendor_filter
+        och days ignoreras om query ges).
+    """
+    if query is not None and query.strip():
+        gmail_query = query.strip()
+    else:
+        if days < 1 or days > 365:
+            raise HTTPException(
+                status_code=400,
+                detail="days måste vara 1–365",
+            )
+        vendor = (vendor_filter or "").strip() or None
+        gmail_query = _build_reprocess_query(days, vendor)
+
+    try:
+        gmail = GmailClient()
+    except Exception as exc:
+        logger.exception("gmail/peek: Gmail-init misslyckades")
+        raise HTTPException(
+            status_code=500, detail=f"Gmail-init: {exc}",
+        ) from exc
+
+    try:
+        message_ids = gmail.list_candidate_message_ids(
+            query=gmail_query, max_results=500,
+        )
+    except Exception as exc:
+        logger.exception("gmail/peek: Gmail-sökning misslyckades")
+        raise HTTPException(
+            status_code=500, detail=f"Gmail list: {exc}",
+        ) from exc
+
+    return {
+        "query": gmail_query,
+        "message_ids": list(message_ids),
+        "total": len(message_ids),
+    }
 
 
 @app.post("/api/messages/{msg_id}/fetch-pdf")
