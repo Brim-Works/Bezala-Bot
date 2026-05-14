@@ -291,6 +291,223 @@ class ForceProcessTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_force_process_passes_force_true_to_pipeline(self):
+        """force_process_message_ids ska anropa _process_one_message med
+        force=True så pipeline kringgår SavedFile/Drive-dedupen."""
+        fake_gmail = MagicMock()
+        captured_kwargs: dict = {}
+
+        def fake_process(mid, *a, **kw):
+            captured_kwargs.update(kw)
+            a[5].processed += 1  # result
+
+        with patch.object(
+            self.pipeline_module, "GmailClient", return_value=fake_gmail,
+        ), patch.object(
+            self.pipeline_module, "DriveClient", return_value=MagicMock(),
+        ), patch.object(
+            self.pipeline_module, "FileNamer", return_value=MagicMock(),
+        ), patch.object(
+            self.pipeline_module, "ReceiptAnalyzer",
+            return_value=MagicMock(enabled=False),
+        ), patch.object(
+            self.pipeline_module, "_process_one_message",
+            side_effect=fake_process,
+        ):
+            resp = self.client.post(
+                "/api/messages/force-process",
+                json={"message_ids": ["abc123"]},
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertTrue(captured_kwargs.get("force"),
+                        "force=True ska skickas till _process_one_message")
+
+    def test_force_process_surfaces_skip_reason(self):
+        """När pipeline lägger en filtered-entry ska force-process
+        rapportera skip_reason + skip_detail per detail."""
+        fake_gmail = MagicMock()
+
+        def fake_process(mid, gmail, drive, namer, analyzer, bezala, result,
+                         **kwargs):
+            # Simulera html_pdf_failed-skip — pipeline-konventionen är att
+            # även lägga raden i result.filtered.
+            result.skipped += 1
+            result.filtered.append({
+                "message_id": mid,
+                "sender": "noreply@moovy.fi",
+                "subject": "Moovy: kvitto #1",
+                "received_at": None,
+                "reason": "html_pdf_failed",
+                "confidence": None,
+                "detail": "HTML→PDF kraschade",
+            })
+
+        with patch.object(
+            self.pipeline_module, "GmailClient", return_value=fake_gmail,
+        ), patch.object(
+            self.pipeline_module, "DriveClient", return_value=MagicMock(),
+        ), patch.object(
+            self.pipeline_module, "FileNamer", return_value=MagicMock(),
+        ), patch.object(
+            self.pipeline_module, "ReceiptAnalyzer",
+            return_value=MagicMock(enabled=False),
+        ), patch.object(
+            self.pipeline_module, "_process_one_message",
+            side_effect=fake_process,
+        ):
+            resp = self.client.post(
+                "/api/messages/force-process",
+                json={"message_ids": ["mid-1", "mid-2"]},
+            )
+
+        body = resp.json()
+        self.assertEqual(body["skipped"], 2)
+        by_id = {d["message_id"]: d for d in body["details"]}
+        self.assertEqual(by_id["mid-1"]["skip_reason"], "html_pdf_failed")
+        self.assertEqual(
+            by_id["mid-1"]["skip_detail"], "HTML→PDF kraschade",
+        )
+        # Varje detail har bara sin egen entry — inte hela listan från andra
+        self.assertEqual(len(by_id["mid-1"]["filtered_entries"]), 1)
+        self.assertEqual(len(by_id["mid-2"]["filtered_entries"]), 1)
+
+    def test_force_process_records_filename_collision(self):
+        """När force=False och SavedFile-raden krockar lägger pipeline
+        en filtered-entry med reason='filename_already_saved'. Den här
+        regressionen säkrar att silent-skip:en aldrig kommer tillbaka."""
+        from datetime import datetime
+
+        from app.services.pipeline import (
+            FILTERED_REASON_FILENAME_ALREADY_SAVED,
+            ScanResult,
+            _process_one_message,
+        )
+        from app.services.gmail_client import Attachment, GmailMessage
+        from app.models import SavedFile
+
+        # Seed en blockerande SavedFile-rad
+        with self.SessionLocal() as db:
+            db.add(SavedFile(
+                file_name="kollision.pdf",
+                file_date="20260507",
+                drive_file_id="drv-old",
+            ))
+            db.commit()
+
+        msg = GmailMessage(
+            message_id="mid-x",
+            thread_id="th-x",
+            sender="noreply@moovy.fi",
+            subject="Moovy: kvitto",
+            received_at=datetime(2026, 5, 7, 12, 0, 0),
+            snippet="",
+            attachments=[
+                Attachment(filename="orig.pdf", mime_type="application/pdf",
+                           data=b"%PDF-1.4\n%fake"),
+            ],
+            body_text="",
+            body_html="",
+        )
+
+        fake_gmail = MagicMock()
+        fake_gmail.fetch_message.return_value = msg
+        fake_drive = MagicMock()
+        fake_drive.filename_exists.return_value = False
+        fake_namer = MagicMock()
+        fake_namer.name_for.return_value = "kollision.pdf"
+
+        # AI off så pipeline går direkt till filnamn-checken
+        analyzer = MagicMock(enabled=False)
+
+        result = ScanResult()
+
+        with patch(
+            "app.services.pipeline.looks_like_pdf", return_value=True,
+        ):
+            _process_one_message(
+                "mid-x", fake_gmail, fake_drive, fake_namer, analyzer,
+                None, result,
+                use_ai=False, force=False,
+            )
+
+        self.assertEqual(result.skipped, 1)
+        self.assertEqual(len(result.filtered), 1)
+        self.assertEqual(
+            result.filtered[0]["reason"],
+            FILTERED_REASON_FILENAME_ALREADY_SAVED,
+        )
+        self.assertIn("kollision.pdf", result.filtered[0]["detail"])
+
+    def test_force_true_clears_savedfile_collision(self):
+        """Med force=True ska pipeline rensa SavedFile-raden och låta
+        uploaden gå igenom (ingen skip-entry, processed +1)."""
+        from datetime import datetime
+        from collections import namedtuple
+
+        from app.services.pipeline import (
+            ScanResult,
+            _process_one_message,
+        )
+        from app.services.gmail_client import Attachment, GmailMessage
+        from app.models import SavedFile
+
+        with self.SessionLocal() as db:
+            db.add(SavedFile(
+                file_name="forced.pdf",
+                file_date="20260430",
+                drive_file_id="drv-blocker",
+            ))
+            db.commit()
+
+        msg = GmailMessage(
+            message_id="mid-forced",
+            thread_id="th-forced",
+            sender="noreply@moovy.fi",
+            subject="Moovy",
+            received_at=datetime(2026, 4, 30, 12, 0, 0),
+            snippet="",
+            attachments=[
+                Attachment(filename="x.pdf", mime_type="application/pdf",
+                           data=b"%PDF-1.4\n%fake"),
+            ],
+            body_text="", body_html="",
+        )
+
+        Upload = namedtuple("Upload", ["file_id", "web_view_link"])
+        fake_gmail = MagicMock()
+        fake_gmail.fetch_message.return_value = msg
+        fake_drive = MagicMock()
+        fake_drive.filename_exists.return_value = True  # även detta hade
+        # blockerat utan force
+        fake_drive.upload_pdf.return_value = Upload("drv-new", "http://x")
+        fake_namer = MagicMock()
+        fake_namer.name_for.return_value = "forced.pdf"
+        analyzer = MagicMock(enabled=False)
+
+        result = ScanResult()
+
+        with patch(
+            "app.services.pipeline.looks_like_pdf", return_value=True,
+        ):
+            _process_one_message(
+                "mid-forced", fake_gmail, fake_drive, fake_namer, analyzer,
+                None, result,
+                use_ai=False, force=True,
+            )
+
+        self.assertEqual(result.processed, 1, "uploaden ska gå igenom")
+        self.assertEqual(result.skipped, 0)
+        # Den gamla SavedFile-raden ska vara borta, ersatt av en ny
+        with self.SessionLocal() as db:
+            rows = db.query(SavedFile).filter_by(
+                file_name="forced.pdf",
+            ).all()
+            self.assertEqual(len(rows), 1)
+            self.assertEqual(rows[0].drive_file_id, "drv-new")
+        # Och Drive.upload_pdf KALLADES trots filename_exists=True
+        fake_drive.upload_pdf.assert_called_once()
+
     def test_force_process_gmail_init_error_returns_payload(self):
         with patch.object(
             self.pipeline_module, "GmailClient",
