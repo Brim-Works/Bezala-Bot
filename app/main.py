@@ -2387,9 +2387,14 @@ def match_message_to_bezala(
 ):
     """Koppla en Drive-PDF till en befintlig Bezala-kortrad (bill_line).
 
-    Replikerar UI:s "Koppla till existerande"-flöde:
-        POST /api/attachments  multipart: file, draft=1, bill_line_id
-    Bill_line äger redan description/date/vat — vi skickar inga metadata."""
+    FAS 5.24 — robust coupling: efter POST /attachments (som länkar PDF
+    till bill_line) PUT:ar vi /transactions/{tx_id} med:
+      - amount/currency: ALLTID från bill_line (bank_row), inte ai_extracted.
+        Detta fixar cross-currency-rader (245 SEK → 23.14 EUR) och Finnair-
+        fall där AI plockade Fare i stället för Grand Total.
+      - account_id / vat_id: från vendor-mapping (C12).
+      - description: ai_description_en → summary → file_name (C8/C12).
+      - date: bill_line.date (bank rows date), fallback row.receipt_date."""
     row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Meddelandet finns inte")
@@ -2439,22 +2444,76 @@ def match_message_to_bezala(
                 detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
             )
 
-        description = row.file_name
-        if description.lower().endswith(".pdf"):
-            description = description[:-4]
-        # Förbereder för PR 2 (återinför metadata i match-flödet) — logga
-        # den effektiva payload som skickas idag så vi kan jämföra mot
-        # framtida varianter. Mikko kontrollerar denna rad i prod-logs.
+        # --- FAS 5.24 — robust coupling-metadata ---
+        # 1) Beloppet/valutan/datum måste komma från bill_line (bank_row),
+        #    inte från AI-extracted fält. Annars hamnar drafts på 0 €
+        #    (cross-currency) eller fel belopp (AI-mismatch).
+        snap = bill_line_snapshot or {}
+        effective_amount = snap.get("amount") if snap.get("amount") is not None else row.amount
+        effective_currency = (snap.get("currency") or row.currency or "EUR")
+        effective_date = snap.get("date") or row.receipt_date
+
+        # 2) Bygg samma params som upload-flödet använder (account_id,
+        #    vat_lines, description-prioritet). Failsafe: om Bezala-
+        #    metadata-anrop kraschar fortsätter vi med en minimal payload.
+        try:
+            metadata = fetch_bezala_metadata(bezala)
+        except Exception:  # noqa: BLE001
+            logger.exception(
+                "match-to-bezala: fetch_bezala_metadata kraschade — "
+                "fortsätter utan accounts/cost_centers/vat_rates",
+            )
+            metadata = {"accounts": [], "cost_centers": [], "vat_rates": []}
+
+        try:
+            from app.services.bezala_config import list_mappings as _list_mappings
+            vendor_mappings = _list_mappings(db)
+        except Exception:  # noqa: BLE001 — config-fel får inte blockera match
+            logger.exception(
+                "match-to-bezala: kunde inte ladda bezala_vendor_mappings",
+            )
+            vendor_mappings = []
+
+        # FAS 5.9 — prioritera engelsk AI-beskrivning, fall tillbaka på
+        # svensk summary, sist file_name (via build_description i mappern).
+        description_override = row.ai_description_en or row.summary
+
+        params = build_receipt_params(
+            file_name=row.file_name,
+            sender=row.sender,
+            vendor=row.vendor,
+            category=row.category,
+            amount=effective_amount,
+            currency=effective_currency,
+            receipt_date=effective_date,
+            subject=row.subject,
+            accounts=metadata["accounts"],
+            cost_centers=metadata["cost_centers"],
+            vat_rates=metadata["vat_rates"],
+            description_override=description_override,
+            vendor_mappings=vendor_mappings,
+        )
+
         logger.info(
             "MATCH-TO-BEZALA payload: message_id=%s bill_line_id=%s "
-            "description=%r vendor=%r category=%r amount=%s currency=%s "
-            "receipt_date=%s sender=%r",
-            msg_id, bill_line_id, description, row.vendor, row.category,
-            row.amount, row.currency, row.receipt_date, row.sender,
+            "description=%r vendor=%r category=%r "
+            "effective_amount=%s effective_currency=%s effective_date=%s "
+            "(row.amount=%s row.currency=%s row.receipt_date=%s "
+            "snap.amount=%s snap.currency=%s snap.date=%s) "
+            "credit_account_id=%s vat_lines_count=%d sender=%r",
+            msg_id, bill_line_id, params["description"], row.vendor,
+            row.category, effective_amount, effective_currency, effective_date,
+            row.amount, row.currency, row.receipt_date,
+            snap.get("amount"), snap.get("currency"), snap.get("date"),
+            params.get("credit_account_id"),
+            len(params.get("vat_lines_attributes") or []), row.sender,
         )
         bezala.attach_file(
             bill_line_id, row.file_name, pdf_bytes,
-            description=description,
+            description=params["description"],
+            date=params["date"],
+            credit_account_id=params.get("credit_account_id"),
+            vat_lines_attributes=params.get("vat_lines_attributes") or [],
         )
 
         row.bezala_transaction_id = bill_line_id

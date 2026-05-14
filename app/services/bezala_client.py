@@ -489,15 +489,26 @@ class BezalaClient:
         pdf_bytes: bytes,
         *,
         description: str | None = None,
+        date: str | None = None,
+        credit_account_id: int | str | None = None,
+        vat_lines_attributes: list[dict] | None = None,
+        extra_fields: dict[str, Any] | None = None,
     ) -> BezalaAttachment:
-        """Koppla PDF till befintlig kortrad i Bezala.
+        """Koppla PDF till befintlig kortrad i Bezala — robust coupling.
 
         Replikerar UI:s "Koppla till existerande"-flöde:
             POST /api/attachments
             multipart: file=<pdf>, draft=1, bill_line_id=<id>
                        [, description=<text>]
-        Bill_line äger amount/date/vat — vi skriver bara description
-        (annars står fältet tomt i Bezala)."""
+        Bezala skapar en draft-transaction länkad till bill_line och
+        returnerar både attachment_id och transaction_id.
+
+        FAS 5.24 — robust coupling: när metadata (date, credit_account_id,
+        vat_lines_attributes, extra_fields) skickas in följer vi upp med
+        PUT /transactions/{tx_id} så att draft:en får rätt belopp/valuta/
+        konto/moms direkt — i stället för att förlita oss på att Bezala
+        automatiskt ärver från bill_line (vilket empiriskt inte sker för
+        cross-currency-rader och vissa belopp-mismatch-fall)."""
         if not bill_line_id:
             raise BezalaError("attach_file: bill_line_id saknas")
         if not filename:
@@ -514,8 +525,9 @@ class BezalaClient:
 
         logger.info(
             "attach_file: POST /attachments bill_line_id=%s filename=%r "
-            "bytes=%d form_keys=%s",
+            "bytes=%d form_keys=%s metadata=%s",
             bill_line_id, filename, len(pdf_bytes), sorted(form.keys()),
+            bool(date or credit_account_id or vat_lines_attributes or extra_fields),
         )
         resp = self._request(
             "POST",
@@ -523,9 +535,8 @@ class BezalaClient:
             files={FILE_FIELD_NAME: (filename, pdf_bytes, "application/pdf")},
             data=form,
         )
-        # Förbereder för PR 2 — logga Bezalas svar så vi kan diagnostisera
-        # vilka fält som faktiskt sätts på bill_line:n (cost_center, account,
-        # vat_code etc). _safe_body_snippet trimmar till 500 tecken.
+        # Logga Bezalas svar så vi kan diagnostisera vilka fält som faktiskt
+        # sätts på bill_line:n (cost_center, account, vat_code etc).
         logger.info(
             "BEZALA RESPONSE attach_file: status=%s body=%s",
             resp.status_code, _safe_body_snippet(resp),
@@ -546,7 +557,63 @@ class BezalaClient:
             or (data.get("attachment") or {}).get("id")
             or bill_line_id
         )
-        return BezalaAttachment(attachment_id=str(attachment_id))
+        # Plocka ut transaction_id — Bezala skapar en draft-tx för varje
+        # bill_line-attach. Vi behöver detta för PUT-uppföljningen.
+        transaction_id = data.get("transaction_id")
+        if not transaction_id and isinstance(data.get("attachment"), dict):
+            transaction_id = data["attachment"].get("transaction_id")
+        if not transaction_id and isinstance(data.get("transaction"), dict):
+            transaction_id = data["transaction"].get("id")
+
+        # Steg 2: om belopp/datum/konto-metadata skickats in OCH vi fick en
+        # transaction_id → PUT /transactions/{tx_id} med fullständig payload.
+        # Detta sätter belopp/valuta/konto/moms explicit och garanterar att
+        # draft:en matchar bill_line:ns siffror även cross-currency.
+        #
+        # `date` används som tröskel: om caller skickade in datum så är det
+        # FAS 5.24:s robusta-coupling-flöde och vi kör PUT. Bara description
+        # = legacy ("Koppla till existerande" utan metadata-uppföljning).
+        wants_metadata_put = bool(
+            date and (
+                credit_account_id is not None
+                or vat_lines_attributes
+                or extra_fields
+            )
+        )
+        if wants_metadata_put and transaction_id:
+            try:
+                self.update_transaction(
+                    str(transaction_id),
+                    description=description or filename,
+                    date=date,
+                    credit_account_id=credit_account_id,
+                    vat_lines_attributes=vat_lines_attributes,
+                    extra_fields=extra_fields,
+                )
+            except BezalaError as exc:
+                # ORPHAN: draft kopplad till bill_line men metadata-PUT
+                # misslyckades. Mikko får städa / fylla manuellt — men
+                # själva couplingen håller (bill_line_id satt på draft).
+                logger.error(
+                    "attach_file ORPHAN metadata: bill_line_id=%s "
+                    "transaction_id=%s (coupling OK men PUT misslyckades: "
+                    "%s | body=%s)",
+                    bill_line_id, transaction_id, exc, exc.body,
+                )
+                raise
+        elif wants_metadata_put and not transaction_id:
+            logger.warning(
+                "attach_file: metadata skickad men Bezala-svaret saknade "
+                "transaction_id — kan inte PUT:a metadata. response_keys=%s",
+                sorted(data.keys()) if isinstance(data, dict) else "—",
+            )
+
+        # Returnera transaction_id som "attachment_id" när vi fick en — det
+        # är ID:t som används för deep-link i UI och som lagras på raden.
+        # Faller tillbaka på POST-svarets id / bill_line_id för bakåt-
+        # kompatibilitet när metadata inte används.
+        effective_id = transaction_id or attachment_id
+        return BezalaAttachment(attachment_id=str(effective_id))
 
     def list_vat_rates(self) -> list[dict]:
         """Hämtar momssatser. Bezala-endpointen kan heta /vat_rates eller
