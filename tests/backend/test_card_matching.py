@@ -940,6 +940,135 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         self.assertEqual(body["description"], "My description")
         self.assertEqual(body["vat_lines_attributes"][0]["taxable"], "23.22")
 
+    def test_match_to_bezala_payload_includes_draft_status_explicitly(self):
+        """FAS 5.25 — PUT /transactions måste innehålla draft=true så att
+        Bezala håller kvar drafter i 'Utkast' i stället för att sidoeffekt-
+        promota till 'Väntar på andras attestering'.
+
+        Detta är fix:en för C16: PR #51 (FAS 5.24) la till en uppföljnings-
+        PUT efter POST /attachments. Utan explicit draft-flagga skickade
+        Bezala-API:t in drafterna för attestering — och de kan inte
+        återkallas av användaren."""
+        client = _make_client()
+        calls: list[dict] = []
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.headers = {"content-type": "application/json"}
+        post_resp.text = '{"id": 11, "transaction_id": 22}'
+        post_resp.json = MagicMock(return_value={"id": 11, "transaction_id": 22})
+
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"id": 22, "draft": true}'
+        put_resp.json = MagicMock(return_value={"id": 22, "draft": True})
+
+        def fake_request(method, url, **kwargs):
+            calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+            return post_resp if method == "POST" else put_resp
+
+        client._client.request = fake_request
+
+        client.attach_file(
+            42, "kvitto.pdf", PDF_BYTES,
+            description="Skånetrafiken",
+            date="2026-05-05",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "23.22",
+                "tax_percentage": "0.24",
+                "currency": "EUR",
+                "expense_account_id": 67100,
+            }],
+        )
+
+        put_calls = [c for c in calls if c["method"] == "PUT"]
+        self.assertEqual(len(put_calls), 1, "förväntar exakt en PUT /transactions")
+        body = put_calls[0]["json"]["transaction"]
+        self.assertIn("draft", body, "transaction-payload ska ha draft-flagga")
+        self.assertIs(body["draft"], True, "draft måste vara True (boolean), inte sant")
+
+    def test_match_to_bezala_payload_does_not_submit(self):
+        """FAS 5.25 — defensivt: PUT-payloaden får INTE innehålla några
+        fält som Bezala kan tolka som en submit-signal (status='submitted',
+        submitted=True, state='submitted', action='submit', is_draft=False).
+        Bezala tillåter inte återkallning — bara attestanten kan avvisa."""
+        client = _make_client()
+        calls: list[dict] = []
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.headers = {"content-type": "application/json"}
+        post_resp.text = '{"id": 11, "transaction_id": 22}'
+        post_resp.json = MagicMock(return_value={"id": 11, "transaction_id": 22})
+
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"id": 22}'
+        put_resp.json = MagicMock(return_value={"id": 22})
+
+        def fake_request(method, url, **kwargs):
+            calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+            return post_resp if method == "POST" else put_resp
+
+        client._client.request = fake_request
+
+        client.attach_file(
+            42, "kvitto.pdf", PDF_BYTES,
+            description="Anthropic",
+            date="2026-05-05",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "112.95", "tax_percentage": "0.00",
+                "currency": "EUR", "expense_account_id": 67100,
+            }],
+        )
+
+        put_calls = [c for c in calls if c["method"] == "PUT"]
+        self.assertEqual(len(put_calls), 1)
+        body = put_calls[0]["json"]["transaction"]
+        # Submit-coded fält som måste saknas eller vara "draft-vänliga"
+        self.assertNotIn("submitted", body)
+        self.assertNotIn("action", body)
+        if "state" in body:
+            self.assertEqual(body["state"], "draft")
+        if "status" in body:
+            self.assertEqual(body["status"], "draft")
+        if "is_draft" in body:
+            self.assertIs(body["is_draft"], True)
+        # draft-flaggan ska vara explicit True
+        self.assertIs(body.get("draft"), True)
+
+    def test_update_transaction_extra_fields_cannot_override_draft(self):
+        """Defensivt skydd: även om en framtida caller råkar skicka
+        draft=False via extra_fields ska update_transaction behålla
+        draft=True (vi vill aldrig auto-submitta från koden)."""
+        client = _make_client()
+        captured: dict = {}
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 99}'
+        resp.json = MagicMock(return_value={"id": 99})
+
+        def fake_request(method, url, **kwargs):
+            captured["json"] = kwargs.get("json")
+            return resp
+        client._client.request = fake_request
+
+        client.update_transaction(
+            "99",
+            description="X",
+            date="2026-05-05",
+            extra_fields={"draft": False, "cost_center_id": 1},
+        )
+        body = captured["json"]["transaction"]
+        self.assertIs(body["draft"], True)
+        # extra_fields utan draft-namn ska gå igenom
+        self.assertEqual(body["cost_center_id"], 1)
+
     def test_attach_file_legacy_description_only_skips_put(self):
         """Bakåtkompatibilitet: description-only (utan date) → ingen PUT."""
         client = _make_client()
@@ -1587,6 +1716,53 @@ class RobustCouplingTest(unittest.TestCase):
         self.assertTrue(vat_lines)
         self.assertEqual(vat_lines[0]["taxable"], "23.22")
         self.assertEqual(vat_lines[0]["currency"], "EUR")
+
+    def test_match_to_bezala_with_sek_receipt_eur_bank_row_still_correctly_uses_eur_amount(self):
+        """FAS 5.25 — bevarad C12/C15-coupling från PR #51: när vi nu
+        även skickar draft=true i PUT-payloaden får det INTE bryta
+        cross-currency-fixen (Skånetrafiken 245 SEK → 23.14 EUR).
+
+        Verifierar både:
+          - attach_file får rätt EUR-belopp/-valuta i vat_lines
+          - kwargs.date = bank_row.date (2026-05-04)
+          - kwargs.credit_account_id är satt (mapping/account-val funkar)
+        Drafterns 'Utkast'-status verifieras separat i
+        test_match_to_bezala_payload_includes_draft_status_explicitly."""
+        mid = self._seed(
+            message_id="m-skane-2314",
+            vendor="Skånetrafiken", category="kollektivtrafik",
+            amount=245.00, currency="SEK", receipt_date="2026-05-03",
+            ai_description_en="Skånetrafiken app — single ticket Kristianstad",
+        )
+        fake_bezala = self._mk_fake_bezala([
+            {
+                "id": 7777,
+                "description": "MIKKO: SKANETRAFIKEN APP, KRISTIANSTAD, SE 23.14 EUR",
+                "amount": 23.14,
+                "currency": "EUR",
+                "date": "2026-05-04",
+            },
+        ])
+        resp = self._post_match(mid, 7777, fake_bezala)
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+        fake_bezala.attach_file.assert_called_once()
+        args = fake_bezala.attach_file.call_args.args
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        # Coupling — rätt bill_line_id
+        self.assertEqual(args[0], "7777")
+        # Datum från bank_row, inte från kvittot
+        self.assertEqual(kwargs.get("date"), "2026-05-04")
+        # Konto är satt (mapping eller default)
+        self.assertIsNotNone(kwargs.get("credit_account_id"))
+        # Belopp/valuta i EUR — INTE 245 SEK och INTE 0.00
+        vat_lines = kwargs.get("vat_lines_attributes") or []
+        self.assertTrue(vat_lines, "vat_lines måste ha en EUR-rad")
+        self.assertEqual(vat_lines[0]["taxable"], "23.14")
+        self.assertEqual(vat_lines[0]["currency"], "EUR")
+        self.assertNotEqual(vat_lines[0]["taxable"], "245.00")
+        self.assertNotEqual(vat_lines[0]["taxable"], "0.00")
+        self.assertNotEqual(vat_lines[0]["currency"], "SEK")
 
     def test_finnair_amount_mismatch_uses_bank_row_366_32(self):
         """FAIL 2-regression: Finnair eticket där AI extracted 333.00 från

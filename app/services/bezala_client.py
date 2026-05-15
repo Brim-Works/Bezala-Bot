@@ -361,8 +361,17 @@ class BezalaClient:
             "description": "...",
             "date": "YYYY-MM-DD",
             "credit_account_id": 67100,
-            "vat_lines_attributes": [{...}]
+            "vat_lines_attributes": [{...}],
+            "draft": true
           }}
+
+        FAS 5.25 — `draft: true` skickas ALLTID med så att Bezala inte
+        promotar transaktionen från "Utkast" till "Väntar på andras
+        attestering" som ett sidoeffekt av PUT:en (regression från PR
+        #51, FAS 5.24 — flödet "Couple" skickade automatiskt drafts
+        till attestering utan att användaren fick chans att granska).
+        Bezala tillåter inte att inskickade drafts återkallas — bara
+        attestanten kan avvisa — så draft-flaggan är hard-required.
 
         Returnerar BezalaTransaction — bekräftat ID från svaret
         (eller tillbaka samma som skickades)."""
@@ -376,6 +385,11 @@ class BezalaClient:
         payload: dict[str, Any] = {
             "description": description,
             "date": date,
+            # FAS 5.25 — håll draft-status över PUT:en. Speglar POST
+            # /attachments form-flaggan draft=1 (string) men som JSON
+            # boolean på transaction-nivå. Får inte överstyras via
+            # extra_fields.
+            "draft": True,
         }
         if credit_account_id is not None:
             payload["credit_account_id"] = credit_account_id
@@ -383,8 +397,18 @@ class BezalaClient:
             payload["vat_lines_attributes"] = vat_lines_attributes
         if extra_fields:
             for k, v in extra_fields.items():
-                if v is not None:
-                    payload[k] = v
+                if v is None:
+                    continue
+                if k == "draft":
+                    # Skydda mot att en framtida caller råkar slå av
+                    # draft via extra_fields. Logga och ignorera.
+                    logger.warning(
+                        "update_transaction: extra_fields försökte sätta "
+                        "draft=%r — ignoreras, behåller draft=True",
+                        v,
+                    )
+                    continue
+                payload[k] = v
 
         wrapped = {"transaction": payload}
         logger.info(
