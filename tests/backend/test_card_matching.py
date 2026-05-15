@@ -877,6 +877,90 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         with self.assertRaises(BezalaError):
             client.attach_file("", "kvitto.pdf", PDF_BYTES)
 
+    def test_attach_file_with_metadata_puts_transaction_update(self):
+        """FAS 5.24 — när date + credit_account_id + vat_lines skickas in
+        så följs POST /attachments upp av PUT /transactions/{tx_id}."""
+        client = _make_client()
+        calls: list[dict] = []
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.headers = {"content-type": "application/json"}
+        post_resp.text = '{"id": 111, "transaction_id": 222}'
+        post_resp.json = MagicMock(return_value={"id": 111, "transaction_id": 222})
+
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"id": 222}'
+        put_resp.json = MagicMock(return_value={"id": 222})
+
+        def fake_request(method, url, **kwargs):
+            calls.append({
+                "method": method, "url": url,
+                "files": kwargs.get("files"),
+                "data": kwargs.get("data"),
+                "json": kwargs.get("json"),
+            })
+            if method == "POST":
+                return post_resp
+            return put_resp
+
+        client._client.request = fake_request
+
+        att = client.attach_file(
+            42, "kvitto.pdf", PDF_BYTES,
+            description="My description",
+            date="2026-05-04",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "23.22",
+                "tax_percentage": "0.24",
+                "currency": "EUR",
+                "expense_account_id": 67100,
+                "vat_code_id": 864,
+            }],
+        )
+
+        # Returnerar transaction_id (inte attachment_id) när vi fick en
+        self.assertEqual(att.attachment_id, "222")
+
+        # POST + PUT
+        self.assertEqual(len(calls), 2)
+        self.assertEqual(calls[0]["method"], "POST")
+        self.assertTrue(calls[0]["url"].endswith("/attachments"))
+        self.assertEqual(calls[0]["data"]["bill_line_id"], "42")
+        self.assertEqual(calls[0]["data"]["draft"], "1")
+        self.assertEqual(calls[0]["data"]["description"], "My description")
+        self.assertEqual(calls[1]["method"], "PUT")
+        self.assertTrue(calls[1]["url"].endswith("/transactions/222"))
+        body = calls[1]["json"]["transaction"]
+        self.assertEqual(body["date"], "2026-05-04")
+        self.assertEqual(body["credit_account_id"], 67100)
+        self.assertEqual(body["description"], "My description")
+        self.assertEqual(body["vat_lines_attributes"][0]["taxable"], "23.22")
+
+    def test_attach_file_legacy_description_only_skips_put(self):
+        """Bakåtkompatibilitet: description-only (utan date) → ingen PUT."""
+        client = _make_client()
+        calls: list[str] = []
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 5}'
+        resp.json = MagicMock(return_value={"id": 5})
+
+        def fake_request(method, url, **kwargs):
+            calls.append(method)
+            return resp
+        client._client.request = fake_request
+
+        client.attach_file(
+            42, "kvitto.pdf", PDF_BYTES,
+            description="legacy",
+        )
+        self.assertEqual(calls, ["POST"])
+
 
 # ---------- Endpoint-tester ----------
 
@@ -1169,6 +1253,18 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         fake_attachment = MagicMock()
         fake_attachment.attachment_id = "att-1"
         fake_bezala.attach_file.return_value = fake_attachment
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 2163467,
+                "description": "ANTHROPIC API",
+                "amount": 112.95,
+                "currency": "EUR",
+                "date": "2026-04-14",
+            },
+        ]
+        fake_bezala.list_accounts.return_value = []
+        fake_bezala.list_cost_centers.return_value = []
+        fake_bezala.list_vat_rates.return_value = []
 
         with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
              patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
@@ -1179,8 +1275,9 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         return resp, fake_bezala
 
     def test_match_to_bezala_links_via_bill_line_id(self):
-        """Match-flödet anropar attach_file med bill_line_id (UI:s
-        'Koppla till existerande'-flöde) — inga metadata, inga PUT."""
+        """FAS 5.24 — match-flödet anropar attach_file med bill_line_id +
+        full metadata (date, credit_account_id, vat_lines) så att Bezala
+        får rätt belopp/valuta/konto på drafterns PUT."""
         mid = self._seed_processed()
         resp, fake_bezala = self._run_match(mid)
 
@@ -1189,20 +1286,19 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(body["bezala_upload_status"], "success")
         self.assertEqual(body["bezala_transaction_id"], "2163467")
 
-        # PUT/update_transaction får INTE kallas
-        fake_bezala.update_transaction.assert_not_called()
-        # Vi bygger inte metadata längre (bill_line äger den)
-        fake_bezala.list_accounts.assert_not_called()
-        fake_bezala.list_cost_centers.assert_not_called()
-        fake_bezala.list_vat_rates.assert_not_called()
-
-        # attach_file anropas med bill_line_id + filename + pdf +
-        # description. När varken mapping, ai_description_en eller
-        # summary finns faller vi tillbaka på filnamnet (utan .pdf).
-        fake_bezala.attach_file.assert_called_once_with(
-            "2163467", "20260414 Anthropic API.pdf", PDF_BYTES,
-            description="20260414 Anthropic API",
-        )
+        # attach_file anropas med bill_line_id + filename + pdf + full
+        # metadata (description, date, credit_account_id, vat_lines).
+        fake_bezala.attach_file.assert_called_once()
+        args, kwargs = fake_bezala.attach_file.call_args
+        self.assertEqual(args[0], "2163467")
+        self.assertEqual(args[1], "20260414 Anthropic API.pdf")
+        self.assertEqual(args[2], PDF_BYTES)
+        # date ska komma från bill_line (2026-04-14)
+        self.assertEqual(kwargs["date"], "2026-04-14")
+        self.assertIsNotNone(kwargs.get("credit_account_id"))
+        # vat_lines (om vat_rates returneras tomt blir listan tom — det är
+        # OK, Bezala använder kontots default_vat då).
+        self.assertIn("vat_lines_attributes", kwargs)
 
     def test_match_flow_passes_ai_description_en(self):
         """FAS 5.17 — match-flödet skickar row.ai_description_en till
@@ -1215,9 +1311,14 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         )
         resp, fake_bezala = self._run_match(mid)
         self.assertEqual(resp.status_code, 200, resp.text)
-        fake_bezala.attach_file.assert_called_once_with(
-            "2163467", "20260505 Lovable.pdf", PDF_BYTES,
-            description="Lovable Pro 3 subscription, May 5–Jun 5, 2026",
+        fake_bezala.attach_file.assert_called_once()
+        args, kwargs = fake_bezala.attach_file.call_args
+        self.assertEqual(args[0], "2163467")
+        self.assertEqual(args[1], "20260505 Lovable.pdf")
+        self.assertEqual(args[2], PDF_BYTES)
+        self.assertEqual(
+            kwargs["description"],
+            "Lovable Pro 3 subscription, May 5–Jun 5, 2026",
         )
 
     def test_match_flow_uses_mapping_override_when_present(self):
@@ -1284,6 +1385,309 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertIn("Drive-fil", resp.json()["detail"])
+
+
+# ---------- FAS 5.24 — robust coupling-tester ----------
+
+
+class RobustCouplingTest(unittest.TestCase):
+    """FAS 5.24 — match-to-bezala måste skicka rätt belopp/valuta till
+    Bezala även när AI-extracted skiljer sig från bank_row, så att
+    drafterns 💳-koppling håller."""
+
+    @classmethod
+    def setUpClass(cls):
+        db_module = _configure_memory_engine()
+        from app.db import Base
+        from app import models  # noqa: F401
+        from app import main as app_module
+        from app.models import ProcessedMessage
+        from fastapi.testclient import TestClient
+        from contextlib import contextmanager
+
+        Base.metadata.create_all(bind=db_module.engine)
+        SessionLocal = db_module.SessionLocal
+
+        @contextmanager
+        def session_scope():
+            s = SessionLocal()
+            try:
+                yield s
+                s.commit()
+            except Exception:
+                s.rollback()
+                raise
+            finally:
+                s.close()
+
+        def get_db():
+            s = SessionLocal()
+            try:
+                yield s
+            finally:
+                s.close()
+
+        db_module.session_scope = session_scope
+        db_module.get_db = get_db
+        app_module.get_db = get_db
+        app_module.session_scope = session_scope
+        try:
+            from app.db import get_db as original_get_db
+            app_module.app.dependency_overrides[original_get_db] = get_db
+        except Exception:
+            pass
+
+        async def fake_require_auth():
+            return None
+
+        app_module.app.dependency_overrides[app_module.require_auth] = fake_require_auth
+        cls.client = TestClient(app_module.app)
+        cls.app_module = app_module
+        cls.SessionLocal = SessionLocal
+        cls.ProcessedMessage = ProcessedMessage
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.app_module.app.dependency_overrides.clear()
+
+    def setUp(self):
+        with self.SessionLocal() as db:
+            db.query(self.ProcessedMessage).delete()
+            db.commit()
+
+    def _seed(self, **over):
+        defaults = dict(
+            message_id="m-rc",
+            sender="invoice@example.com",
+            subject="Receipt",
+            status="saved",
+            file_name="kvitto.pdf",
+            drive_file_id="drv-rc",
+            drive_link="https://drive/drv-rc",
+            bezala_upload_status="pending",
+        )
+        defaults.update(over)
+        with self.SessionLocal() as db:
+            row = self.ProcessedMessage(**defaults)
+            db.add(row)
+            db.flush()
+            mid = row.id
+            db.commit()
+        return mid
+
+    # Bezala-konton som täcker kategorierna vi använder i RobustCouplingTest.
+    # Vi tillhandahåller default_vat_id=864 (24 %) så build_vat_lines_attributes
+    # bygger en rad även utan vat_rates-listan.
+    _DEFAULT_ACCOUNTS = [
+        {"id": 67100, "name": "Matkaliput", "default_vat_id": 864},
+        {"id": 67113, "name": "Paikoituskulut", "default_vat_id": 864},
+        {"id": 67110, "name": "Muut matkakulut", "default_vat_id": 864},
+    ]
+
+    def _mk_fake_bezala(self, missing_receipts, accounts=None,
+                        cost_centers=None, vat_rates=None):
+        fake_bezala = MagicMock()
+        attach_ret = MagicMock()
+        attach_ret.attachment_id = "att-rc"
+        fake_bezala.attach_file.return_value = attach_ret
+        fake_bezala.list_missing_receipts.return_value = missing_receipts
+        fake_bezala.list_accounts.return_value = (
+            self._DEFAULT_ACCOUNTS if accounts is None else accounts
+        )
+        fake_bezala.list_cost_centers.return_value = cost_centers or []
+        fake_bezala.list_vat_rates.return_value = vat_rates or []
+        return fake_bezala
+
+    def _post_match(self, mid, bill_line_id, fake_bezala, pdf=PDF_BYTES):
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = pdf
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            return self.client.post(
+                f"/api/messages/{mid}/match-to-bezala",
+                json={"missing_receipt_id": bill_line_id},
+            )
+
+    # ---- amount/currency-källa ----
+
+    def test_coupling_uses_bank_row_amount_not_ai_extracted(self):
+        """När bank_row.amount (366.32) ≠ row.amount (333.00) ska
+        attach_file få bank_row-beloppet i vat_lines."""
+        mid = self._seed(
+            vendor="Finnair", category="flyg",
+            amount=333.00, currency="EUR", receipt_date="2026-05-01",
+            ai_description_en="Helsinki–Stockholm return flight",
+        )
+        fake_bezala = self._mk_fake_bezala([
+            {
+                "id": 7001,
+                "description": "MIKKO: FINNAIR HEL-ARN, VANTAA, FI 366.32 EUR",
+                "amount": 366.32,
+                "currency": "EUR",
+                "date": "2026-05-02",
+            },
+        ])
+        resp = self._post_match(mid, 7001, fake_bezala)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        vat_lines = kwargs.get("vat_lines_attributes") or []
+        self.assertTrue(vat_lines, "vat_lines_attributes ska inte vara tom")
+        self.assertEqual(vat_lines[0]["taxable"], "366.32")
+        # och INTE 333.00 (AI-extracted)
+        self.assertNotEqual(vat_lines[0]["taxable"], "333.00")
+
+    def test_coupling_uses_bank_row_currency_not_receipt_currency(self):
+        """När bank_row.currency = EUR och row.currency = SEK ska
+        vat_lines få EUR (kuponger flyter via banken i EUR)."""
+        mid = self._seed(
+            vendor="Skånetrafiken", category="kollektivtrafik",
+            amount=245.00, currency="SEK", receipt_date="2026-05-03",
+        )
+        fake_bezala = self._mk_fake_bezala([
+            {
+                "id": 7002,
+                "description": "MIKKO: SKANETRAFIKEN APP, KRISTIANSTAD, SE 23.14 EUR",
+                "amount": 23.14,
+                "currency": "EUR",
+                "date": "2026-05-04",
+            },
+        ])
+        resp = self._post_match(mid, 7002, fake_bezala)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        vat_lines = kwargs.get("vat_lines_attributes") or []
+        self.assertTrue(vat_lines)
+        self.assertEqual(vat_lines[0]["currency"], "EUR")
+        self.assertEqual(vat_lines[0]["taxable"], "23.14")
+
+    def test_cross_currency_sek_receipt_eur_bank_row_couples_correctly(self):
+        """FAIL 1-regression: SEK-kvitto kopplas mot EUR-bankrad — drafterns
+        belopp ska vara EUR-motsvarigheten, inte 0,00 och inte 245 SEK."""
+        mid = self._seed(
+            vendor="Skånetrafiken", category="kollektivtrafik",
+            amount=245.00, currency="SEK", receipt_date="2026-05-03",
+        )
+        fake_bezala = self._mk_fake_bezala([
+            {
+                "id": 7003,
+                "description": "MIKKO: SKANETRAFIKEN APP, KRISTIANSTAD, SE 23.22 EUR",
+                "amount": 23.22,
+                "currency": "EUR",
+                "date": "2026-05-05",
+            },
+        ])
+        resp = self._post_match(mid, 7003, fake_bezala)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        # attach_file ska få bill_line_id (coupling) + EUR-belopp
+        args = fake_bezala.attach_file.call_args.args
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        self.assertEqual(args[0], "7003")
+        self.assertEqual(kwargs.get("date"), "2026-05-05")
+        vat_lines = kwargs.get("vat_lines_attributes") or []
+        self.assertTrue(vat_lines)
+        self.assertEqual(vat_lines[0]["taxable"], "23.22")
+        self.assertEqual(vat_lines[0]["currency"], "EUR")
+
+    def test_finnair_amount_mismatch_uses_bank_row_366_32(self):
+        """FAIL 2-regression: Finnair eticket där AI extracted 333.00 från
+        Fare; bank_row har 366.32 (Grand Total). Drafterns belopp = 366.32."""
+        mid = self._seed(
+            message_id="m-finnair-596",
+            vendor="Finnair", category="flyg",
+            amount=333.00, currency="EUR", receipt_date="2026-04-30",
+            ai_description_en="HEL-CPH economy ticket",
+        )
+        fake_bezala = self._mk_fake_bezala([
+            {
+                "id": 8001,
+                "description": "MIKKO: FINNAIR O87UJ3J, VANTAA, FI 366.32 EUR",
+                "amount": 366.32,
+                "currency": "EUR",
+                "date": "2026-05-01",
+            },
+        ])
+        resp = self._post_match(mid, 8001, fake_bezala)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        vat_lines = kwargs.get("vat_lines_attributes") or []
+        self.assertTrue(vat_lines)
+        self.assertEqual(vat_lines[0]["taxable"], "366.32")
+        self.assertEqual(vat_lines[0]["currency"], "EUR")
+        # ai_description_en ska finnas kvar i description (C12-regression
+        # vävs in i C14 — Mikko vill inte tappa AI-beskrivningen)
+        self.assertEqual(kwargs.get("description"), "HEL-CPH economy ticket")
+
+    # ---- mapping-prio (C12-regression vävd in i C14) ----
+
+    def test_moovy_mapping_priority_holds(self):
+        """FAIL 3-regression: Moovy-kvitto ska få Paikoituskulut + 25.5%
+        även när det går via match-to-bezala (inte bara via direkt upload)."""
+        from app.services.bezala_config import create_mapping
+        with self.SessionLocal() as db:
+            create_mapping(
+                db,
+                vendor_pattern="moovy",
+                bezala_account_id=67113,
+                vat_rate="25.5",
+                description_override=None,
+            )
+            db.commit()
+
+        mid = self._seed(
+            message_id="m-moovy-622",
+            vendor="Moovy",
+            category="parkering",
+            amount=37.49,
+            currency="EUR",
+            receipt_date="2026-05-10",
+            sender="noreply@moovy.fi",
+        )
+        fake_bezala = self._mk_fake_bezala(
+            [
+                {
+                    "id": 9001,
+                    "description": "MIKKO: MOOVY VANTAA, FI 37.49 EUR",
+                    "amount": 37.49,
+                    "currency": "EUR",
+                    "date": "2026-05-10",
+                },
+            ],
+            accounts=[{"id": 67113, "name": "Paikoituskulut", "default_vat_id": None}],
+        )
+        resp = self._post_match(mid, 9001, fake_bezala)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        vat_lines = kwargs.get("vat_lines_attributes") or []
+        self.assertTrue(vat_lines, "Moovy ska få vat_lines via mapping")
+        self.assertEqual(vat_lines[0]["expense_account_id"], 67113)
+        # 25.5 % i Bezala-format = "0.255"
+        self.assertEqual(vat_lines[0]["tax_percentage"], "0.255")
+
+    def test_description_uses_ai_description_en_when_no_mapping(self):
+        """C12-regression: när vendor saknar mapping ska description fallback
+        bli row.ai_description_en (inte filnamnet)."""
+        mid = self._seed(
+            message_id="m-desc",
+            vendor="UnknownVendor",
+            category="other",
+            amount=10.0,
+            currency="EUR",
+            receipt_date="2026-05-12",
+            ai_description_en="Tasty lunch in Helsinki",
+        )
+        fake_bezala = self._mk_fake_bezala([
+            {
+                "id": 9101,
+                "description": "MIKKO: UNKNOWN 10.00 EUR",
+                "amount": 10.0,
+                "currency": "EUR",
+                "date": "2026-05-12",
+            },
+        ])
+        resp = self._post_match(mid, 9101, fake_bezala)
+        self.assertEqual(resp.status_code, 200, resp.text)
+        kwargs = fake_bezala.attach_file.call_args.kwargs
+        self.assertEqual(kwargs.get("description"), "Tasty lunch in Helsinki")
 
 
 if __name__ == "__main__":
