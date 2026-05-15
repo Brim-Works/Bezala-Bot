@@ -25,7 +25,9 @@ from app.services.html_pdf_converter import HtmlToPdfError, html_to_pdf
 from app.services.html_sanitizer import extract_links, sanitize_html
 from app.services.link_fetcher import LinkFetchError, fetch_pdf_from_link
 from app.services.pipeline import (
+    _build_reprocess_query,
     fetch_bezala_metadata,
+    force_process_message_ids,
     reprocess_gmail_window,
     run_scan,
 )
@@ -1434,6 +1436,121 @@ def reprocess_gmail_unprocessed(
     return result
 
 
+class ForceProcessPayload(BaseModel):
+    """Body för POST /api/messages/force-process.
+
+    message_ids: Gmail-message_id som ska tvångsprocessas. För varje id:
+      1. Bezala-Klar-etiketten tas bort (best-effort).
+      2. Ev. befintlig ProcessedMessage-rad raderas så pipeline-dedupen
+         släpper igenom körningen.
+      3. _process_one_message körs med html_to_pdf-grenen påslagen.
+
+    remove_done_label / delete_existing_row: stäng av om man manuellt
+    vill behålla nuvarande state (default båda true).
+    """
+    message_ids: list[str] = Field(default_factory=list)
+    remove_done_label: bool = True
+    delete_existing_row: bool = True
+
+
+@app.post("/api/messages/force-process")
+def force_process_messages(
+    payload: ForceProcessPayload,
+    _: None = Depends(require_auth),
+):
+    """Tvinga pipeline-körning på explicita Gmail-message_id, helt förbi
+    Gmail-queryns filter (has:attachment / Bezala-Klar / Promotions).
+
+    Används som maintenance-utväg för mail som matchar en konfigurerad
+    html_only_sender men ändå inte fångas av scan — t.ex. om Bezala-Klar
+    redan satts av tidigare buggad scan-runda, eller om Gmail kategoriserar
+    debit-notiserna som Promotions.
+
+    Body: {"message_ids": ["19e1...", "..."], "remove_done_label": true,
+           "delete_existing_row": true}.
+    Svar: {"found": N, "processed": M, "failed": K, "skipped": S,
+           "details": [...]}.
+    """
+    ids = [m.strip() for m in (payload.message_ids or []) if m and m.strip()]
+    if not ids:
+        raise HTTPException(status_code=400, detail="message_ids saknas")
+    if len(ids) > 50:
+        raise HTTPException(
+            status_code=400,
+            detail="max 50 message_ids per anrop",
+        )
+    logger.info(
+        "force-process startad: ids=%s remove_label=%s delete_row=%s",
+        ids, payload.remove_done_label, payload.delete_existing_row,
+    )
+    result = force_process_message_ids(
+        ids,
+        remove_done_label=payload.remove_done_label,
+        delete_existing_row=payload.delete_existing_row,
+    )
+    logger.info(
+        "force-process klar: found=%s processed=%s failed=%s skipped=%s",
+        result.get("found"), result.get("processed"),
+        result.get("failed"), result.get("skipped"),
+    )
+    return result
+
+
+@app.get("/api/gmail/peek")
+def gmail_peek(
+    vendor_filter: str | None = None,
+    days: int = 14,
+    query: str | None = None,
+    _: None = Depends(require_auth),
+):
+    """Debug-endpoint: returnerar de råa message_ids som Gmail-sökningen
+    ger för samma query som /api/gmail/reprocess bygger, INNAN dedup-
+    filtrering mot ProcessedMessage. Read-only, inga sidoeffekter.
+
+    Query-params:
+      - vendor_filter: substring (from:/subject:), samma semantik som
+        reprocess-endpointet.
+      - days: hur många dagar bakåt (default 14, samma som reprocess
+        använder för Match Health-knapparna).
+      - query: rå Gmail-query som overrider allt annat (vendor_filter
+        och days ignoreras om query ges).
+    """
+    if query is not None and query.strip():
+        gmail_query = query.strip()
+    else:
+        if days < 1 or days > 365:
+            raise HTTPException(
+                status_code=400,
+                detail="days måste vara 1–365",
+            )
+        vendor = (vendor_filter or "").strip() or None
+        gmail_query = _build_reprocess_query(days, vendor)
+
+    try:
+        gmail = GmailClient()
+    except Exception as exc:
+        logger.exception("gmail/peek: Gmail-init misslyckades")
+        raise HTTPException(
+            status_code=500, detail=f"Gmail-init: {exc}",
+        ) from exc
+
+    try:
+        message_ids = gmail.list_candidate_message_ids(
+            query=gmail_query, max_results=500,
+        )
+    except Exception as exc:
+        logger.exception("gmail/peek: Gmail-sökning misslyckades")
+        raise HTTPException(
+            status_code=500, detail=f"Gmail list: {exc}",
+        ) from exc
+
+    return {
+        "query": gmail_query,
+        "message_ids": list(message_ids),
+        "total": len(message_ids),
+    }
+
+
 @app.post("/api/messages/{msg_id}/fetch-pdf")
 def fetch_pdf_for_message(
     msg_id: int,
@@ -1572,6 +1689,92 @@ def bulk_delete_messages(
         "deleted": len(rows),
         "ids": [r.id for r in rows],
         "permanent": False,
+    }
+
+
+class BackfillDescriptionsPayload(BaseModel):
+    """Body för POST /api/messages/backfill-descriptions.
+
+    Exakt EN av fälten måste anges:
+      - message_ids: explicit lista (heltal) — backfilla just dessa rader.
+      - all_missing: True → alla rader där ai_description_en IS NULL
+        AND status='saved' AND deleted_at IS NULL.
+    """
+    message_ids: list[int] | None = None
+    all_missing: bool | None = None
+
+
+@app.post("/api/messages/backfill-descriptions")
+def backfill_descriptions(
+    payload: BackfillDescriptionsPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 5.22 — backfilla ai_description_en för rader som processades
+    innan kolumnen fanns (pre-PR30) eller där AI:n inte producerade
+    en engelsk beskrivning.
+
+    Använder existerande Claude-klient + samma modell som extraction-
+    pipelinen. Skippar rader som redan har värde. Sekvenstellt med 200ms
+    delay mellan API-anrop (skydd mot rate-limit)."""
+    from app.services.description_backfill import (
+        DescriptionBackfiller,
+        backfill_rows,
+    )
+
+    has_ids = bool(payload.message_ids)
+    has_all = bool(payload.all_missing)
+    if has_ids == has_all:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Ange exakt EN av 'message_ids' (lista) eller "
+                "'all_missing' (true)."
+            ),
+        )
+
+    q = db.query(ProcessedMessage)
+    if has_ids:
+        ids = [int(i) for i in (payload.message_ids or []) if i]
+        if not ids:
+            raise HTTPException(
+                status_code=400,
+                detail="message_ids får inte vara tom",
+            )
+        q = q.filter(ProcessedMessage.id.in_(ids))
+    else:
+        q = q.filter(
+            ProcessedMessage.ai_description_en.is_(None),
+            ProcessedMessage.status == "saved",
+            ProcessedMessage.deleted_at.is_(None),
+        )
+
+    rows = q.order_by(ProcessedMessage.id.asc()).all()
+    if not rows:
+        return {"processed": 0, "failed": 0, "skipped": 0, "details": []}
+
+    backfiller = DescriptionBackfiller()
+    if not backfiller.enabled:
+        raise HTTPException(
+            status_code=503,
+            detail="ANTHROPIC_API_KEY saknas — backfill kan inte köras",
+        )
+
+    results = backfill_rows(rows, backfiller)
+    db.commit()
+
+    processed = sum(1 for r in results if r.status == "ok")
+    failed = sum(1 for r in results if r.status == "failed")
+    skipped = sum(1 for r in results if r.status == "skipped")
+    logger.info(
+        "Backfill ai_description_en klar: processed=%d failed=%d skipped=%d",
+        processed, failed, skipped,
+    )
+    return {
+        "processed": processed,
+        "failed": failed,
+        "skipped": skipped,
+        "details": [r.to_dict() for r in results],
     }
 
 
@@ -2476,6 +2679,8 @@ def match_message_to_bezala(
 
         # FAS 5.9 — prioritera engelsk AI-beskrivning, fall tillbaka på
         # svensk summary, sist file_name (via build_description i mappern).
+        # mapping.description_override prioriteras i build_receipt_params
+        # (C12-regression — bezala_field_mapper.py:882-887).
         description_override = row.ai_description_en or row.summary
 
         params = build_receipt_params(

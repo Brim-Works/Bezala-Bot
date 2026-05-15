@@ -164,7 +164,7 @@ class BezalaConfigServiceTest(unittest.TestCase):
         from app.services.bezala_config import seed_default_mappings
         with self.SessionLocal() as db:
             added = seed_default_mappings(db)
-        self.assertEqual(added, 2)
+        self.assertEqual(added, 5)
 
         with self.SessionLocal() as db:
             rows = db.query(BezalaVendorMapping).all()
@@ -180,6 +180,76 @@ class BezalaConfigServiceTest(unittest.TestCase):
                 row.description_override,
                 "Parking at Helsinki-Vantaa Airport P2",
             )
+
+    def test_lovable_mapping_seeded(self):
+        from app.models import BezalaVendorMapping
+        from app.services.bezala_config import seed_default_mappings
+        with self.SessionLocal() as db:
+            seed_default_mappings(db)
+            row = (
+                db.query(BezalaVendorMapping)
+                .filter(BezalaVendorMapping.vendor_pattern == "lovable")
+                .one()
+            )
+        self.assertEqual(row.bezala_account_id, 166648)
+        self.assertEqual(Decimal(str(row.vat_rate)), Decimal("0.00"))
+        self.assertIsNone(row.description_override)
+
+    def test_anthropic_mapping_seeded(self):
+        from app.models import BezalaVendorMapping
+        from app.services.bezala_config import seed_default_mappings
+        with self.SessionLocal() as db:
+            seed_default_mappings(db)
+            row = (
+                db.query(BezalaVendorMapping)
+                .filter(BezalaVendorMapping.vendor_pattern == "anthropic")
+                .one()
+            )
+        self.assertEqual(row.bezala_account_id, 166648)
+        self.assertEqual(Decimal(str(row.vat_rate)), Decimal("0.00"))
+        self.assertIsNone(row.description_override)
+
+    def test_cursor_mapping_seeded(self):
+        from app.models import BezalaVendorMapping
+        from app.services.bezala_config import seed_default_mappings
+        with self.SessionLocal() as db:
+            seed_default_mappings(db)
+            row = (
+                db.query(BezalaVendorMapping)
+                .filter(BezalaVendorMapping.vendor_pattern == "cursor")
+                .one()
+            )
+        self.assertEqual(row.bezala_account_id, 166648)
+        self.assertEqual(Decimal(str(row.vat_rate)), Decimal("0.00"))
+        self.assertIsNone(row.description_override)
+
+    def test_existing_moovy_finavia_seed_not_affected(self):
+        """Användarens egna ändringar på Moovy/Finavia ska bevaras när
+        v2-seeden körs och bara fyller på de tre nya AI-leverantörerna."""
+        from app.models import BezalaVendorMapping
+        from app.services.bezala_config import seed_default_mappings
+        with self.SessionLocal() as db:
+            # Simulera redan-existerande Moovy-rad med modifierad VAT.
+            db.add(BezalaVendorMapping(
+                vendor_pattern="moovy",
+                bezala_account_id=99999,
+                vat_rate=Decimal("14.00"),
+                description_override="custom",
+            ))
+            db.commit()
+
+            added = seed_default_mappings(db)
+            # Fyra nya: finavia, lovable, anthropic, cursor (moovy skippas).
+            self.assertEqual(added, 4)
+
+            row = (
+                db.query(BezalaVendorMapping)
+                .filter(BezalaVendorMapping.vendor_pattern == "moovy")
+                .one()
+            )
+            self.assertEqual(row.bezala_account_id, 99999)
+            self.assertEqual(Decimal(str(row.vat_rate)), Decimal("14.00"))
+            self.assertEqual(row.description_override, "custom")
 
     def test_seed_is_idempotent(self):
         from app.services.bezala_config import seed_default_mappings

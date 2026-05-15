@@ -22,8 +22,7 @@ import { useToast } from '../lib/toast.jsx';
 import { useDrawer } from '../drawer/DrawerProvider.jsx';
 import MissingPaymentsList from '../components/travel-tinder/MissingPaymentsList.jsx';
 import OtherReceiptsList from '../components/travel-tinder/OtherReceiptsList.jsx';
-import TinderCard from '../components/travel-tinder/TinderCard.jsx';
-import MatchConfirmModal from '../components/travel-tinder/MatchConfirmModal.jsx';
+import MatchCandidates from '../components/travel-tinder/MatchCandidates.jsx';
 import UploadCard from '../components/travel-tinder/UploadCard.jsx';
 import PdfPreviewLightbox from '../components/travel-tinder/PdfPreviewLightbox.jsx';
 import MatchedPairsList from '../components/travel-tinder/MatchedPairsList.jsx';
@@ -106,6 +105,11 @@ export default function TravelTinder() {
 
   const [selectedPaymentId, setSelectedPaymentId] = useState(null);
   const [skippedSuggestionIds, setSkippedSuggestionIds] = useState([]);
+  // FAS 5.16 — användarens manuellt valda kandidat-kvitto. null = bara
+  // AI-kortet visas. Rensas vid: × i Card B, samma rad klickad igen,
+  // lyckad koppling, eller byte av korttrans i vänster panel.
+  const [selectedCandidateMessageId, setSelectedCandidateMessageId] =
+    useState(null);
 
   const [searchQuery, setSearchQuery] = useState(persisted.search || '');
   const [statusFilter, setStatusFilter] = useState(
@@ -118,9 +122,22 @@ export default function TravelTinder() {
   const [sortBy, setSortBy] = useState(persisted.sortBy || 'processed_at');
   const [sortDir, setSortDir] = useState(persisted.sortDir || 'desc');
 
-  const [pendingMatch, setPendingMatch] = useState(null);
   const [matching, setMatching] = useState(false);
+  // Synchronous re-entry guard. setMatching(true) is async — a rapid
+  // second click on Couple can fire onConfirm before React re-renders
+  // with disabled=true. The ref blocks that path synchronously.
+  const matchingLockRef = useRef(false);
   const [pdfPreviewMessage, setPdfPreviewMessage] = useState(null);
+
+  // C14 — optimistic UI för Couple. inFlightPaymentIds = vilka rader
+  // som har en POST i flight (deemfas + "kopplar…"-indikator).
+  // completedPaymentIds = rader som lokalt klarats men där refresh inte
+  // hunnit synka från servern — dölj direkt så användaren får
+  // omedelbar bekräftelse.
+  const [inFlightPaymentId, setInFlightPaymentId] = useState(null);
+  const [completedPaymentIds, setCompletedPaymentIds] = useState(
+    () => new Set(),
+  );
 
   // FAS 8.5 — Matchade-vy state. mode persistas separat så användaren
   // hamnar tillbaka i rätt läge nästa session.
@@ -313,7 +330,15 @@ export default function TravelTinder() {
     return () => clearInterval(id);
   }, [refresh]);
 
-  const missingRows = data.missing_receipts;
+  // C14 — dölj rader som lokalt klarats men där refresh inte hunnit
+  // hämta servern. inFlight-raden hålls kvar i listan med deemfas.
+  const missingRows = useMemo(
+    () =>
+      data.missing_receipts.filter(
+        (r) => !completedPaymentIds.has(r.missing_receipt.id),
+      ),
+    [data.missing_receipts, completedPaymentIds],
+  );
 
   // Auto-välj första saknade kortbetalning om inget är valt
   useEffect(() => {
@@ -330,8 +355,10 @@ export default function TravelTinder() {
   );
 
   const matchedCount = useMemo(
-    () => data.all_messages.filter((m) => m.coupled).length,
-    [data.all_messages],
+    () =>
+      data.all_messages.filter((m) => m.coupled).length +
+      completedPaymentIds.size,
+    [data.all_messages, completedPaymentIds],
   );
   const totalCount = data.all_messages.length;
 
@@ -346,6 +373,8 @@ export default function TravelTinder() {
   const onSelectPayment = useCallback((id) => {
     setSelectedPaymentId(id);
     setSkippedSuggestionIds([]);
+    // FAS 5.16 — byte av korttrans rensar användarens kandidat-pick.
+    setSelectedCandidateMessageId(null);
   }, []);
 
   // FAS 8.5c — fire-and-forget feedback. Får aldrig blockera kärnflödet:
@@ -371,108 +400,161 @@ export default function TravelTinder() {
     [],
   );
 
-  const onSkipSuggestion = useCallback(() => {
-    if (!activeSuggestion || !selected) return;
-    sendMatchFeedback({
-      messageId: activeSuggestion.message.message_id,
-      billLineId: selected.missing_receipt.id,
-      result: 'skipped',
-      aiScore: activeSuggestion.score ?? null,
-      scoreBreakdown: activeSuggestion.score_breakdown || null,
-    });
-    setSkippedSuggestionIds((prev) => [...prev, activeSuggestion.message.id]);
-  }, [activeSuggestion, selected, sendMatchFeedback]);
+  // FAS 5.16 — direkt couple-action utan bekräftelsemodal. Triggas av
+  // explicit "Couple →"-knapp i Card A (AI) eller Card B (user-pick).
+  // aiContext: { score, score_breakdown } när det kommer från AI-kortet,
+  // null vid manuell koppling. Vid framgång rensas båda valen, nästa
+  // korttrans väljs och listorna uppdateras.
+  //
+  // FAS 5.19 — matchingLockRef ger synkront re-entry-skydd. setMatching
+  // är async, så en snabb dubbel-klick hinner annars fyra fram en andra
+  // onClick innan React renderar disabled=true → två rader kopplas till
+  // samma bill_line. Refen blockerar det synkront.
+  const couple = useCallback(
+    async (messageRow, missingReceiptId, aiContext = null) => {
+      if (matching || !messageRow || !missingReceiptId) return;
+      if (matchingLockRef.current) return;
+      matchingLockRef.current = true;
+      setMatching(true);
+      // C14 — visa deemfas + "kopplar…"-indikator på raden direkt så
+      // användaren ser att klicket registrerats även om POST tar tid.
+      setInFlightPaymentId(missingReceiptId);
 
-  const requestMatch = useCallback(
-    (messageRow, missingReceiptId, aiContext = null) => {
-      if (matching) return;
-      // aiContext: { score, score_breakdown } när Match-klicket kommer
-      // från Tinder-kortet. null när det är manuell koppling via en rad
-      // i "Andra kvitton" — då finns ingen AI-score.
-      setPendingMatch({
-        message: messageRow,
-        missingReceiptId,
-        aiContext,
-      });
+      // C14 — auto-välj nästa korttrans direkt (innan POST returnerar)
+      // så användaren kan fortsätta utan att vänta. Söker i rå-listan
+      // för att hoppa över rader som redan är completed eller in-flight.
+      const rawMissing = data.missing_receipts;
+      const idx = rawMissing.findIndex(
+        (r) => r.missing_receipt.id === missingReceiptId,
+      );
+      const findCandidate = (predicate) =>
+        rawMissing.find(
+          (r) =>
+            r.missing_receipt.id !== missingReceiptId &&
+            !completedPaymentIds.has(r.missing_receipt.id) &&
+            predicate(r),
+        );
+      const nextRow =
+        findCandidate((_r) => rawMissing.indexOf(_r) > idx) ||
+        findCandidate(() => true) ||
+        null;
+
+      // Rensa kandidatpanelen direkt (modal är redan borta i FAS 5.16).
+      setSkippedSuggestionIds([]);
+      setSelectedCandidateMessageId(null);
+      setSelectedPaymentId(nextRow ? nextRow.missing_receipt.id : null);
+
+      const markCompletedAndRefresh = async () => {
+        setCompletedPaymentIds((prev) => {
+          const next = new Set(prev);
+          next.add(missingReceiptId);
+          return next;
+        });
+        try {
+          await refresh({ silent: true });
+        } finally {
+          // Ta bort optimistic-flaggan när serverstate hunnit in så
+          // raden inte längre styrs av lokala overlays.
+          setCompletedPaymentIds((prev) => {
+            if (!prev.has(missingReceiptId)) return prev;
+            const next = new Set(prev);
+            next.delete(missingReceiptId);
+            return next;
+          });
+        }
+      };
+
+      try {
+        await api.matchToBezala(messageRow.id, missingReceiptId);
+        sendMatchFeedback({
+          messageId: messageRow.message_id,
+          billLineId: missingReceiptId,
+          result: 'matched',
+          aiScore: aiContext?.score ?? null,
+          scoreBreakdown: aiContext?.score_breakdown || null,
+        });
+        toast.show({
+          kind: 'ok',
+          message: t.travelTinder.matchSuccess.replace(
+            '{vendor}',
+            messageRow.vendor || messageRow.file_name || '',
+          ),
+        });
+        await markCompletedAndRefresh();
+      } catch (err) {
+        const status = err instanceof ApiError ? err.status : null;
+        if (status === 409) {
+          // C14 / memory #18 — backend säger att raden redan är
+          // kopplad (concurrent click eller stale UI). Behandla som
+          // success: dölj raden, refresha för att synka.
+          toast.show({
+            kind: 'ok',
+            message: t.travelTinder.alreadyCoupled,
+          });
+          await markCompletedAndRefresh();
+        } else {
+          const detail = err instanceof ApiError ? err.message : String(err);
+          toast.show({
+            kind: 'err',
+            message: `${t.travelTinder.matchFailed}: ${detail}`,
+          });
+          // Återställ urvalet — användaren ska kunna försöka igen.
+          setSelectedPaymentId(missingReceiptId);
+        }
+      } finally {
+        setMatching(false);
+        setInFlightPaymentId(null);
+        matchingLockRef.current = false;
+      }
     },
-    [matching],
+    [
+      matching,
+      data.missing_receipts,
+      completedPaymentIds,
+      refresh,
+      sendMatchFeedback,
+      t.travelTinder.matchSuccess,
+      t.travelTinder.matchFailed,
+      t.travelTinder.alreadyCoupled,
+      toast,
+    ],
   );
 
-  const cancelMatch = useCallback(() => {
-    setPendingMatch(null);
-  }, []);
-
-  const confirmMatch = useCallback(async () => {
-    if (!pendingMatch) return;
-    setMatching(true);
-    try {
-      await api.matchToBezala(
-        pendingMatch.message.id,
-        pendingMatch.missingReceiptId,
-      );
-      // FAS 8.5c — registrera positiv feedback så match-algoritmen kan
-      // lära sig. Manuell koppling skickar aiScore=null.
-      sendMatchFeedback({
-        messageId: pendingMatch.message.message_id,
-        billLineId: pendingMatch.missingReceiptId,
-        result: 'matched',
-        aiScore: pendingMatch.aiContext?.score ?? null,
-        scoreBreakdown: pendingMatch.aiContext?.score_breakdown || null,
-      });
-      toast.show({
-        kind: 'ok',
-        message: t.travelTinder.matchSuccess.replace(
-          '{vendor}',
-          pendingMatch.message.vendor || pendingMatch.message.file_name || '',
-        ),
-      });
-      setPendingMatch(null);
-      setSkippedSuggestionIds([]);
-      // Markera nästa korttrans automatiskt
-      const idx = missingRows.findIndex(
-        (r) => r.missing_receipt.id === selectedPaymentId,
-      );
-      const nextRow = missingRows[idx + 1] || null;
-      setSelectedPaymentId(
-        nextRow ? nextRow.missing_receipt.id : null,
-      );
-      refresh({ silent: true });
-    } catch (err) {
-      const detail = err instanceof ApiError ? err.message : String(err);
-      toast.show({
-        kind: 'err',
-        message: `${t.travelTinder.matchFailed}: ${detail}`,
-      });
-    } finally {
-      setMatching(false);
-    }
-  }, [
-    pendingMatch,
-    missingRows,
-    selectedPaymentId,
-    refresh,
-    sendMatchFeedback,
-    t.travelTinder.matchSuccess,
-    t.travelTinder.matchFailed,
-    toast,
-  ]);
-
+  // FAS 5.16 — klick på rad i Other Receipts gör inte längre direkt
+  // koppling. Den sätter raden som kandidat (Card B). Klick på samma
+  // rad igen deselectar. Coupled-rader öppnar drawer som tidigare.
   const onClickReceipt = useCallback(
     (msg) => {
-      // Med vald korttrans → öppna bekräftelsemodal
-      if (selected && !msg.coupled) {
-        requestMatch(msg, selected.missing_receipt.id);
+      if (msg.coupled || !selected) {
+        openDrawer(msg, 'gmail');
         return;
       }
-      // Annars (eller redan kopplad) → öppna drawer
-      openDrawer(msg, 'gmail');
+      setSelectedCandidateMessageId((prev) =>
+        prev === msg.id ? null : msg.id,
+      );
     },
-    [openDrawer, requestMatch, selected],
+    [openDrawer, selected],
   );
+
+  const onClearCandidate = useCallback(() => {
+    setSelectedCandidateMessageId(null);
+  }, []);
 
   const onShowPdfPreview = useCallback((msg) => {
     setPdfPreviewMessage(msg);
   }, []);
+
+  // Slå upp användarens kandidat-meddelande i all_messages. Ignoreras
+  // om det råkar vara coupled (skuggad rad). Auto-clear av icke-giltigt
+  // val undviks medvetet — vi visar bara kortet om det finns och är okopplat.
+  const userPickMessage = useMemo(() => {
+    if (selectedCandidateMessageId == null) return null;
+    const msg = data.all_messages.find(
+      (m) => m.id === selectedCandidateMessageId,
+    );
+    if (!msg || msg.coupled) return null;
+    return msg;
+  }, [data.all_messages, selectedCandidateMessageId]);
 
   return (
     <div className="travel-tinder" data-testid="travel-tinder">
@@ -510,6 +592,7 @@ export default function TravelTinder() {
           onModeChange={setMode}
           unmatchedCount={missingRows.length}
           matchedTotalCount={matchedData.stats?.total_all_time ?? 0}
+          inFlightPaymentId={inFlightPaymentId}
         />
 
         <div
@@ -571,6 +654,7 @@ export default function TravelTinder() {
             allMessages={data.all_messages}
             selected={selected}
             activeSuggestion={activeSuggestion}
+            selectedCandidateMessageId={selectedCandidateMessageId}
             onClickReceipt={onClickReceipt}
             onShowPdfPreview={onShowPdfPreview}
             search={searchQuery}
@@ -587,37 +671,22 @@ export default function TravelTinder() {
             setSortDir={setSortDir}
             tinderCard={
               selected ? (
-                activeSuggestion ? (
-                  <TinderCard
-                    suggestion={activeSuggestion}
-                    payment={selected.missing_receipt}
-                    onSkip={onSkipSuggestion}
-                    onMatch={() =>
-                      requestMatch(
-                        activeSuggestion.message,
-                        selected.missing_receipt.id,
-                        {
-                          score: activeSuggestion.score,
-                          score_breakdown: activeSuggestion.score_breakdown,
-                        },
-                      )
-                    }
-                    onMoreInfo={() =>
-                      openDrawer(activeSuggestion.message, 'gmail')
-                    }
-                    onShowPdfPreview={() =>
-                      onShowPdfPreview(activeSuggestion.message)
-                    }
-                    matching={matching}
-                  />
-                ) : (
-                  <div className="tt-empty-card" data-testid="tt-no-suggestion">
-                    <h3>{t.travelTinder.empty.noSuggestion}</h3>
-                    <p className="muted">
-                      {t.travelTinder.empty.noSuggestionBody}
-                    </p>
-                  </div>
-                )
+                <MatchCandidates
+                  aiSuggestion={activeSuggestion}
+                  userPickMessage={userPickMessage}
+                  onClearUserPick={onClearCandidate}
+                  onCouple={(messageRow, aiContext) =>
+                    couple(
+                      messageRow,
+                      selected.missing_receipt.id,
+                      aiContext,
+                    )
+                  }
+                  onOpenDrawer={(messageRow) =>
+                    openDrawer(messageRow, 'gmail')
+                  }
+                  coupling={matching}
+                />
               ) : null
             }
             uploadCard={<UploadCard payment={selected?.missing_receipt} />}
@@ -626,16 +695,6 @@ export default function TravelTinder() {
           ) : null}
         </div>
       </div>
-
-      {pendingMatch ? (
-        <MatchConfirmModal
-          payment={selected?.missing_receipt}
-          message={pendingMatch.message}
-          onCancel={cancelMatch}
-          onConfirm={confirmMatch}
-          loading={matching}
-        />
-      ) : null}
 
       {pdfPreviewMessage ? (
         <PdfPreviewLightbox

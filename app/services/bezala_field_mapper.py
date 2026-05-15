@@ -710,6 +710,19 @@ def build_vat_lines_attributes(
     return [entry]
 
 
+def _clean_str(value: Any) -> str:
+    """None/non-string → "". Trimmar whitespace. En central plats för
+    description-fallbacken så vi inte behöver upprepa null-checkarna
+    på varje steg."""
+    if value is None:
+        return ""
+    try:
+        s = str(value).strip()
+    except Exception:  # noqa: BLE001 — sista skyddsnätet, aldrig kraschar bygget
+        return ""
+    return s
+
+
 def _mapping_attr(mapping: Any, key: str) -> Any:
     """Plocka ut attribut/key från ett mapping-objekt. Funkar både för
     SQLAlchemy-rader (BezalaVendorMapping) och dict-likt-objekt — så
@@ -722,19 +735,56 @@ def _mapping_attr(mapping: Any, key: str) -> Any:
 
 
 def find_vendor_mapping(
-    vendor: str | None, mappings: Iterable[Any] | None,
+    vendor: str | None,
+    mappings: Iterable[Any] | None,
+    *,
+    sender: str | None = None,
+    subject: str | None = None,
 ) -> Any | None:
-    """Substring-match (case-insensitive) vendor mot vendor_pattern. Första
-    träffen vinner — anropare ska sortera om de vill ha deterministisk
-    prioritering."""
-    if not vendor or not mappings:
+    """Deterministisk vendor→mapping-lookup.
+
+    Prioritering (sender-domän-first):
+      1. Substring-match mot SENDER (e-postadress eller display-name).
+         "moovy" träffar "noreply@moovy.fi" → moovy-mappningen vinner
+         oavsett seed-ordning eller hur många andra mappningar finns.
+      2. Substring-match mot SUBJECT (mail-rubrik).
+      3. Substring-match mot VENDOR (AI-extraherat leverantörsnamn).
+
+    Inom samma tier vinner LÄNGSTA matchande mönstret — så "anthropic.com"
+    slår "anthropic" om båda finns. Ger stabilitet när användaren har
+    seedat flera överlappande mönster.
+
+    Tom/None-pattern ignoreras (kan annars matcha allting via substring).
+    """
+    mappings_list = [m for m in (mappings or []) if m is not None]
+    if not mappings_list:
         return None
-    needle = vendor.lower()
-    for m in mappings:
-        pattern = _mapping_attr(m, "vendor_pattern")
-        if pattern and str(pattern).lower() in needle:
-            return m
-    return None
+
+    candidates: list[tuple[Any, str]] = []
+    for m in mappings_list:
+        raw = _mapping_attr(m, "vendor_pattern")
+        if not raw:
+            continue
+        pat = str(raw).strip().lower()
+        if not pat:
+            continue
+        candidates.append((m, pat))
+    if not candidates:
+        return None
+
+    def _best(haystack: str | None) -> Any | None:
+        if not haystack:
+            return None
+        needle = haystack.lower()
+        best_match: Any | None = None
+        best_len = -1
+        for m, pat in candidates:
+            if pat in needle and len(pat) > best_len:
+                best_match = m
+                best_len = len(pat)
+        return best_match
+
+    return _best(sender) or _best(subject) or _best(vendor)
 
 
 def _rate_to_decimal_string(rate: Any) -> str | None:
@@ -814,7 +864,9 @@ def build_receipt_params(
     vat_lines_attributes. Dessutom amount/currency/vendor för logging/UI
     (inte skickade till Bezala men användbara för UI-toast)."""
     country = sender_to_country(sender, vendor)
-    mapping = find_vendor_mapping(vendor, vendor_mappings)
+    mapping = find_vendor_mapping(
+        vendor, vendor_mappings, sender=sender, subject=subject,
+    )
 
     if mapping is not None:
         forced_account_id = _mapping_attr(mapping, "bezala_account_id")
@@ -875,15 +927,18 @@ def build_receipt_params(
                 if mapped_vat_code_id is not None:
                     entry["vat_code_id"] = mapped_vat_code_id
 
-    # Description-prioritet:
-    #   1. mapping.description_override (bezala_vendor_mappings)
-    #   2. description_override (ai_description_en eller row.summary)
-    #   3. build_description(file_name, ...)
-    mapping_desc_raw = _mapping_attr(mapping, "description_override")
-    mapping_desc = (mapping_desc_raw or "").strip() if mapping_desc_raw else ""
-    caller_override = (description_override or "").strip() if description_override else ""
-    description = mapping_desc or caller_override or build_description(
-        file_name, vendor=vendor, subject=subject, receipt_date=receipt_date,
+    # Description-prioritet — defensiv mot null/empty på varje steg så att
+    # en mappning utan description_override aldrig blockerar en populerad
+    # ai_description_en eller summary:
+    #   1. mapping.description_override (om icke-tom sträng)
+    #   2. description_override-param (ai_description_en → summary)
+    #   3. build_description(file_name, ...) — vendor/subject/datum-derivat
+    description = (
+        _clean_str(_mapping_attr(mapping, "description_override"))
+        or _clean_str(description_override)
+        or build_description(
+            file_name, vendor=vendor, subject=subject, receipt_date=receipt_date,
+        )
     )
     params: dict = {
         "description": description,
