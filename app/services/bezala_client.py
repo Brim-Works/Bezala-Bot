@@ -51,6 +51,55 @@ BODY_LOG_LIMIT = 4000
 FILE_FIELD_NAME = os.environ.get("BEZALA_FILE_FIELD_NAME", "file")
 
 
+# FAS 5.26 — draft-guard payload för PUT /transactions/{tx_id}.
+# C16 (PR #52) försökte med endast `draft: true` men live-testet visade
+# att Bezala fortfarande promotade drafter till "Väntar på andras
+# attestering". Fältnamnet `draft` är troligen inte den state-styrande
+# attributen på transaction-nivå (det är multipart-form-flaggan som
+# används av POST /attachments). FAS 5.26 skickar därför ALLA troliga
+# Rails-konventioner samtidigt — `draft`, `state`, `status`, `is_draft` —
+# eftersom det är säkrare att skicka fler "draft-vänliga" fält än att
+# gissa fel en gång till. Operatören kan iterera via env-var nedan utan
+# kod-deploy.
+#
+# Operatören kan över-/under-styra via env:
+#   BEZALA_DRAFT_GUARD_FIELDS_JSON='{"draft": true, "state": "draft"}'
+# Sätt till "{}" för att stänga av alla guard-fält (debugging).
+_DEFAULT_DRAFT_GUARD_FIELDS: dict[str, Any] = {
+    "draft": True,
+    "state": "draft",
+    "status": "draft",
+    "is_draft": True,
+}
+
+
+def _load_draft_guard_fields() -> dict[str, Any]:
+    """Läser BEZALA_DRAFT_GUARD_FIELDS_JSON från env. Returnerar default
+    om env saknas / är tom / är ogiltig JSON. Tom dict (``{}``) tillåts
+    explicit — operatören kan stänga av alla guard-fält för diagnostik.
+    """
+    raw = os.environ.get("BEZALA_DRAFT_GUARD_FIELDS_JSON", "").strip()
+    if not raw:
+        return dict(_DEFAULT_DRAFT_GUARD_FIELDS)
+    log = logging.getLogger(__name__)
+    try:
+        parsed = json.loads(raw)
+    except (ValueError, TypeError) as exc:
+        log.error(
+            "BEZALA_DRAFT_GUARD_FIELDS_JSON är ogiltig JSON (%s) — "
+            "fallback till default %s",
+            exc, sorted(_DEFAULT_DRAFT_GUARD_FIELDS.keys()),
+        )
+        return dict(_DEFAULT_DRAFT_GUARD_FIELDS)
+    if not isinstance(parsed, dict):
+        log.error(
+            "BEZALA_DRAFT_GUARD_FIELDS_JSON måste vara ett JSON-objekt — "
+            "fick %s. Fallback till default.", type(parsed).__name__,
+        )
+        return dict(_DEFAULT_DRAFT_GUARD_FIELDS)
+    return parsed
+
+
 class BezalaError(RuntimeError):
     """Generic Bezala API error. Bär statuskod och serversvar där tillgängligt."""
 
@@ -122,6 +171,12 @@ class BezalaClient:
         self._client = httpx.Client(timeout=TIMEOUT_SECONDS)
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+        # FAS 5.26 — diagnostik-capture för /api/debug/test-bezala-draft-flow.
+        # När `record_diagnostics` är True loggar varje _request-anrop en
+        # entry i `call_log` med request/response-bodies. Default Off så
+        # vi inte håller bodies i minnet i normalflödet.
+        self.record_diagnostics: bool = False
+        self.call_log: list[dict[str, Any]] = []
 
         if not (self._email and self._password):
             raise BezalaError(
@@ -218,6 +273,38 @@ class BezalaClient:
                 continue
 
             _log_response(resp, method, path, payload_keys)
+
+            # FAS 5.26 — diagnostik-capture (opt-in via record_diagnostics).
+            # Sparar request- och response-bodies så att debug-endpointen
+            # /api/debug/test-bezala-draft-flow kan returnera dem för
+            # live-inspektion av match-to-bezala-flödet. getattr-guard:
+            # _make_client i testerna kör inte __init__.
+            if getattr(self, "record_diagnostics", False):
+                req_body: Any
+                if isinstance(json, dict):
+                    req_body = json
+                elif isinstance(data, dict):
+                    req_body = dict(data)
+                elif files:
+                    req_body = {
+                        "files": [
+                            k for k in (files.keys() if isinstance(files, dict) else [])
+                        ],
+                        "data": dict(data) if isinstance(data, dict) else None,
+                    }
+                else:
+                    req_body = None
+                try:
+                    resp_body_text = resp.text
+                except Exception:  # noqa: BLE001
+                    resp_body_text = "<binärt svar>"
+                self.call_log.append({
+                    "method": method,
+                    "path": path,
+                    "request_body": req_body,
+                    "response_status": resp.status_code,
+                    "response_body": resp_body_text[:BODY_LOG_LIMIT],
+                })
 
             if resp.status_code == 401:
                 # Token kan vara utgången — tvinga ny auth EN gång.
@@ -344,6 +431,16 @@ class BezalaClient:
         )
         return (str(attachment_id), str(transaction_id))
 
+    # Submit-coded fältnamn vi alltid skyddar mot — om en caller skickar
+    # in dessa via extra_fields ignoreras de tyst (med logg) så vi aldrig
+    # auto-submittar en draft från koden. Speglar test_match_to_bezala_
+    # payload_does_not_submit-invarianten i tests/backend/test_card_matching.py.
+    _BLOCKED_SUBMIT_FIELDS = frozenset({
+        "submitted", "is_submitted", "action", "send_for_approval",
+        "mark_as_submitted", "submit", "submit_for_approval",
+        "approval_status", "approved", "approved_at", "submitted_at",
+    })
+
     def update_transaction(
         self,
         transaction_id: str,
@@ -362,16 +459,23 @@ class BezalaClient:
             "date": "YYYY-MM-DD",
             "credit_account_id": 67100,
             "vat_lines_attributes": [{...}],
-            "draft": true
+            "draft": true,
+            "state": "draft",
+            "status": "draft",
+            "is_draft": true
           }}
 
-        FAS 5.25 — `draft: true` skickas ALLTID med så att Bezala inte
-        promotar transaktionen från "Utkast" till "Väntar på andras
-        attestering" som ett sidoeffekt av PUT:en (regression från PR
-        #51, FAS 5.24 — flödet "Couple" skickade automatiskt drafts
-        till attestering utan att användaren fick chans att granska).
-        Bezala tillåter inte att inskickade drafts återkallas — bara
-        attestanten kan avvisa — så draft-flaggan är hard-required.
+        FAS 5.25 (C16) försökte med endast `draft: true` men live-testet
+        (Finnair O87UJ3J, 28 april) visade att Bezala fortfarande
+        promotade drafter till "Väntar på andras attestering". Fältet
+        `draft: true` är troligen inte det Bezala läser på transaction-
+        nivå (det är bara form-flaggan som POST /attachments använder).
+
+        FAS 5.26 (C17) — skickar ALLA troliga Rails-konventioner
+        samtidigt: `draft`, `state`, `status`, `is_draft`. Operatören
+        kan justera via env-var `BEZALA_DRAFT_GUARD_FIELDS_JSON` utan
+        kod-deploy. extra_fields kan INTE överstyra guard-flaggorna
+        eller smyga in submit-kodande fält (`submitted`, `action` etc).
 
         Returnerar BezalaTransaction — bekräftat ID från svaret
         (eller tillbaka samma som skickades)."""
@@ -382,15 +486,19 @@ class BezalaClient:
         if not date:
             raise BezalaError("update_transaction: date saknas (ÅÅÅÅ-MM-DD)")
 
+        # Bygg draft-guard från env (eller default). dict-copy så vi inte
+        # muterar default-globalen om operatören vill addera fler fält
+        # via env i framtiden.
+        draft_guard = _load_draft_guard_fields()
+
         payload: dict[str, Any] = {
             "description": description,
             "date": date,
-            # FAS 5.25 — håll draft-status över PUT:en. Speglar POST
-            # /attachments form-flaggan draft=1 (string) men som JSON
-            # boolean på transaction-nivå. Får inte överstyras via
-            # extra_fields.
-            "draft": True,
         }
+        # Lägg guard-fält FÖRST så att senare assignments (credit_account_id,
+        # vat_lines, extra_fields) inte råkar överskriva dem.
+        payload.update(draft_guard)
+
         if credit_account_id is not None:
             payload["credit_account_id"] = credit_account_id
         if vat_lines_attributes:
@@ -399,13 +507,21 @@ class BezalaClient:
             for k, v in extra_fields.items():
                 if v is None:
                     continue
-                if k == "draft":
-                    # Skydda mot att en framtida caller råkar slå av
-                    # draft via extra_fields. Logga och ignorera.
+                if k in draft_guard:
+                    # Skydda guard-fält. Logga och ignorera.
                     logger.warning(
                         "update_transaction: extra_fields försökte sätta "
-                        "draft=%r — ignoreras, behåller draft=True",
-                        v,
+                        "guard-fält %s=%r — ignoreras, behåller %s=%r",
+                        k, v, k, draft_guard[k],
+                    )
+                    continue
+                if k in self._BLOCKED_SUBMIT_FIELDS:
+                    # Submit-kodade fält tystas hårt — vi vill aldrig
+                    # auto-submitta från koden.
+                    logger.warning(
+                        "update_transaction: extra_fields försökte sätta "
+                        "submit-kodat fält %s=%r — IGNORERAS",
+                        k, v,
                     )
                     continue
                 payload[k] = v
@@ -418,6 +534,13 @@ class BezalaClient:
         )
         resp = self._request(
             "PUT", f"/transactions/{transaction_id}", json=wrapped,
+        )
+        # FAS 5.26 — logga ALLTID response-body på PUT (inte bara vid 4xx)
+        # så vi kan korrelera draft-guard-fälten mot Bezalas faktiska
+        # state-svar.
+        logger.info(
+            "BEZALA RESPONSE update_transaction: tx_id=%s status=%s body=%s",
+            transaction_id, resp.status_code, _safe_body_snippet(resp),
         )
         if resp.status_code >= 400:
             raise BezalaError(
@@ -441,6 +564,28 @@ class BezalaClient:
             confirmed_id, description,
         )
         return BezalaTransaction(transaction_id=str(confirmed_id), url=url)
+
+    def get_transaction(self, transaction_id: str | int) -> dict[str, Any]:
+        """GET /transactions/{tx_id} — läser nuvarande state för en
+        transaktion. Används av /api/debug/test-bezala-draft-flow för
+        post-flight-verifiering av att drafter inte auto-submittas.
+
+        Returnerar rådata-JSON (dict) eller tom dict om svaret inte är
+        JSON. Höjer BezalaError vid 4xx/5xx."""
+        if not transaction_id:
+            raise BezalaError("get_transaction: transaction_id saknas")
+        resp = self._request("GET", f"/transactions/{transaction_id}")
+        if resp.status_code >= 400:
+            raise BezalaError(
+                f"Bezala get_transaction: {resp.status_code}",
+                status_code=resp.status_code,
+                body=_safe_body_snippet(resp),
+            )
+        try:
+            data = resp.json()
+        except ValueError:
+            data = {}
+        return data if isinstance(data, dict) else {"_raw": data}
 
     # --------- Gate 0 groundwork: metadata-endpoints ---------
     #
