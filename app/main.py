@@ -2,6 +2,7 @@ import logging
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
+from typing import Any
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Form, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -2581,6 +2582,153 @@ class MatchToBezalaPayload(BaseModel):
     missing_receipt_id: int | str
 
 
+class DebugTestDraftStatusPayload(BaseModel):
+    """FAS 5.26 — body för /api/debug/test-bezala-draft-flow."""
+    message_id: int
+    missing_receipt_id: int | str
+
+
+def _do_match_to_bezala(
+    *,
+    row: "ProcessedMessage",
+    bill_line_id: str,
+    db: Session,
+    bezala: BezalaClient,
+) -> dict:
+    """Core flow: snapshot bill_line, ladda PDF, bygg params, kör
+    attach_file (POST /attachments + PUT /transactions), uppdatera row
+    och commit. Returnerar dict med metadata användbar för båda
+    callers (prod-endpoint + debug-endpoint).
+
+    Höjer BezalaError eller HTTPException vid fel. Caller ansvarar för
+    att stänga bezala-clienten."""
+    drive = _get_drive_or_401()
+
+    # Snapshot bill_line-metadata FÖR attach.
+    bill_line_snapshot: dict | None = None
+    try:
+        for raw in bezala.list_missing_receipts() or []:
+            normalized = _normalize_missing_receipt(raw)
+            if str(normalized.get("id")) == bill_line_id:
+                bill_line_snapshot = normalized
+                break
+    except BezalaError:
+        logger.warning(
+            "match-to-bezala: kunde inte snapshot:a bill_line_id=%s "
+            "(fortsätter utan snapshot)",
+            bill_line_id,
+        )
+
+    pdf_bytes = drive.download_pdf(row.drive_file_id)
+    logger.info(
+        "Match-to-bezala: msg_id=%s bill_line_id=%s drive_file_id=%s pdf_bytes=%d",
+        row.id, bill_line_id, row.drive_file_id,
+        len(pdf_bytes) if pdf_bytes else 0,
+    )
+    if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
+        raise HTTPException(
+            status_code=502,
+            detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
+        )
+
+    snap = bill_line_snapshot or {}
+    effective_amount = snap.get("amount") if snap.get("amount") is not None else row.amount
+    effective_currency = (snap.get("currency") or row.currency or "EUR")
+    effective_date = snap.get("date") or row.receipt_date
+
+    try:
+        metadata = fetch_bezala_metadata(bezala)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "match-to-bezala: fetch_bezala_metadata kraschade — "
+            "fortsätter utan accounts/cost_centers/vat_rates",
+        )
+        metadata = {"accounts": [], "cost_centers": [], "vat_rates": []}
+
+    try:
+        from app.services.bezala_config import list_mappings as _list_mappings
+        vendor_mappings = _list_mappings(db)
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "match-to-bezala: kunde inte ladda bezala_vendor_mappings",
+        )
+        vendor_mappings = []
+
+    description_override = row.ai_description_en or row.summary
+
+    params = build_receipt_params(
+        file_name=row.file_name,
+        sender=row.sender,
+        vendor=row.vendor,
+        category=row.category,
+        amount=effective_amount,
+        currency=effective_currency,
+        receipt_date=effective_date,
+        subject=row.subject,
+        accounts=metadata["accounts"],
+        cost_centers=metadata["cost_centers"],
+        vat_rates=metadata["vat_rates"],
+        description_override=description_override,
+        vendor_mappings=vendor_mappings,
+    )
+
+    logger.info(
+        "MATCH-TO-BEZALA payload: message_id=%s bill_line_id=%s "
+        "description=%r vendor=%r category=%r "
+        "effective_amount=%s effective_currency=%s effective_date=%s "
+        "(row.amount=%s row.currency=%s row.receipt_date=%s "
+        "snap.amount=%s snap.currency=%s snap.date=%s) "
+        "credit_account_id=%s vat_lines_count=%d sender=%r",
+        row.id, bill_line_id, params["description"], row.vendor,
+        row.category, effective_amount, effective_currency, effective_date,
+        row.amount, row.currency, row.receipt_date,
+        snap.get("amount"), snap.get("currency"), snap.get("date"),
+        params.get("credit_account_id"),
+        len(params.get("vat_lines_attributes") or []), row.sender,
+    )
+    attach_result = bezala.attach_file(
+        bill_line_id, row.file_name, pdf_bytes,
+        description=params["description"],
+        date=params["date"],
+        credit_account_id=params.get("credit_account_id"),
+        vat_lines_attributes=params.get("vat_lines_attributes") or [],
+    )
+
+    row.bezala_transaction_id = bill_line_id
+    row.bezala_upload_status = "success"
+    row.bezala_error_message = None
+    from datetime import datetime as _dt
+    row.matched_at = _dt.utcnow()
+    if bill_line_snapshot:
+        merchant = bill_line_snapshot.get("description")
+        row.bezala_payment_merchant = (
+            str(merchant)[:255] if merchant else None
+        )
+        amt = bill_line_snapshot.get("amount")
+        row.bezala_payment_amount = (
+            float(amt) if amt is not None else None
+        )
+        cur = bill_line_snapshot.get("currency")
+        row.bezala_payment_currency = (
+            str(cur)[:16] if cur else None
+        )
+        d = bill_line_snapshot.get("date")
+        row.bezala_payment_date = str(d)[:32] if d else None
+    db.commit()
+    logger.info(
+        "Kortmatchning klar: msg_id=%s → bill_line_id=%s "
+        "transaction_id=%s",
+        row.id, bill_line_id, attach_result.attachment_id,
+    )
+    return {
+        "row": row,
+        "bill_line_id": bill_line_id,
+        "transaction_id": attach_result.attachment_id,
+        "bill_line_snapshot": bill_line_snapshot,
+        "params": params,
+    }
+
+
 @app.post("/api/messages/{msg_id}/match-to-bezala")
 def match_message_to_bezala(
     msg_id: int,
@@ -2609,144 +2757,14 @@ def match_message_to_bezala(
 
     bill_line_id = str(payload.missing_receipt_id)
 
-    drive = _get_drive_or_401()
-
     try:
         bezala = BezalaClient()
     except BezalaError as exc:
         raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
 
-    # Snapshot bill_line-metadata FÖR attach (medan raden ännu finns kvar
-    # i Bezalas missing_receipts-lista). Failsafe — om Bezala är nere
-    # eller listan är tom kör vi vidare utan snapshot, matched_at sätts
-    # ändå nedan.
-    bill_line_snapshot: dict | None = None
     try:
-        for raw in bezala.list_missing_receipts() or []:
-            normalized = _normalize_missing_receipt(raw)
-            if str(normalized.get("id")) == bill_line_id:
-                bill_line_snapshot = normalized
-                break
-    except BezalaError:
-        logger.warning(
-            "match-to-bezala: kunde inte snapshot:a bill_line_id=%s "
-            "(fortsätter utan snapshot)",
-            bill_line_id,
-        )
-
-    try:
-        pdf_bytes = drive.download_pdf(row.drive_file_id)
-        logger.info(
-            "Match-to-bezala: msg_id=%s bill_line_id=%s drive_file_id=%s pdf_bytes=%d",
-            msg_id, bill_line_id, row.drive_file_id,
-            len(pdf_bytes) if pdf_bytes else 0,
-        )
-        if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
-            raise HTTPException(
-                status_code=502,
-                detail=f"PDF-nedladdning misslyckades för {row.drive_file_id!r}",
-            )
-
-        # --- FAS 5.24 — robust coupling-metadata ---
-        # 1) Beloppet/valutan/datum måste komma från bill_line (bank_row),
-        #    inte från AI-extracted fält. Annars hamnar drafts på 0 €
-        #    (cross-currency) eller fel belopp (AI-mismatch).
-        snap = bill_line_snapshot or {}
-        effective_amount = snap.get("amount") if snap.get("amount") is not None else row.amount
-        effective_currency = (snap.get("currency") or row.currency or "EUR")
-        effective_date = snap.get("date") or row.receipt_date
-
-        # 2) Bygg samma params som upload-flödet använder (account_id,
-        #    vat_lines, description-prioritet). Failsafe: om Bezala-
-        #    metadata-anrop kraschar fortsätter vi med en minimal payload.
-        try:
-            metadata = fetch_bezala_metadata(bezala)
-        except Exception:  # noqa: BLE001
-            logger.exception(
-                "match-to-bezala: fetch_bezala_metadata kraschade — "
-                "fortsätter utan accounts/cost_centers/vat_rates",
-            )
-            metadata = {"accounts": [], "cost_centers": [], "vat_rates": []}
-
-        try:
-            from app.services.bezala_config import list_mappings as _list_mappings
-            vendor_mappings = _list_mappings(db)
-        except Exception:  # noqa: BLE001 — config-fel får inte blockera match
-            logger.exception(
-                "match-to-bezala: kunde inte ladda bezala_vendor_mappings",
-            )
-            vendor_mappings = []
-
-        # FAS 5.9 — prioritera engelsk AI-beskrivning, fall tillbaka på
-        # svensk summary, sist file_name (via build_description i mappern).
-        # mapping.description_override prioriteras i build_receipt_params
-        # (C12-regression — bezala_field_mapper.py:882-887).
-        description_override = row.ai_description_en or row.summary
-
-        params = build_receipt_params(
-            file_name=row.file_name,
-            sender=row.sender,
-            vendor=row.vendor,
-            category=row.category,
-            amount=effective_amount,
-            currency=effective_currency,
-            receipt_date=effective_date,
-            subject=row.subject,
-            accounts=metadata["accounts"],
-            cost_centers=metadata["cost_centers"],
-            vat_rates=metadata["vat_rates"],
-            description_override=description_override,
-            vendor_mappings=vendor_mappings,
-        )
-
-        logger.info(
-            "MATCH-TO-BEZALA payload: message_id=%s bill_line_id=%s "
-            "description=%r vendor=%r category=%r "
-            "effective_amount=%s effective_currency=%s effective_date=%s "
-            "(row.amount=%s row.currency=%s row.receipt_date=%s "
-            "snap.amount=%s snap.currency=%s snap.date=%s) "
-            "credit_account_id=%s vat_lines_count=%d sender=%r",
-            msg_id, bill_line_id, params["description"], row.vendor,
-            row.category, effective_amount, effective_currency, effective_date,
-            row.amount, row.currency, row.receipt_date,
-            snap.get("amount"), snap.get("currency"), snap.get("date"),
-            params.get("credit_account_id"),
-            len(params.get("vat_lines_attributes") or []), row.sender,
-        )
-        bezala.attach_file(
-            bill_line_id, row.file_name, pdf_bytes,
-            description=params["description"],
-            date=params["date"],
-            credit_account_id=params.get("credit_account_id"),
-            vat_lines_attributes=params.get("vat_lines_attributes") or [],
-        )
-
-        row.bezala_transaction_id = bill_line_id
-        row.bezala_upload_status = "success"
-        row.bezala_error_message = None
-        # FAS 8.5 — för Travel Tinder Matchade-vyn
-        from datetime import datetime as _dt
-        row.matched_at = _dt.utcnow()
-        # Snapshot av Bezala bill_line för Matchade-vyns "payment"-sida
-        if bill_line_snapshot:
-            merchant = bill_line_snapshot.get("description")
-            row.bezala_payment_merchant = (
-                str(merchant)[:255] if merchant else None
-            )
-            amt = bill_line_snapshot.get("amount")
-            row.bezala_payment_amount = (
-                float(amt) if amt is not None else None
-            )
-            cur = bill_line_snapshot.get("currency")
-            row.bezala_payment_currency = (
-                str(cur)[:16] if cur else None
-            )
-            d = bill_line_snapshot.get("date")
-            row.bezala_payment_date = str(d)[:32] if d else None
-        db.commit()
-        logger.info(
-            "Kortmatchning klar: msg_id=%s → bill_line_id=%s",
-            msg_id, bill_line_id,
+        _do_match_to_bezala(
+            row=row, bill_line_id=bill_line_id, db=db, bezala=bezala,
         )
         return _serialize_message(row)
     except BezalaError as exc:
@@ -2758,6 +2776,106 @@ def match_message_to_bezala(
         row.bezala_error_message = (f"{exc} | body={exc.body}" if exc.body else str(exc))[:2000]
         db.commit()
         raise HTTPException(status_code=502, detail=f"Bezala attach_file: {exc}") from exc
+    finally:
+        bezala.close()
+
+
+@app.post("/api/debug/test-bezala-draft-flow")
+def debug_test_bezala_draft_flow(
+    payload: DebugTestDraftStatusPayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """FAS 5.26 — diagnos-endpoint för match-to-bezala-flödet.
+
+    Kör samma match-to-bezala-flöde som /api/messages/{msg_id}/match-to-
+    bezala men:
+      1) Sätter `bezala.record_diagnostics = True` så att samtliga
+         request- och response-bodies fångas in.
+      2) Efter POST /attachments + PUT /transactions körs en GET
+         /transactions/{tx_id} så att vi kan inspektera Bezalas
+         faktiska state-fält och bekräfta om draft-flaggorna träffade.
+      3) Returnerar fullständigt call_log + post-flight-state.
+
+    Använd för att verifiera fix:en mot live-Bezala när Mikko kör en
+    test-koppling. Endpointen ÄR INTE en dry-run — den skapar en
+    riktig draft (precis som vanliga endpointet). Skillnaden är bara
+    att svaret innehåller diagnostik."""
+    row = db.query(ProcessedMessage).filter(
+        ProcessedMessage.id == payload.message_id,
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    if not row.drive_file_id or not row.file_name:
+        raise HTTPException(
+            status_code=400,
+            detail="Meddelandet saknar Drive-fil — kan inte koppla till Bezala",
+        )
+
+    bill_line_id = str(payload.missing_receipt_id)
+
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+
+    bezala.record_diagnostics = True
+    bezala.call_log = []
+
+    response: dict[str, Any] = {
+        "message_id": payload.message_id,
+        "bill_line_id": bill_line_id,
+        "call_log": [],
+        "post_flight": None,
+        "error": None,
+    }
+
+    try:
+        try:
+            result = _do_match_to_bezala(
+                row=row, bill_line_id=bill_line_id, db=db, bezala=bezala,
+            )
+            tx_id = result["transaction_id"]
+        except BezalaError as exc:
+            response["error"] = {
+                "message": str(exc),
+                "status_code": exc.status_code,
+                "body": exc.body,
+            }
+            response["call_log"] = list(bezala.call_log)
+            row.bezala_upload_status = "failed"
+            row.bezala_error_message = (
+                f"{exc} | body={exc.body}" if exc.body else str(exc)
+            )[:2000]
+            db.commit()
+            return response
+
+        # Post-flight verifiering — läs Bezalas state för transaktionen.
+        # Logga errors loud så vi ser tydligt om draft-guard inte träffat.
+        try:
+            tx_state = bezala.get_transaction(tx_id)
+            response["post_flight"] = tx_state
+            logger.info(
+                "DEBUG draft-flow post-flight: tx_id=%s state-fält=%s",
+                tx_id,
+                {
+                    k: tx_state.get(k)
+                    for k in (
+                        "draft", "state", "status", "is_draft",
+                        "submitted", "submitted_at", "approval_status",
+                    )
+                    if k in tx_state
+                },
+            )
+        except BezalaError as exc:
+            response["post_flight"] = {
+                "error": str(exc), "status_code": exc.status_code,
+                "body": exc.body,
+            }
+
+        response["call_log"] = list(bezala.call_log)
+        response["transaction_id"] = tx_id
+        return response
     finally:
         bezala.close()
 

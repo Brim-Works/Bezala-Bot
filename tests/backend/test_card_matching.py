@@ -1090,6 +1090,232 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         )
         self.assertEqual(calls, ["POST"])
 
+    # ---- FAS 5.26 (C17) — multipla draft-guard-fält + env-override ----
+
+    def _run_put_capture(self, env=None):
+        """Helper: kör en update_transaction-call och returnera PUT-bodyn."""
+        from app.services.bezala_client import _load_draft_guard_fields  # noqa
+        import os
+        client = _make_client()
+        captured: dict = {}
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 99}'
+        resp.json = MagicMock(return_value={"id": 99})
+
+        def fake_request(method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured["json"] = kwargs.get("json")
+            return resp
+        client._client.request = fake_request
+
+        old = os.environ.get("BEZALA_DRAFT_GUARD_FIELDS_JSON")
+        if env is not None:
+            os.environ["BEZALA_DRAFT_GUARD_FIELDS_JSON"] = env
+        elif "BEZALA_DRAFT_GUARD_FIELDS_JSON" in os.environ:
+            del os.environ["BEZALA_DRAFT_GUARD_FIELDS_JSON"]
+        try:
+            client.update_transaction(
+                "99",
+                description="Diagnostik",
+                date="2026-05-15",
+                credit_account_id=67113,
+                vat_lines_attributes=[{
+                    "taxable": "100.00", "tax_percentage": "0.255",
+                    "currency": "EUR", "expense_account_id": 67113,
+                }],
+            )
+        finally:
+            if old is None:
+                os.environ.pop("BEZALA_DRAFT_GUARD_FIELDS_JSON", None)
+            else:
+                os.environ["BEZALA_DRAFT_GUARD_FIELDS_JSON"] = old
+        return captured["json"]["transaction"]
+
+    def test_default_draft_guard_includes_multiple_field_names(self):
+        """FAS 5.26 — default skickar draft, state, status, is_draft för
+        att täcka Bezalas okända fältnamn (C16 med endast draft=true
+        promotade ändå drafter till attestering)."""
+        body = self._run_put_capture()
+        self.assertIs(body.get("draft"), True)
+        self.assertEqual(body.get("state"), "draft")
+        self.assertEqual(body.get("status"), "draft")
+        self.assertIs(body.get("is_draft"), True)
+        # Submit-kodade fält måste fortfarande aldrig skickas
+        for field in ("submitted", "submitted_at", "is_submitted",
+                      "action", "approval_status", "submit",
+                      "send_for_approval", "mark_as_submitted"):
+            self.assertNotIn(field, body, f"{field} får inte finnas i PUT-body")
+
+    def test_old_draft_field_alone_does_not_trigger_submit(self):
+        """C16-regression: med default-konfig får payloaden EXPLICIT
+        innehålla draft=true (gamla fältnamnet) men paras med andra
+        guard-flaggor. Bezala får aldrig se draft som enda signal."""
+        body = self._run_put_capture()
+        self.assertIs(body.get("draft"), True)
+        # Andra guard-flaggor MÅSTE följa med
+        self.assertGreaterEqual(
+            sum(1 for k in ("state", "status", "is_draft") if k in body),
+            2, "minst 2 alternativa guard-fält ska följa med draft=True",
+        )
+
+    def test_draft_guard_overridable_via_env(self):
+        """Operatören kan styra fält-set via env utan kod-deploy."""
+        body = self._run_put_capture(
+            env='{"state": "draft", "submit": false}',
+        )
+        self.assertEqual(body.get("state"), "draft")
+        self.assertIs(body.get("submit"), False)
+        # draft-flaggan ska ha tagits bort (env-set styr fullt ut)
+        self.assertNotIn("draft", body)
+        self.assertNotIn("status", body)
+
+    def test_draft_guard_env_invalid_falls_back_to_default(self):
+        """Trasig JSON i env → default-set används (ej tomt)."""
+        body = self._run_put_capture(env="not json at all")
+        self.assertIs(body.get("draft"), True)
+        self.assertEqual(body.get("state"), "draft")
+
+    def test_extra_fields_cannot_smuggle_submit_codes(self):
+        """Defensivt: extra_fields får inte injicera submit-fält som
+        submitted=True, action='submit', send_for_approval=True etc."""
+        client = _make_client()
+        captured: dict = {}
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 7}'
+        resp.json = MagicMock(return_value={"id": 7})
+
+        def fake_request(method, url, **kwargs):
+            captured["json"] = kwargs.get("json")
+            return resp
+        client._client.request = fake_request
+
+        client.update_transaction(
+            "7",
+            description="X",
+            date="2026-05-15",
+            extra_fields={
+                "submitted": True,
+                "action": "submit",
+                "send_for_approval": True,
+                "submit": True,
+                "is_submitted": True,
+                "approval_status": "pending",
+                # En oskyldig att verifiera att vanliga fält fortfarande
+                # passerar
+                "cost_center_id": 9,
+            },
+        )
+        body = captured["json"]["transaction"]
+        for blocked in ("submitted", "action", "send_for_approval",
+                        "submit", "is_submitted", "approval_status"):
+            self.assertNotIn(blocked, body, f"{blocked} smög sig igenom")
+        # Lovligt extra-field går fortfarande igenom
+        self.assertEqual(body.get("cost_center_id"), 9)
+        # Draft-guard är intakt
+        self.assertIs(body.get("draft"), True)
+
+    def test_diagnostics_capture_records_request_and_response(self):
+        """FAS 5.26 — record_diagnostics=True fångar in både request-
+        och response-bodies så att /api/debug/test-bezala-draft-flow
+        kan returnera dem."""
+        client = _make_client()
+        client.record_diagnostics = True
+        client.call_log = []
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.headers = {"content-type": "application/json"}
+        post_resp.text = '{"id": 333, "transaction_id": 444}'
+        post_resp.json = MagicMock(
+            return_value={"id": 333, "transaction_id": 444},
+        )
+
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"id": 444, "state": "draft"}'
+        put_resp.json = MagicMock(
+            return_value={"id": 444, "state": "draft"},
+        )
+
+        def fake_request(method, url, **kwargs):
+            return post_resp if method == "POST" else put_resp
+        client._client.request = fake_request
+
+        client.attach_file(
+            42, "k.pdf", PDF_BYTES,
+            description="diag",
+            date="2026-05-15",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "10.00", "tax_percentage": "0.24",
+                "currency": "EUR", "expense_account_id": 67100,
+            }],
+        )
+
+        self.assertGreaterEqual(len(client.call_log), 2)
+        methods = [c["method"] for c in client.call_log]
+        self.assertIn("POST", methods)
+        self.assertIn("PUT", methods)
+        put_entry = [c for c in client.call_log if c["method"] == "PUT"][0]
+        self.assertEqual(put_entry["response_status"], 200)
+        self.assertIn("state", put_entry["response_body"])
+        # PUT-payloaden ska innehålla draft-guard
+        put_req = put_entry["request_body"]
+        tx = put_req["transaction"]
+        self.assertIs(tx.get("draft"), True)
+        self.assertEqual(tx.get("state"), "draft")
+
+    def test_diagnostics_disabled_by_default(self):
+        """call_log fylls inte i utan opt-in."""
+        client = _make_client()
+        # __new__-byggd klient saknar attributen — record_diagnostics
+        # ska behandlas som False via getattr-guard i _request.
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 1}'
+        resp.json = MagicMock(return_value={"id": 1})
+
+        def fake_request(method, url, **kwargs):
+            return resp
+        client._client.request = fake_request
+
+        client.update_transaction("1", description="X", date="2026-05-15")
+        self.assertFalse(getattr(client, "call_log", None))
+
+    def test_get_transaction_returns_dict(self):
+        """get_transaction läser nuvarande state från Bezala för
+        post-flight-verifiering."""
+        client = _make_client()
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 22, "state": "draft", "draft": true}'
+        resp.json = MagicMock(
+            return_value={"id": 22, "state": "draft", "draft": True},
+        )
+
+        captured: dict = {}
+
+        def fake_request(method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            return resp
+        client._client.request = fake_request
+
+        state = client.get_transaction(22)
+        self.assertEqual(captured["method"], "GET")
+        self.assertTrue(captured["url"].endswith("/transactions/22"))
+        self.assertEqual(state["state"], "draft")
+        self.assertIs(state["draft"], True)
+
 
 # ---------- Endpoint-tester ----------
 
@@ -1514,6 +1740,144 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 400)
         self.assertIn("Drive-fil", resp.json()["detail"])
+
+    # ---- FAS 5.26 (C17) — debug-endpoint för draft-flödet ----
+
+    def test_debug_test_bezala_draft_flow_returns_call_log_and_post_flight(self):
+        """POST /api/debug/test-bezala-draft-flow:
+        - Returnerar call_log (request + response för POST + PUT)
+        - Returnerar post_flight (GET /transactions/{tx_id})
+        - Sätter row som success-coupled (samma sidoeffekt som prod-endpoint)"""
+        mid = self._seed_processed()
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+
+        # Endpointen sätter bezala.call_log = [] vid start. Sätter därför
+        # call_log via attach_file:s side_effect (just-in-time efter
+        # endpointens reset).
+        fake_bezala = MagicMock()
+        fake_attachment = MagicMock()
+        fake_attachment.attachment_id = "tx-9001"
+
+        def _populate_call_log(*args, **kwargs):
+            fake_bezala.call_log.extend([
+                {
+                    "method": "POST", "path": "/attachments",
+                    "request_body": {
+                        "files": ["file"],
+                        "data": {"draft": "1", "bill_line_id": "2163467"},
+                    },
+                    "response_status": 200,
+                    "response_body": '{"id": 111, "transaction_id": "tx-9001"}',
+                },
+                {
+                    "method": "PUT", "path": "/transactions/tx-9001",
+                    "request_body": {
+                        "transaction": {
+                            "description": "Anthropic API usage",
+                            "date": "2026-04-14",
+                            "draft": True,
+                            "state": "draft",
+                            "status": "draft",
+                            "is_draft": True,
+                        },
+                    },
+                    "response_status": 200,
+                    "response_body": '{"id": "tx-9001", "state": "draft"}',
+                },
+            ])
+            return fake_attachment
+        fake_bezala.attach_file.side_effect = _populate_call_log
+        fake_bezala.list_missing_receipts.return_value = [
+            {
+                "id": 2163467, "description": "ANTHROPIC API",
+                "amount": 112.95, "currency": "EUR",
+                "date": "2026-04-14",
+            },
+        ]
+        fake_bezala.list_accounts.return_value = []
+        fake_bezala.list_cost_centers.return_value = []
+        fake_bezala.list_vat_rates.return_value = []
+        fake_bezala.get_transaction.return_value = {
+            "id": "tx-9001",
+            "state": "draft",
+            "draft": True,
+            "submitted_at": None,
+        }
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(
+                "/api/debug/test-bezala-draft-flow",
+                json={"message_id": mid, "missing_receipt_id": 2163467},
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["bill_line_id"], "2163467")
+        self.assertEqual(body["transaction_id"], "tx-9001")
+        self.assertIsNone(body["error"])
+
+        # call_log fångar både POST och PUT
+        methods = [c["method"] for c in body["call_log"]]
+        self.assertIn("POST", methods)
+        self.assertIn("PUT", methods)
+
+        # Post-flight visar att Bezala-state är "draft" (= fix:en träffade)
+        self.assertEqual(body["post_flight"]["state"], "draft")
+        self.assertIs(body["post_flight"]["draft"], True)
+
+        # get_transaction har anropats (post-flight)
+        fake_bezala.get_transaction.assert_called_once_with("tx-9001")
+        # record_diagnostics aktiverades
+        self.assertTrue(fake_bezala.record_diagnostics)
+
+    def test_debug_test_bezala_draft_flow_404_for_missing_message(self):
+        resp = self.client.post(
+            "/api/debug/test-bezala-draft-flow",
+            json={"message_id": 99999, "missing_receipt_id": 1},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_debug_test_bezala_draft_flow_surfaces_bezala_error(self):
+        """När attach_file höjer BezalaError ska debug-endpointen
+        returnera felet i `error`-fältet — inte krascha. Mikko kan då
+        läsa felmeddelandet utan att gräva i loggar."""
+        from app.services.bezala_client import BezalaError
+        mid = self._seed_processed()
+
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+        fake_bezala = MagicMock()
+        fake_bezala.list_missing_receipts.return_value = []
+        fake_bezala.list_accounts.return_value = []
+        fake_bezala.list_cost_centers.return_value = []
+        fake_bezala.list_vat_rates.return_value = []
+
+        def _err(*args, **kwargs):
+            fake_bezala.call_log.append({
+                "method": "POST", "path": "/attachments",
+                "request_body": {"data": {"draft": "1"}},
+                "response_status": 422,
+                "response_body": '{"error":"validation"}',
+            })
+            raise BezalaError(
+                "validation failed", status_code=422, body="bad request",
+            )
+        fake_bezala.attach_file.side_effect = _err
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(
+                "/api/debug/test-bezala-draft-flow",
+                json={"message_id": mid, "missing_receipt_id": 2163467},
+            )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsNotNone(body["error"])
+        self.assertEqual(body["error"]["status_code"], 422)
+        # call_log finns även när error inträffar
+        self.assertTrue(body["call_log"])
 
 
 # ---------- FAS 5.24 — robust coupling-tester ----------
