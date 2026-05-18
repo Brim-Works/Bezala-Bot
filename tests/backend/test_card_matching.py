@@ -940,15 +940,106 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         self.assertEqual(body["description"], "My description")
         self.assertEqual(body["vat_lines_attributes"][0]["taxable"], "23.22")
 
-    def test_match_to_bezala_payload_includes_draft_status_explicitly(self):
-        """FAS 5.25 — PUT /transactions måste innehålla draft=true så att
-        Bezala håller kvar drafter i 'Utkast' i stället för att sidoeffekt-
-        promota till 'Väntar på andras attestering'.
+    def test_attach_file_put_payload_includes_bill_id(self):
+        """FAS 5.27 (C19 punkt C) — efter POST /attachments med bill_line_id
+        i form-datan visade Bezalas pre_flight på live-tx 5005475 att
+        transaktionen ändå hade `connected_to_bill_line: false` och
+        `bill_id: null`. Form-datan räcker uppenbarligen inte för Bezala
+        för att aktivera kortrad-kopplingen. attach_file PUT:ar därför
+        bill_id explicit i transaction-payloaden så att kortrad-kopplingen
+        verkligen blir aktiv (= 💳-ikonen blir grön i UI:t)."""
+        client = _make_client()
+        calls: list[dict] = []
 
-        Detta är fix:en för C16: PR #51 (FAS 5.24) la till en uppföljnings-
-        PUT efter POST /attachments. Utan explicit draft-flagga skickade
-        Bezala-API:t in drafterna för attestering — och de kan inte
-        återkallas av användaren."""
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.headers = {"content-type": "application/json"}
+        post_resp.text = '{"id": 111, "transaction_id": 5005475}'
+        post_resp.json = MagicMock(
+            return_value={"id": 111, "transaction_id": 5005475},
+        )
+
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"id": 5005475}'
+        put_resp.json = MagicMock(return_value={"id": 5005475})
+
+        def fake_request(method, url, **kwargs):
+            calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+            return post_resp if method == "POST" else put_resp
+        client._client.request = fake_request
+
+        client.attach_file(
+            2163467, "kvitto.pdf", PDF_BYTES,
+            description="Anthropic",
+            date="2026-04-14",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "112.95", "tax_percentage": "0.00",
+                "currency": "EUR", "expense_account_id": 67100,
+            }],
+        )
+
+        put_calls = [c for c in calls if c["method"] == "PUT"]
+        self.assertEqual(len(put_calls), 1)
+        body = put_calls[0]["json"]["transaction"]
+        # bill_id måste sättas till bill_line_id (i strängform efter
+        # update_transaction:s passthrough) så Bezala får signal att
+        # transaktionen ska kopplas till kortraden.
+        self.assertIn("bill_id", body, "bill_id måste finnas i PUT-payloaden")
+        self.assertEqual(str(body["bill_id"]), "2163467")
+
+    def test_attach_file_extra_fields_cannot_override_bill_id(self):
+        """Caller kan inte överstyra bill_id via extra_fields — vi
+        injicerar alltid bill_line_id-input som bill_id sist."""
+        client = _make_client()
+        calls: list[dict] = []
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.headers = {"content-type": "application/json"}
+        post_resp.text = '{"id": 111, "transaction_id": 5005475}'
+        post_resp.json = MagicMock(
+            return_value={"id": 111, "transaction_id": 5005475},
+        )
+
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = "{}"
+        put_resp.json = MagicMock(return_value={})
+
+        def fake_request(method, url, **kwargs):
+            calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+            return post_resp if method == "POST" else put_resp
+        client._client.request = fake_request
+
+        client.attach_file(
+            2163467, "kvitto.pdf", PDF_BYTES,
+            description="x",
+            date="2026-04-14",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "1.00", "tax_percentage": "0.0",
+                "currency": "EUR", "expense_account_id": 67100,
+            }],
+            extra_fields={"bill_id": "999999"},  # försök överstyra
+        )
+
+        put_body = [c for c in calls if c["method"] == "PUT"][0]["json"]
+        self.assertEqual(str(put_body["transaction"]["bill_id"]), "2163467")
+
+    def test_match_to_bezala_payload_includes_state_unapproved(self):
+        """FAS 5.27 — PUT /transactions måste innehålla state='unapproved'
+        så att Bezala håller kvar drafter i 'Utkast' i stället för att
+        promotade dem till 'Väntar på andras attestering'.
+
+        C18-diagnostiken (GET /transactions/5005475) bekräftade att rätt
+        fältnamn är `state` och rätt värde för Utkast är `"unapproved"` —
+        INTE `draft`, INTE `status`, INTE `is_draft`. C16/C17:s fyra-fält-
+        gissning fungerade aldrig; det fyrdubblade bara payloaden utan
+        att träffa rätt fält."""
         client = _make_client()
         calls: list[dict] = []
 
@@ -986,8 +1077,11 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         put_calls = [c for c in calls if c["method"] == "PUT"]
         self.assertEqual(len(put_calls), 1, "förväntar exakt en PUT /transactions")
         body = put_calls[0]["json"]["transaction"]
-        self.assertIn("draft", body, "transaction-payload ska ha draft-flagga")
-        self.assertIs(body["draft"], True, "draft måste vara True (boolean), inte sant")
+        self.assertEqual(
+            body.get("state"), "unapproved",
+            "PUT-payloaden måste skicka state='unapproved' så draften "
+            "ligger kvar i Utkast",
+        )
 
     def test_match_to_bezala_payload_does_not_submit(self):
         """FAS 5.25 — defensivt: PUT-payloaden får INTE innehålla några
@@ -1029,22 +1123,19 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         put_calls = [c for c in calls if c["method"] == "PUT"]
         self.assertEqual(len(put_calls), 1)
         body = put_calls[0]["json"]["transaction"]
-        # Submit-coded fält som måste saknas eller vara "draft-vänliga"
+        # Submit-coded fält måste aldrig finnas med
         self.assertNotIn("submitted", body)
         self.assertNotIn("action", body)
-        if "state" in body:
-            self.assertEqual(body["state"], "draft")
-        if "status" in body:
-            self.assertEqual(body["status"], "draft")
-        if "is_draft" in body:
-            self.assertIs(body["is_draft"], True)
-        # draft-flaggan ska vara explicit True
-        self.assertIs(body.get("draft"), True)
+        self.assertNotIn("send_for_approval", body)
+        # FAS 5.27: state är `unapproved` (Utkast). Inga av C16/C17:s
+        # fyra-fält-gissningar (draft/status/is_draft) skickas längre.
+        self.assertEqual(body.get("state"), "unapproved")
 
-    def test_update_transaction_extra_fields_cannot_override_draft(self):
-        """Defensivt skydd: även om en framtida caller råkar skicka
-        draft=False via extra_fields ska update_transaction behålla
-        draft=True (vi vill aldrig auto-submitta från koden)."""
+    def test_update_transaction_extra_fields_cannot_override_state(self):
+        """FAS 5.27 — defensivt skydd: även om en framtida caller råkar
+        skicka state='submitted' via extra_fields ska update_transaction
+        behålla state='unapproved' (guard-flaggan får aldrig regrediera
+        till submit)."""
         client = _make_client()
         captured: dict = {}
         resp = MagicMock()
@@ -1062,11 +1153,11 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
             "99",
             description="X",
             date="2026-05-05",
-            extra_fields={"draft": False, "cost_center_id": 1},
+            extra_fields={"state": "submitted", "cost_center_id": 1},
         )
         body = captured["json"]["transaction"]
-        self.assertIs(body["draft"], True)
-        # extra_fields utan draft-namn ska gå igenom
+        self.assertEqual(body["state"], "unapproved")
+        # extra_fields utan guard-namn ska gå igenom
         self.assertEqual(body["cost_center_id"], 1)
 
     def test_attach_file_legacy_description_only_skips_put(self):
@@ -1090,11 +1181,14 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         )
         self.assertEqual(calls, ["POST"])
 
-    # ---- FAS 5.26 (C17) — multipla draft-guard-fält + env-override ----
+    # ---- FAS 5.27 (C18) — hardcoded state=unapproved guard ----
 
     def _run_put_capture(self, env=None):
-        """Helper: kör en update_transaction-call och returnera PUT-bodyn."""
-        from app.services.bezala_client import _load_draft_guard_fields  # noqa
+        """Helper: kör en update_transaction-call och returnera PUT-bodyn.
+
+        FAS 5.27: `env`-parametern är kvar för bakåtkompatibilitet men
+        påverkar inte längre payloaden — state='unapproved' är hårdkodat.
+        Helper:n verifierar just det."""
         import os
         client = _make_client()
         captured: dict = {}
@@ -1135,49 +1229,40 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
                 os.environ["BEZALA_DRAFT_GUARD_FIELDS_JSON"] = old
         return captured["json"]["transaction"]
 
-    def test_default_draft_guard_includes_multiple_field_names(self):
-        """FAS 5.26 — default skickar draft, state, status, is_draft för
-        att täcka Bezalas okända fältnamn (C16 med endast draft=true
-        promotade ändå drafter till attestering)."""
+    def test_default_draft_guard_is_state_unapproved_only(self):
+        """FAS 5.27 — default skickar BARA state='unapproved'. C16/C17:s
+        fyrdubbla guess (draft/state/status/is_draft) ersätts av den
+        verifierade fältnamnet (state) och värdet (unapproved)."""
         body = self._run_put_capture()
-        self.assertIs(body.get("draft"), True)
-        self.assertEqual(body.get("state"), "draft")
-        self.assertEqual(body.get("status"), "draft")
-        self.assertIs(body.get("is_draft"), True)
+        self.assertEqual(body.get("state"), "unapproved")
+        # Gamla gissningarna ska INTE finnas med längre — de var fel och
+        # ger bara mer brus i Bezalas request-logs.
+        self.assertNotIn("draft", body)
+        self.assertNotIn("status", body)
+        self.assertNotIn("is_draft", body)
         # Submit-kodade fält måste fortfarande aldrig skickas
         for field in ("submitted", "submitted_at", "is_submitted",
                       "action", "approval_status", "submit",
                       "send_for_approval", "mark_as_submitted"):
             self.assertNotIn(field, body, f"{field} får inte finnas i PUT-body")
 
-    def test_old_draft_field_alone_does_not_trigger_submit(self):
-        """C16-regression: med default-konfig får payloaden EXPLICIT
-        innehålla draft=true (gamla fältnamnet) men paras med andra
-        guard-flaggor. Bezala får aldrig se draft som enda signal."""
-        body = self._run_put_capture()
-        self.assertIs(body.get("draft"), True)
-        # Andra guard-flaggor MÅSTE följa med
-        self.assertGreaterEqual(
-            sum(1 for k in ("state", "status", "is_draft") if k in body),
-            2, "minst 2 alternativa guard-fält ska följa med draft=True",
-        )
-
-    def test_draft_guard_overridable_via_env(self):
-        """Operatören kan styra fält-set via env utan kod-deploy."""
+    def test_draft_guard_env_var_no_longer_overrides_state(self):
+        """FAS 5.27 — state='unapproved' är hårdkodat. Tidigare kunde
+        operatören sätta `BEZALA_DRAFT_GUARD_FIELDS_JSON` i Railway och
+        styra payloaden; nu ignoreras env-vars helt så att rätt fält
+        garanterat alltid skickas."""
         body = self._run_put_capture(
-            env='{"state": "draft", "submit": false}',
+            env='{"state": "submitted", "draft": false}',
         )
-        self.assertEqual(body.get("state"), "draft")
-        self.assertIs(body.get("submit"), False)
-        # draft-flaggan ska ha tagits bort (env-set styr fullt ut)
+        # Env-värdena tas INTE in
+        self.assertEqual(body.get("state"), "unapproved")
         self.assertNotIn("draft", body)
-        self.assertNotIn("status", body)
 
-    def test_draft_guard_env_invalid_falls_back_to_default(self):
-        """Trasig JSON i env → default-set används (ej tomt)."""
+    def test_draft_guard_env_invalid_no_effect(self):
+        """FAS 5.27 — ogiltig JSON i env ändrar inget (env-läsning är
+        borta). state='unapproved' är fortfarande hårdkodat."""
         body = self._run_put_capture(env="not json at all")
-        self.assertIs(body.get("draft"), True)
-        self.assertEqual(body.get("state"), "draft")
+        self.assertEqual(body.get("state"), "unapproved")
 
     def test_extra_fields_cannot_smuggle_submit_codes(self):
         """Defensivt: extra_fields får inte injicera submit-fält som
@@ -1217,8 +1302,8 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
             self.assertNotIn(blocked, body, f"{blocked} smög sig igenom")
         # Lovligt extra-field går fortfarande igenom
         self.assertEqual(body.get("cost_center_id"), 9)
-        # Draft-guard är intakt
-        self.assertIs(body.get("draft"), True)
+        # FAS 5.27 — guard:en är state='unapproved' (hårdkodat)
+        self.assertEqual(body.get("state"), "unapproved")
 
     def test_diagnostics_capture_records_request_and_response(self):
         """FAS 5.26 — record_diagnostics=True fångar in både request-
@@ -1266,11 +1351,10 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         put_entry = [c for c in client.call_log if c["method"] == "PUT"][0]
         self.assertEqual(put_entry["response_status"], 200)
         self.assertIn("state", put_entry["response_body"])
-        # PUT-payloaden ska innehålla draft-guard
+        # PUT-payloaden ska innehålla state='unapproved' (FAS 5.27 guard)
         put_req = put_entry["request_body"]
         tx = put_req["transaction"]
-        self.assertIs(tx.get("draft"), True)
-        self.assertEqual(tx.get("state"), "draft")
+        self.assertEqual(tx.get("state"), "unapproved")
 
     def test_diagnostics_disabled_by_default(self):
         """call_log fylls inte i utan opt-in."""
@@ -1680,14 +1764,28 @@ class CardMatchingEndpointsTest(unittest.TestCase):
     def test_match_to_bezala_links_via_bill_line_id(self):
         """FAS 5.24 — match-flödet anropar attach_file med bill_line_id +
         full metadata (date, credit_account_id, vat_lines) så att Bezala
-        får rätt belopp/valuta/konto på drafterns PUT."""
+        får rätt belopp/valuta/konto på drafterns PUT.
+
+        FAS 5.27 — bezala_transaction_id sätts till det riktiga
+        transaction_id som attach_file returnerar (5xxxxxx i prod), INTE
+        bill_line_id (2xxxxxx). I testet är mock-värdet 'att-1' eftersom
+        MagicMock-en bara har attachment_id satt; det viktiga är att det
+        är attach-result-ID:t, inte bill_line_id:t (2163467)."""
         mid = self._seed_processed()
         resp, fake_bezala = self._run_match(mid)
 
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
         self.assertEqual(body["bezala_upload_status"], "success")
-        self.assertEqual(body["bezala_transaction_id"], "2163467")
+        # FAS 5.27 — det riktiga transaction_id från attach_file, INTE
+        # bill_line_id. Tidigare lagrade vi "2163467" (bill_line_id) här
+        # vilket fick PUT /transactions/{id} att 403:a.
+        self.assertEqual(body["bezala_transaction_id"], "att-1")
+        self.assertNotEqual(
+            body["bezala_transaction_id"], "2163467",
+            "bezala_transaction_id får ALDRIG lagra bill_line_id "
+            "(2xxxxxx) — det skapar 403:or på alla downstream PUT-anrop.",
+        )
 
         # attach_file anropas med bill_line_id + filename + pdf + full
         # metadata (description, date, credit_account_id, vat_lines).
@@ -1825,14 +1923,11 @@ class CardMatchingEndpointsTest(unittest.TestCase):
                         "transaction": {
                             "description": "Anthropic API usage",
                             "date": "2026-04-14",
-                            "draft": True,
-                            "state": "draft",
-                            "status": "draft",
-                            "is_draft": True,
+                            "state": "unapproved",
                         },
                     },
                     "response_status": 200,
-                    "response_body": '{"id": "tx-9001", "state": "draft"}',
+                    "response_body": '{"id": "tx-9001", "state": "unapproved"}',
                 },
             ])
             return fake_attachment
@@ -1849,8 +1944,7 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         fake_bezala.list_vat_rates.return_value = []
         fake_bezala.get_transaction.return_value = {
             "id": "tx-9001",
-            "state": "draft",
-            "draft": True,
+            "state": "unapproved",
             "submitted_at": None,
         }
 
@@ -1871,9 +1965,8 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertIn("POST", methods)
         self.assertIn("PUT", methods)
 
-        # Post-flight visar att Bezala-state är "draft" (= fix:en träffade)
-        self.assertEqual(body["post_flight"]["state"], "draft")
-        self.assertIs(body["post_flight"]["draft"], True)
+        # Post-flight visar att Bezala-state är "unapproved" (= fix:en träffade)
+        self.assertEqual(body["post_flight"]["state"], "unapproved")
 
         # get_transaction har anropats (post-flight)
         fake_bezala.get_transaction.assert_called_once_with("tx-9001")

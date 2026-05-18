@@ -2694,7 +2694,21 @@ def _do_match_to_bezala(
         vat_lines_attributes=params.get("vat_lines_attributes") or [],
     )
 
-    row.bezala_transaction_id = bill_line_id
+    # FAS 5.27 — Bezala har TVÅ olika ID-rymder för en kortrad-koppling:
+    #   bill_line_id   = 2xxxxxx (kortraden i Bezala)
+    #   transaction_id = 5xxxxxx (draft-utlägget som filen knyts till)
+    # GET /transactions/{bill_line_id} → 403 Access denied
+    # GET /transactions/{tx_id}        → 200 OK med state etc.
+    # Tidigare (FAS 5.24/5.25/5.26) sparade vi bill_line_id som
+    # bezala_transaction_id, vilket fick alla efterföljande PUT-anrop
+    # (draft-guard, set state) att 403:a tyst och drafterna hamnade
+    # ändå i "Väntar på andras attestering"-listan.
+    #
+    # attach_file returnerar nu det riktiga transaction_id som
+    # `attachment_id` (faller tillbaka till POST-svarets attachment.id
+    # eller bill_line_id om Bezala-svaret saknade det). Vi lagrar det
+    # värdet.
+    row.bezala_transaction_id = str(attach_result.attachment_id)
     row.bezala_upload_status = "success"
     row.bezala_error_message = None
     from datetime import datetime as _dt
