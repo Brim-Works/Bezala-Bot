@@ -2880,6 +2880,166 @@ def debug_test_bezala_draft_flow(
         bezala.close()
 
 
+class DebugPutOnlyPayload(BaseModel):
+    """FAS 5.27 — body för /api/debug/bezala-transaction-put."""
+    transaction_id: str
+    fields: dict[str, Any]
+
+
+# Fält som kan trigga skapande av nya attachments/drafts via PUT.
+# Vi vill kunna PUT:a state-fält mot stuck-drafter (Finnair O87UJ3J m.fl.)
+# UTAN att av misstag skapa nya rader.
+_DEBUG_PUT_BLOCKED_FIELDS = frozenset({
+    "attachment", "attachments", "attachments_attributes",
+    "attachment_id", "attachment_ids",
+    "file", "file_data", "attached_file", "files",
+    "bill_line", "bill_line_id", "bill_lines",
+    "bill_lines_attributes",
+    "create", "new_record",
+})
+
+_DEBUG_PUT_STATE_KEYS = (
+    "draft", "state", "status", "is_draft",
+    "submitted", "submitted_at", "approval_status",
+    "approved", "approved_at",
+)
+
+
+def _looks_like_attach_field(key: str) -> bool:
+    k = key.lower()
+    if k in _DEBUG_PUT_BLOCKED_FIELDS:
+        return True
+    return "attachment" in k or "bill_line" in k
+
+
+@app.post("/api/debug/bezala-transaction-put")
+def debug_bezala_transaction_put(
+    payload: DebugPutOnlyPayload,
+    _: None = Depends(require_auth),
+):
+    """FAS 5.27 — PUT-only debug-endpoint för fält-iteration mot
+    befintliga Bezala-drafter UTAN att skapa nya.
+
+    Use case: PR #53 (C17) skickar `{draft, state, status, is_draft}`
+    som draft-guard men live-test visade att stuck-drafter ändå
+    promotades till "Väntar på andras attestering". För att hitta rätt
+    fältnamn vill vi PUT:a olika kombinationer mot en redan stuck
+    tx_id (t.ex. Finnair O87UJ3J = bezala_transaction_id för msg
+    id=633) — utan att skapa nya drafter som Riikka måste rejecta.
+
+    Flow:
+      1. GET /transactions/{tx_id} → `pre_flight`
+      2. PUT /transactions/{tx_id} med `{"transaction": fields}` →
+         `put_call`
+      3. GET /transactions/{tx_id} → `post_flight`
+      4. Jämför state-fält i pre vs post → `status_changed`
+
+    Sidoeffekter: BARA PUT:en. Ingen POST /attachments, ingen ny
+    draft. Endpointen kan ändra state på befintlig draft (avsiktligt
+    — vi vill kunna flippa tillbaka stuck-drafter till "Utkast"), men
+    aldrig skapa något nytt. Som extra skydd nekas fält som hintar om
+    attachment/file/bill_line/create — om de skickas returneras 400.
+
+    Hela call_log (GET + PUT + GET) returneras också via
+    `record_diagnostics`."""
+    tx_id = str(payload.transaction_id).strip()
+    if not tx_id:
+        raise HTTPException(
+            status_code=400, detail="transaction_id saknas",
+        )
+    if not payload.fields:
+        raise HTTPException(
+            status_code=400,
+            detail="fields är tom — inget att PUT:a",
+        )
+
+    blocked = sorted({
+        k for k in payload.fields if _looks_like_attach_field(k)
+    })
+    if blocked:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "attach-/create-kodade fält nekas av PUT-only-endpoint: "
+                f"{blocked}"
+            ),
+        )
+
+    try:
+        bezala = BezalaClient()
+    except BezalaError as exc:
+        raise HTTPException(
+            status_code=500, detail=f"Bezala-init: {exc}",
+        ) from exc
+
+    bezala.record_diagnostics = True
+    bezala.call_log = []
+
+    response: dict[str, Any] = {
+        "transaction_id": tx_id,
+        "pre_flight": None,
+        "put_call": None,
+        "post_flight": None,
+        "status_changed": False,
+        "call_log": [],
+    }
+
+    try:
+        try:
+            response["pre_flight"] = bezala.get_transaction(tx_id)
+        except BezalaError as exc:
+            response["pre_flight"] = {
+                "error": str(exc),
+                "status_code": exc.status_code,
+                "body": exc.body,
+            }
+            response["call_log"] = list(bezala.call_log)
+            return response
+
+        try:
+            put_result = bezala.raw_put_transaction(tx_id, payload.fields)
+            response["put_call"] = {
+                "request_fields": dict(payload.fields),
+                "status_code": put_result["status_code"],
+                "body": put_result["body"],
+            }
+        except BezalaError as exc:
+            response["put_call"] = {
+                "request_fields": dict(payload.fields),
+                "error": str(exc),
+                "status_code": exc.status_code,
+                "body": exc.body,
+            }
+            response["call_log"] = list(bezala.call_log)
+            return response
+
+        try:
+            response["post_flight"] = bezala.get_transaction(tx_id)
+        except BezalaError as exc:
+            response["post_flight"] = {
+                "error": str(exc),
+                "status_code": exc.status_code,
+                "body": exc.body,
+            }
+
+        pre = response["pre_flight"]
+        post = response["post_flight"]
+        if (
+            isinstance(pre, dict) and isinstance(post, dict)
+            and "error" not in pre and "error" not in post
+        ):
+            response["status_changed"] = any(
+                pre.get(k) != post.get(k)
+                for k in _DEBUG_PUT_STATE_KEYS
+                if k in pre or k in post
+            )
+
+        response["call_log"] = list(bezala.call_log)
+        return response
+    finally:
+        bezala.close()
+
+
 # --- FAS 8.5 — Travel Tinder: Matchade-vyn -----------------------------
 
 
