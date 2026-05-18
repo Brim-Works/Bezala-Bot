@@ -51,53 +51,36 @@ BODY_LOG_LIMIT = 4000
 FILE_FIELD_NAME = os.environ.get("BEZALA_FILE_FIELD_NAME", "file")
 
 
-# FAS 5.26 — draft-guard payload för PUT /transactions/{tx_id}.
-# C16 (PR #52) försökte med endast `draft: true` men live-testet visade
-# att Bezala fortfarande promotade drafter till "Väntar på andras
-# attestering". Fältnamnet `draft` är troligen inte den state-styrande
-# attributen på transaction-nivå (det är multipart-form-flaggan som
-# används av POST /attachments). FAS 5.26 skickar därför ALLA troliga
-# Rails-konventioner samtidigt — `draft`, `state`, `status`, `is_draft` —
-# eftersom det är säkrare att skicka fler "draft-vänliga" fält än att
-# gissa fel en gång till. Operatören kan iterera via env-var nedan utan
-# kod-deploy.
+# FAS 5.27 — draft-guard payload för PUT /transactions/{tx_id}.
 #
-# Operatören kan över-/under-styra via env:
-#   BEZALA_DRAFT_GUARD_FIELDS_JSON='{"draft": true, "state": "draft"}'
-# Sätt till "{}" för att stänga av alla guard-fält (debugging).
+# Bezala-state-fältet är BEKRÄFTAT (via GET /transactions/{id} i C18-
+# diagnostiken på live-tx 5005475): värdet för "Utkast / ej skickad" är
+# `state: "unapproved"`. INTE `draft`, INTE `status`, INTE `is_draft`,
+# INTE `submitted`. Tidigare PR (FAS 5.26 / C17) gissade fyra olika
+# Rails-konventioner samtidigt — de var alla fel, vilket är varför
+# C15/C16/C17:s fixar inte fungerade.
+#
+# state="unapproved" är hardcoded — INTE env-styrt. Vi vet nu rätt
+# fältnamn och rätt värde; ingen iteration behövs. Om Bezala ändrar
+# semantik (osannolikt utan API-versions-bump) gör vi en explicit
+# kod-ändring. extra_fields kan inte överstyra detta värde (se
+# `update_transaction` nedan).
 _DEFAULT_DRAFT_GUARD_FIELDS: dict[str, Any] = {
-    "draft": True,
-    "state": "draft",
-    "status": "draft",
-    "is_draft": True,
+    "state": "unapproved",
 }
 
 
 def _load_draft_guard_fields() -> dict[str, Any]:
-    """Läser BEZALA_DRAFT_GUARD_FIELDS_JSON från env. Returnerar default
-    om env saknas / är tom / är ogiltig JSON. Tom dict (``{}``) tillåts
-    explicit — operatören kan stänga av alla guard-fält för diagnostik.
+    """FAS 5.27 — returnerar den hårdkodade draft-guard-payloaden.
+
+    Tidigare läste detta `BEZALA_DRAFT_GUARD_FIELDS_JSON` från env, men
+    iterationen är klar: vi vet att Bezala vill ha `state: "unapproved"`
+    för Utkast. Funktionen behålls (i stället för att inline:as) så att
+    debug-endpointen kan introspecta vad guard-payloaden innehåller och
+    så att testet `test_default_guard_fields_match_constant` kan
+    asserta att vi inte regredierar.
     """
-    raw = os.environ.get("BEZALA_DRAFT_GUARD_FIELDS_JSON", "").strip()
-    if not raw:
-        return dict(_DEFAULT_DRAFT_GUARD_FIELDS)
-    log = logging.getLogger(__name__)
-    try:
-        parsed = json.loads(raw)
-    except (ValueError, TypeError) as exc:
-        log.error(
-            "BEZALA_DRAFT_GUARD_FIELDS_JSON är ogiltig JSON (%s) — "
-            "fallback till default %s",
-            exc, sorted(_DEFAULT_DRAFT_GUARD_FIELDS.keys()),
-        )
-        return dict(_DEFAULT_DRAFT_GUARD_FIELDS)
-    if not isinstance(parsed, dict):
-        log.error(
-            "BEZALA_DRAFT_GUARD_FIELDS_JSON måste vara ett JSON-objekt — "
-            "fick %s. Fallback till default.", type(parsed).__name__,
-        )
-        return dict(_DEFAULT_DRAFT_GUARD_FIELDS)
-    return parsed
+    return dict(_DEFAULT_DRAFT_GUARD_FIELDS)
 
 
 class BezalaError(RuntimeError):
@@ -787,6 +770,23 @@ class BezalaClient:
             )
         )
         if wants_metadata_put and transaction_id:
+            # FAS 5.27 — säkerställ att draften är knuten till bill_line
+            # på transaction-nivå. C18 GET /transactions/5005475 visade
+            # `bill_id: null` och `connected_to_bill_line: false` trots
+            # att POST /attachments hade fått `bill_line_id` i form-
+            # datan. Det räcker tydligen INTE för Bezala att sätta
+            # länken — vi injicerar därför `bill_id` i transaction-
+            # payloaden så att kortrad-kopplingen verkligen blir aktiv
+            # (= 💳-ikonen blir grön i UI:t).
+            #
+            # Caller's extra_fields får INTE överskriva detta — vi
+            # bygger en ny dict där våra defaultar läggs först och
+            # caller-värden kommer på topp (förutom bill_id, som vi
+            # hårdsätter sist från bill_line_id-input).
+            merged_extra: dict[str, Any] = {}
+            if extra_fields:
+                merged_extra.update(extra_fields)
+            merged_extra["bill_id"] = bill_line_id
             try:
                 self.update_transaction(
                     str(transaction_id),
@@ -794,7 +794,7 @@ class BezalaClient:
                     date=date,
                     credit_account_id=credit_account_id,
                     vat_lines_attributes=vat_lines_attributes,
-                    extra_fields=extra_fields,
+                    extra_fields=merged_extra,
                 )
             except BezalaError as exc:
                 # ORPHAN: draft kopplad till bill_line men metadata-PUT
