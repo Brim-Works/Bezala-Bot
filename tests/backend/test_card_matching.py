@@ -1878,6 +1878,87 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         )
         self.assertEqual(resp.status_code, 404)
 
+    # ---- C20 — amount-mismatch safety net ----
+
+    def _run_match_with_missing(self, mid, missing_receipts, missing_receipt_id):
+        """Variant av _run_match som låter testet styra bill_line-snapshot:en
+        (för C20-amount-mismatch-fall där snap.amount skiljer sig från
+        row.amount)."""
+        fake_drive = MagicMock()
+        fake_drive.download_pdf.return_value = PDF_BYTES
+
+        fake_bezala = MagicMock()
+        fake_attachment = MagicMock()
+        fake_attachment.attachment_id = "att-1"
+        fake_bezala.attach_file.return_value = fake_attachment
+        fake_bezala.list_missing_receipts.return_value = missing_receipts
+        fake_bezala.list_accounts.return_value = []
+        fake_bezala.list_cost_centers.return_value = []
+        fake_bezala.list_vat_rates.return_value = []
+
+        with patch.object(self.app_module, "DriveClient", return_value=fake_drive), \
+             patch.object(self.app_module, "BezalaClient", return_value=fake_bezala):
+            resp = self.client.post(
+                f"/api/messages/{mid}/match-to-bezala",
+                json={"missing_receipt_id": missing_receipt_id},
+            )
+        return resp, fake_bezala
+
+    def test_match_to_bezala_rejects_amount_mismatch_400(self):
+        """C20 — Lovable→Finnair-race: frontend skickade fel bill_line_id
+        (Finnair 554.50 EUR) för Lovable-kvittot (100 EUR). Backend måste
+        avvisa kopplingen istället för att skapa ett Bezala-utkast med
+        fel bank-rads belopp."""
+        mid = self._seed_processed(amount=100.0, currency="EUR")
+        missing = [{
+            "id": 2210736,
+            "description": "Finnair O9VAZGJ",
+            "amount": 554.50,
+            "currency": "EUR",
+            "date": "2026-05-13",
+        }]
+        resp, fake_bezala = self._run_match_with_missing(mid, missing, 2210736)
+
+        self.assertEqual(resp.status_code, 400, resp.text)
+        detail = resp.json()["detail"]
+        self.assertIn("100.00", detail)
+        self.assertIn("554.50", detail)
+        # Bezala-anropet får ALDRIG ske om vi har upptäckt mismatchen.
+        fake_bezala.attach_file.assert_not_called()
+
+    def test_match_to_bezala_allows_cross_currency_via_currency_mismatch(self):
+        """C20 — legitim cross-currency: 245 SEK kvitto → 23.14 EUR bank-rad.
+        amount-checken skippar när valutorna skiljer sig (bill_line äger
+        valutan)."""
+        mid = self._seed_processed(amount=245.0, currency="SEK")
+        missing = [{
+            "id": 2163467,
+            "description": "EUR card-tx",
+            "amount": 23.14,
+            "currency": "EUR",
+            "date": "2026-05-13",
+        }]
+        resp, fake_bezala = self._run_match_with_missing(mid, missing, 2163467)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        fake_bezala.attach_file.assert_called_once()
+
+    def test_match_to_bezala_allows_small_amount_diff_within_margin(self):
+        """C20 — avrundnings-diff (öre/cent) tillåts. Bara kraftiga diffar
+        (> 0.5) blockerar."""
+        mid = self._seed_processed(amount=112.95, currency="EUR")
+        missing = [{
+            "id": 2163467,
+            "description": "ANTHROPIC",
+            "amount": 113.00,   # 0.05 EUR diff — inom marginalen
+            "currency": "EUR",
+            "date": "2026-04-14",
+        }]
+        resp, fake_bezala = self._run_match_with_missing(mid, missing, 2163467)
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        fake_bezala.attach_file.assert_called_once()
+
     def test_match_to_bezala_400_when_missing_drive_file(self):
         mid = self._seed_processed(drive_file_id=None, file_name=None)
         resp = self.client.post(

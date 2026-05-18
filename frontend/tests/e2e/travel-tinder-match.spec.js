@@ -441,6 +441,108 @@ test('C14 — 409 Conflict visar "Redan kopplad" och tar bort raden', async ({ p
   await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toHaveCount(0);
 });
 
+test('C20 — Couple skickar bill_line_id för aktuellt vald payment, inte stale', async ({ page }) => {
+  /* Reproducerar Lovable→Finnair-race: två missing_receipts i listan.
+   * Användaren börjar med första (auto-vald), byter sedan till andra,
+   * och klickar Couple på AI-förslaget. Request-body MÅSTE referera
+   * den senast valda raden — inte den ursprungligen auto-valda. */
+  const MISSING_LOVABLE = 2197448;
+  const MISSING_FINNAIR = 2210736;
+  const LOVABLE_RECEIPT_ID = 615;
+
+  function lovableReceipt() {
+    return {
+      ...aiMessage(),
+      id: LOVABLE_RECEIPT_ID,
+      message_id: 'm-615',
+      vendor: 'Lovable',
+      amount: 100,
+      currency: 'EUR',
+      receipt_date: '2026-05-05',
+      file_name: '20260505 Lovable.pdf',
+    };
+  }
+
+  const twoPayments = {
+    missing_receipts: [
+      {
+        missing_receipt: {
+          id: MISSING_FINNAIR,
+          description: 'Finnair O9VAZGJ',
+          amount: 554.5,
+          currency: 'EUR',
+          date: '2026-05-13',
+        },
+        suggestions: [],
+      },
+      {
+        missing_receipt: {
+          id: MISSING_LOVABLE,
+          description: 'Lovable Labs',
+          amount: 100,
+          currency: 'EUR',
+          date: '2026-05-05',
+        },
+        suggestions: [
+          {
+            message: lovableReceipt(),
+            score: 95,
+            score_breakdown: { amount: 50, date: 30, vendor: 15 },
+          },
+        ],
+      },
+    ],
+    all_messages: [lovableReceipt()],
+  };
+
+  await setupTinderMocks(page, twoPayments);
+
+  let captured = null;
+  await page.route(
+    `**/api/messages/${LOVABLE_RECEIPT_ID}/match-to-bezala`,
+    (route) => {
+      captured = route.request().postDataJSON();
+      route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: LOVABLE_RECEIPT_ID,
+          bezala_upload_status: 'success',
+          bezala_transaction_id: String(MISSING_LOVABLE),
+        }),
+      });
+    },
+  );
+
+  await page.goto('/travel-tinder');
+  // Default-auto-välj = första raden = Finnair
+  await expect(
+    page.getByTestId(`tt-payment-${MISSING_FINNAIR}`),
+  ).toHaveAttribute('aria-pressed', 'true');
+
+  // Byt urval till Lovable
+  await page.getByTestId(`tt-payment-${MISSING_LOVABLE}`).click();
+  await expect(
+    page.getByTestId(`tt-payment-${MISSING_LOVABLE}`),
+  ).toHaveAttribute('aria-pressed', 'true');
+  // AI-kortet ska nu visa Lovable-kandidaten
+  await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
+
+  const reqPromise = page.waitForRequest((req) =>
+    req.url().includes(`/api/messages/${LOVABLE_RECEIPT_ID}/match-to-bezala`) &&
+    req.method() === 'POST',
+  );
+  await page
+    .getByTestId('tt-candidate-ai')
+    .getByTestId('tt-candidate-couple')
+    .click();
+  await reqPromise;
+
+  // Wire-format-assertion: bill_line_id = Lovable, INTE den
+  // auto-valda Finnair-raden.
+  expect(captured).toEqual({ missing_receipt_id: MISSING_LOVABLE });
+});
+
 test('C14 — fel återställer UI så användaren kan försöka igen', async ({ page }) => {
   await setupTinderMocks(page);
 
