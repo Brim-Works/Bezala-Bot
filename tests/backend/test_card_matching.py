@@ -1316,6 +1316,54 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         self.assertEqual(state["state"], "draft")
         self.assertIs(state["draft"], True)
 
+    def test_raw_put_transaction_sends_arbitrary_fields(self):
+        """FAS 5.27 — raw_put_transaction skickar ALLA fält rakt
+        igenom (ingen draft-guard, ingen BLOCKED_SUBMIT-filtrering),
+        wrappar i {"transaction": ...}, och returnerar status + body
+        utan att raisa på 4xx."""
+        client = _make_client()
+        resp = MagicMock()
+        resp.status_code = 422
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"errors":{"state":"invalid"}}'
+        resp.json = MagicMock(
+            return_value={"errors": {"state": "invalid"}},
+        )
+
+        captured: dict = {}
+
+        def fake_request(method, url, **kwargs):
+            captured["method"] = method
+            captured["url"] = url
+            captured["json"] = kwargs.get("json")
+            return resp
+        client._client.request = fake_request
+
+        result = client.raw_put_transaction(
+            "2200999",
+            {
+                "state": "draft",
+                # submit-codes får INTE filtreras bort av raw_put
+                "submit": False,
+                "submitted": False,
+                "approval_status": "draft",
+            },
+        )
+
+        self.assertEqual(captured["method"], "PUT")
+        self.assertTrue(captured["url"].endswith("/transactions/2200999"))
+        body = captured["json"]["transaction"]
+        # ALLA fält ska ha gått igenom — inget filtrerades
+        self.assertEqual(body["state"], "draft")
+        self.assertIs(body["submit"], False)
+        self.assertIs(body["submitted"], False)
+        self.assertEqual(body["approval_status"], "draft")
+        # Returnerar status+body utan att raisa
+        self.assertEqual(result["status_code"], 422)
+        self.assertEqual(
+            result["body"], {"errors": {"state": "invalid"}},
+        )
+
 
 # ---------- Endpoint-tester ----------
 
@@ -1878,6 +1926,192 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(body["error"]["status_code"], 422)
         # call_log finns även när error inträffar
         self.assertTrue(body["call_log"])
+
+    # ---- FAS 5.27 (C18) — PUT-only debug-endpoint ----
+
+    def test_put_only_endpoint_does_not_create_new_draft(self):
+        """POST /api/debug/bezala-transaction-put får BARA kalla
+        GET + PUT + GET — aldrig POST /attachments eller skapa nya
+        rader. Skyddar mot att vi råkar skapa nya stuck-drafter när
+        Mikko iterar fältnamn mot Finnair O87UJ3J."""
+        fake_bezala = MagicMock()
+        fake_bezala.call_log = []
+        fake_bezala.get_transaction.side_effect = [
+            {"id": "2200999", "state": "submitted", "draft": False},
+            {"id": "2200999", "state": "draft", "draft": True},
+        ]
+        fake_bezala.raw_put_transaction.return_value = {
+            "status_code": 200,
+            "body": {"id": "2200999", "state": "draft"},
+        }
+
+        with patch.object(
+            self.app_module, "BezalaClient", return_value=fake_bezala,
+        ):
+            resp = self.client.post(
+                "/api/debug/bezala-transaction-put",
+                json={
+                    "transaction_id": "2200999",
+                    "fields": {"state": "draft", "submit": False},
+                },
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+
+        # Endast PUT-anropet får ha gjorts, inget annat skrivande.
+        fake_bezala.raw_put_transaction.assert_called_once_with(
+            "2200999", {"state": "draft", "submit": False},
+        )
+        # attach_file / upload_attachment / create_transaction får
+        # ALDRIG kallas av denna endpoint.
+        fake_bezala.attach_file.assert_not_called()
+        fake_bezala.upload_attachment.assert_not_called()
+        if hasattr(fake_bezala, "create_transaction"):
+            fake_bezala.create_transaction.assert_not_called()
+
+        body = resp.json()
+        self.assertEqual(body["transaction_id"], "2200999")
+        self.assertTrue(body["status_changed"])
+
+    def test_put_only_endpoint_returns_pre_and_post_state(self):
+        """Endpointen returnerar pre_flight, put_call och post_flight
+        — så Mikko kan se exakt vad som ändrades."""
+        fake_bezala = MagicMock()
+        # Endpointen sätter call_log = [] vid start, så side_effects
+        # appendar just-in-time efter reset.
+        get_responses = [
+            {"id": "2200999", "state": "submitted",
+             "approval_status": "pending", "draft": False},
+            {"id": "2200999", "state": "draft",
+             "approval_status": None, "draft": True},
+        ]
+
+        def _get_tx(tx_id):
+            r = get_responses.pop(0)
+            fake_bezala.call_log.append({
+                "method": "GET",
+                "path": f"/transactions/{tx_id}",
+                "request_body": None,
+                "response_status": 200,
+                "response_body": str(r),
+            })
+            return r
+        fake_bezala.get_transaction.side_effect = _get_tx
+
+        def _put_tx(tx_id, fields):
+            fake_bezala.call_log.append({
+                "method": "PUT",
+                "path": f"/transactions/{tx_id}",
+                "request_body": {"transaction": dict(fields)},
+                "response_status": 200,
+                "response_body": '{"state": "draft"}',
+            })
+            return {"status_code": 200,
+                    "body": {"id": str(tx_id), "state": "draft"}}
+        fake_bezala.raw_put_transaction.side_effect = _put_tx
+
+        with patch.object(
+            self.app_module, "BezalaClient", return_value=fake_bezala,
+        ):
+            resp = self.client.post(
+                "/api/debug/bezala-transaction-put",
+                json={
+                    "transaction_id": "2200999",
+                    "fields": {"state": "draft"},
+                },
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+
+        self.assertEqual(body["pre_flight"]["state"], "submitted")
+        self.assertEqual(body["post_flight"]["state"], "draft")
+        self.assertEqual(
+            body["put_call"]["request_fields"], {"state": "draft"},
+        )
+        self.assertEqual(body["put_call"]["status_code"], 200)
+        self.assertTrue(body["status_changed"])
+        # call_log mirrar de tre anropen (GET, PUT, GET)
+        methods = [c["method"] for c in body["call_log"]]
+        self.assertEqual(methods, ["GET", "PUT", "GET"])
+        # record_diagnostics aktiverades
+        self.assertTrue(fake_bezala.record_diagnostics)
+
+    def test_put_only_endpoint_handles_unknown_tx_id_gracefully(self):
+        """Om GET /transactions/{tx_id} svarar 404 ska endpointen
+        returnera 200 med error-info i pre_flight — inte krascha eller
+        gå vidare till PUT (vi vill inte PUT:a mot en tx vi inte ens
+        kunde läsa)."""
+        from app.services.bezala_client import BezalaError
+        fake_bezala = MagicMock()
+        fake_bezala.call_log = []
+        fake_bezala.get_transaction.side_effect = BezalaError(
+            "not found", status_code=404, body='{"error":"not_found"}',
+        )
+
+        with patch.object(
+            self.app_module, "BezalaClient", return_value=fake_bezala,
+        ):
+            resp = self.client.post(
+                "/api/debug/bezala-transaction-put",
+                json={
+                    "transaction_id": "9999999",
+                    "fields": {"state": "draft"},
+                },
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
+        body = resp.json()
+        self.assertEqual(body["pre_flight"]["status_code"], 404)
+        # PUT får ALDRIG köras när pre-flight misslyckades
+        fake_bezala.raw_put_transaction.assert_not_called()
+        self.assertIsNone(body["put_call"])
+        self.assertIsNone(body["post_flight"])
+        self.assertFalse(body["status_changed"])
+
+    def test_put_only_endpoint_rejects_attachment_fields_in_body(self):
+        """Defensiv check: alla fält som hintar om attachment/file/
+        bill_line/create nekas med 400 INNAN BezalaClient ens
+        instansieras. Vi vill inte ge oss själva ammunition att av
+        misstag trigga ny draft-creation via PUT-endpointen."""
+        # Vi behöver inte ens mocka BezalaClient — 400 ska komma
+        # från endpointens egen guard.
+        cases = [
+            {"attachment_id": "555"},
+            {"attachments_attributes": [{"file": "x"}]},
+            {"file": "data:application/pdf;base64,..."},
+            {"bill_line_id": "777"},
+            {"bill_lines_attributes": [{"id": 1}]},
+            {"ATTACHMENT": "x"},  # case-insensitive
+        ]
+        for fields in cases:
+            with self.subTest(fields=fields):
+                resp = self.client.post(
+                    "/api/debug/bezala-transaction-put",
+                    json={
+                        "transaction_id": "2200999",
+                        "fields": fields,
+                    },
+                )
+                self.assertEqual(resp.status_code, 400, resp.text)
+                self.assertIn("attach", resp.json()["detail"].lower())
+
+        # Sanity: rena state-fält PASSERAR guard:en (når BezalaClient).
+        fake_bezala = MagicMock()
+        fake_bezala.call_log = []
+        fake_bezala.get_transaction.return_value = {"state": "draft"}
+        fake_bezala.raw_put_transaction.return_value = {
+            "status_code": 200, "body": {"state": "draft"},
+        }
+        with patch.object(
+            self.app_module, "BezalaClient", return_value=fake_bezala,
+        ):
+            resp = self.client.post(
+                "/api/debug/bezala-transaction-put",
+                json={
+                    "transaction_id": "2200999",
+                    "fields": {"state": "draft", "submit": False,
+                               "is_draft": True},
+                },
+            )
+        self.assertEqual(resp.status_code, 200, resp.text)
 
 
 # ---------- FAS 5.24 — robust coupling-tester ----------

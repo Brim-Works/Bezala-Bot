@@ -565,6 +565,43 @@ class BezalaClient:
         )
         return BezalaTransaction(transaction_id=str(confirmed_id), url=url)
 
+    def raw_put_transaction(
+        self,
+        transaction_id: str | int,
+        fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """FAS 5.27 — debug-only raw PUT /transactions/{tx_id}.
+
+        Skickar `{"transaction": fields}` utan att injicera draft-guard,
+        utan att validera description/date, och utan att filtrera mot
+        _BLOCKED_SUBMIT_FIELDS. Callern (debug-endpointen) ansvarar för
+        att grindvakta input.
+
+        Returnerar `{"status_code": int, "body": <json|text>}`. Höjer
+        INTE BezalaError på 4xx/5xx — vi vill kunna inspektera Bezalas
+        svar även när det är ett fel (det är hela poängen med
+        endpointen). Höjer endast om transaction_id saknas."""
+        if not transaction_id:
+            raise BezalaError("raw_put_transaction: transaction_id saknas")
+        wrapped = {"transaction": dict(fields)}
+        logger.info(
+            "raw_put_transaction: PUT /transactions/%s body=%s",
+            transaction_id,
+            json.dumps(wrapped, ensure_ascii=False, default=str),
+        )
+        resp = self._request(
+            "PUT", f"/transactions/{transaction_id}", json=wrapped,
+        )
+        logger.info(
+            "BEZALA RESPONSE raw_put_transaction: tx_id=%s status=%s body=%s",
+            transaction_id, resp.status_code, _safe_body_snippet(resp),
+        )
+        try:
+            body: Any = resp.json()
+        except ValueError:
+            body = _safe_body_snippet(resp)
+        return {"status_code": resp.status_code, "body": body}
+
     def get_transaction(self, transaction_id: str | int) -> dict[str, Any]:
         """GET /transactions/{tx_id} — läser nuvarande state för en
         transaktion. Används av /api/debug/test-bezala-draft-flow för
