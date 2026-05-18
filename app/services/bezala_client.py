@@ -367,6 +367,12 @@ class BezalaClient:
                 "upload_file_as_draft: pdf_bytes är inte en giltig PDF"
             )
 
+        # FAS 5.28 (C21) — skicka state="unapproved" redan i CREATE-formen.
+        # Empiriskt (test-session 2026-05-18) räcker det INTE att PUT:a
+        # state efter att draften skapats: PUT:en returnerar 500 mot vissa
+        # bezala-flöden och drafterna hamnar ändå i "Väntar på andras
+        # attestering". Att inkludera state-flaggan i POST /attachments
+        # hindrar promotion-by-default redan vid skapelsen.
         logger.info(
             "upload_file_as_draft: POST /attachments filename=%r bytes=%d",
             filename, len(pdf_bytes),
@@ -375,7 +381,7 @@ class BezalaClient:
             "POST",
             "/attachments",
             files={"file": (filename, pdf_bytes, "application/pdf")},
-            data={"draft": "1"},
+            data={"draft": "1", "state": "unapproved"},
         )
         if resp.status_code >= 400:
             raise BezalaError(
@@ -705,8 +711,17 @@ class BezalaClient:
         if not pdf_bytes or not pdf_bytes.startswith(b"%PDF"):
             raise BezalaError("attach_file: pdf_bytes är inte en giltig PDF")
 
+        # FAS 5.28 (C21) — sätt state="unapproved" i CREATE-formen så att
+        # draften aldrig hamnar i "Väntar på andras attestering" som
+        # default. Tidigare (C19) PUT:ade vi state="unapproved" efter att
+        # POST /attachments redan skapat draften, men test-sessionen
+        # 2026-05-18 visade att PUT:en kan returnera 500 medan POST:en
+        # går igenom — drafterna blir då stuck i "reviewing" utan att
+        # vi får tillbaka en felmarkering. Att skicka state-flaggan
+        # redan i form-datan är "fixen ligger i CREATE-flödet, inte PUT".
         form: dict[str, Any] = {
             "draft": "1",
+            "state": "unapproved",
             "bill_line_id": str(bill_line_id),
         }
         if description:
@@ -786,7 +801,18 @@ class BezalaClient:
             merged_extra: dict[str, Any] = {}
             if extra_fields:
                 merged_extra.update(extra_fields)
+            # C19: bill_id är fältet GET /transactions/{id} visar.
+            # C21: cross-currency (SEK-kvitto + EUR-bankrad) gav 0/2 i
+            # test-sessionen 2026-05-18 — bill_id sätts i PUT-bodyn men
+            # `connected_to_bill_line` förblir false och Bezalas UI visar
+            # ingen 💳-ikon. Vi sätter därför explicit både bill_id OCH
+            # bill_line_id (Rails-konvention för fk-id) samt
+            # connected_to_bill_line=True, så att kopplingen aktiveras
+            # oavsett vilket fält Bezalas modell faktiskt läser av vid
+            # cross-currency.
             merged_extra["bill_id"] = bill_line_id
+            merged_extra["bill_line_id"] = bill_line_id
+            merged_extra["connected_to_bill_line"] = True
             try:
                 self.update_transaction(
                     str(transaction_id),

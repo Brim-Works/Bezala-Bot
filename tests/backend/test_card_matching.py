@@ -834,8 +834,12 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         self.assertEqual(att.attachment_id, "999")
         self.assertEqual(captured["method"], "POST")
         self.assertTrue(captured["url"].endswith("/attachments"))
+        # FAS 5.28 (C21) — state="unapproved" skickas redan i CREATE
+        # så draften aldrig hamnar i "Väntar på andras attestering"
+        # som default när PUT:en till state-fältet returnerar 500.
         self.assertEqual(captured["data"], {
             "draft": "1",
+            "state": "unapproved",
             "bill_line_id": "2163467",
         })
         self.assertIn("file", captured["files"])
@@ -861,6 +865,7 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         )
         self.assertEqual(captured["data"], {
             "draft": "1",
+            "state": "unapproved",
             "bill_line_id": "2163467",
             "description": "20260414 Anthropic API",
         })
@@ -931,6 +936,7 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         self.assertTrue(calls[0]["url"].endswith("/attachments"))
         self.assertEqual(calls[0]["data"]["bill_line_id"], "42")
         self.assertEqual(calls[0]["data"]["draft"], "1")
+        self.assertEqual(calls[0]["data"]["state"], "unapproved")
         self.assertEqual(calls[0]["data"]["description"], "My description")
         self.assertEqual(calls[1]["method"], "PUT")
         self.assertTrue(calls[1]["url"].endswith("/transactions/222"))
@@ -1159,6 +1165,134 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         self.assertEqual(body["state"], "unapproved")
         # extra_fields utan guard-namn ska gå igenom
         self.assertEqual(body["cost_center_id"], 1)
+
+    # ---- FAS 5.28 (C21) — state="unapproved" i CREATE-formen ----
+
+    def test_attach_file_post_form_includes_state_unapproved(self):
+        """FAS 5.28 (C21) FIX B — POST /attachments måste skicka
+        state='unapproved' redan i form-datan så att Bezala aldrig
+        defaultar till 'reviewing' (Väntar på andras attestering).
+
+        Test-sessionen 2026-05-18 körde 8 Couples där C19:s PUT-baserade
+        draft-guard läckte 8/8 in i 'reviewing' — PUT:en returnerar 500
+        i vissa flöden och hinner inte flytta tillbaka draften till
+        Utkast. Fixen är att skicka state-flaggan i CREATE-steget."""
+        client = _make_client()
+        captured = {}
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 1}'
+        resp.json = MagicMock(return_value={"id": 1})
+
+        def fake_request(method, url, **kwargs):
+            captured.setdefault("calls", []).append({
+                "method": method, "url": url,
+                "data": kwargs.get("data"),
+            })
+            return resp
+
+        client._client.request = fake_request
+        client.attach_file(2163467, "kvitto.pdf", PDF_BYTES)
+
+        post_calls = [c for c in captured["calls"] if c["method"] == "POST"]
+        self.assertEqual(len(post_calls), 1)
+        form = post_calls[0]["data"]
+        self.assertEqual(
+            form.get("state"), "unapproved",
+            "POST /attachments form-datan måste innehålla "
+            "state='unapproved' så Bezala aldrig skapar draften som "
+            "'reviewing' från start",
+        )
+
+    def test_upload_file_as_draft_post_form_includes_state_unapproved(self):
+        """FAS 5.28 (C21) — samma CREATE-state-guard för
+        upload_file_as_draft, som används av upload_receipt-flödet
+        (kvitton som inte matchas mot en bill_line)."""
+        client = _make_client()
+        captured = {}
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.headers = {"content-type": "application/json"}
+        resp.text = '{"id": 1, "transaction_id": 5005475}'
+        resp.json = MagicMock(
+            return_value={"id": 1, "transaction_id": 5005475},
+        )
+
+        def fake_request(method, url, **kwargs):
+            captured["data"] = kwargs.get("data")
+            return resp
+
+        client._client.request = fake_request
+        client.upload_file_as_draft(PDF_BYTES, "kvitto.pdf")
+
+        self.assertEqual(captured["data"].get("state"), "unapproved")
+        self.assertEqual(captured["data"].get("draft"), "1")
+
+    def test_attach_file_cross_currency_put_includes_bill_line_id_and_flag(self):
+        """FAS 5.28 (C21) FIX C — cross-currency Couples (SEK-kvitto +
+        EUR-bankrad) gav 0/2 i test-sessionen 2026-05-18: bill_id satt
+        men `connected_to_bill_line` förblev false, vilket innebär att
+        Bezala-UI inte visar 💳-ikonen. PUT:en måste därför också skicka
+        bill_line_id (Rails-konvention för fk-id) och
+        connected_to_bill_line=True så att kopplingen aktiveras oavsett
+        vilket fält Bezalas modell läser av vid cross-currency."""
+        client = _make_client()
+        calls: list[dict] = []
+
+        post_resp = MagicMock()
+        post_resp.status_code = 200
+        post_resp.headers = {"content-type": "application/json"}
+        post_resp.text = '{"id": 111, "transaction_id": 5011389}'
+        post_resp.json = MagicMock(
+            return_value={"id": 111, "transaction_id": 5011389},
+        )
+
+        put_resp = MagicMock()
+        put_resp.status_code = 200
+        put_resp.headers = {"content-type": "application/json"}
+        put_resp.text = '{"id": 5011389}'
+        put_resp.json = MagicMock(return_value={"id": 5011389})
+
+        def fake_request(method, url, **kwargs):
+            calls.append({"method": method, "url": url, "json": kwargs.get("json")})
+            return post_resp if method == "POST" else put_resp
+        client._client.request = fake_request
+
+        # Skånetrafiken-fallet: SEK-kvitto (245 SEK) länkad mot
+        # EUR-bankrad (23.14 EUR). Vi skickar effective_amount/currency
+        # från bankraden (EUR) precis som _do_match_to_bezala gör.
+        client.attach_file(
+            2163489, "skanetrafiken.pdf", PDF_BYTES,
+            description="Skånetrafiken",
+            date="2026-05-05",
+            credit_account_id=67100,
+            vat_lines_attributes=[{
+                "taxable": "23.14",
+                "tax_percentage": "0.0",
+                "currency": "EUR",
+                "expense_account_id": 67100,
+            }],
+        )
+
+        put_calls = [c for c in calls if c["method"] == "PUT"]
+        self.assertEqual(len(put_calls), 1)
+        body = put_calls[0]["json"]["transaction"]
+        self.assertEqual(
+            str(body.get("bill_id")), "2163489",
+            "bill_id måste finnas (C19 garanti)",
+        )
+        self.assertEqual(
+            str(body.get("bill_line_id")), "2163489",
+            "C21 — bill_line_id (Rails fk-id-konvention) måste också "
+            "skickas så att cross-currency-kopplingen aktiveras",
+        )
+        self.assertIs(
+            body.get("connected_to_bill_line"), True,
+            "C21 — connected_to_bill_line=True måste skickas explicit; "
+            "GET /transactions visade fältet som false trots korrekt "
+            "bill_id för Skånetrafiken-fallet",
+        )
 
     def test_attach_file_legacy_description_only_skips_put(self):
         """Bakåtkompatibilitet: description-only (utan date) → ingen PUT."""
