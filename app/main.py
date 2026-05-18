@@ -2636,6 +2636,45 @@ def _do_match_to_bezala(
     effective_currency = (snap.get("currency") or row.currency or "EUR")
     effective_date = snap.get("date") or row.receipt_date
 
+    # C20 safety net — protect against the Lovable→Finnair race where the
+    # frontend references a stranger bill_line. We reject SAME-currency
+    # pairs whose amounts differ by both >50 EUR AND >50 % of the bigger
+    # value, which catches "100 EUR receipt coupled to 554.50 EUR bank row"
+    # without breaking FAS 5.24's intentional Finnair Fare-vs-Grand-Total
+    # divergence (333 → 366.32 EUR is ~9 % off — legit).
+    # Cross-currency pairs (e.g. 245 SEK ↔ 23.14 EUR) are by design — bank
+    # row owns the currency — and pass through untouched.
+    if (
+        bill_line_snapshot is not None
+        and row.amount is not None
+        and snap.get("amount") is not None
+        and (snap.get("currency") or "").upper()
+        == (row.currency or "").upper()
+    ):
+        row_amt = float(row.amount)
+        snap_amt = float(snap["amount"])
+        diff = abs(snap_amt - row_amt)
+        bigger = max(abs(snap_amt), abs(row_amt), 1.0)
+        if diff > 50.0 and diff / bigger > 0.5:
+            logger.warning(
+                "match-to-bezala: AMOUNT MISMATCH — bill_line %s says %s %s "
+                "but receipt msg_id=%s says %s %s (diff=%.2f, %.0f%%). "
+                "Refusing.",
+                bill_line_id, snap["amount"], snap.get("currency"),
+                row.id, row.amount, row.currency,
+                diff, 100 * diff / bigger,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Receipt amount {row_amt:.2f} {row.currency or ''} "
+                    f"({row.receipt_date or '—'}) does not match bank row "
+                    f"{snap_amt:.2f} {snap.get('currency') or ''} "
+                    f"({snap.get('date') or '—'}). Please verify the correct "
+                    f"bank row is selected."
+                ),
+            )
+
     try:
         metadata = fetch_bezala_metadata(bezala)
     except Exception:  # noqa: BLE001

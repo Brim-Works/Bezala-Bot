@@ -716,6 +716,8 @@ export default {
     matchSuccess: '✓ Matched: {vendor}',
     matchFailed: 'Could not match',
     alreadyCoupled: 'Already coupled — refreshing',
+    selectionChangedAbort:
+      'Selection changed — please re-select the payment and click Couple again',
     rowMatching: 'matching…',
     skipped: 'Skipped suggestion',
     noMoreSuggestions: 'No AI match — pick manually',

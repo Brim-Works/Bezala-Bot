@@ -717,6 +717,8 @@ export default {
     matchSuccess: '✓ Matchat: {vendor}',
     matchFailed: 'Kunde inte koppla',
     alreadyCoupled: 'Redan kopplad — uppdaterar',
+    selectionChangedAbort:
+      'Urval ändrades — välj korttransaktion och klicka Koppla igen',
     rowMatching: 'kopplar…',
     skipped: 'Hoppade över förslag',
     noMoreSuggestions: 'Ingen AI-match — välj manuellt',

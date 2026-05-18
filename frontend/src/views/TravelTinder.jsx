@@ -414,6 +414,20 @@ export default function TravelTinder() {
     async (messageRow, missingReceiptId, aiContext = null) => {
       if (matching || !messageRow || !missingReceiptId) return;
       if (matchingLockRef.current) return;
+      // C20 — if the bill_line the candidate-card captured at render time
+      // no longer matches the user's current selection, a silent refresh
+      // shuffled the list under them. Aborting prevents the Lovable→Finnair
+      // bug (receipt coupled to a stranger bank row).
+      if (
+        selectedPaymentId != null &&
+        selectedPaymentId !== missingReceiptId
+      ) {
+        toast.show({
+          kind: 'err',
+          message: t.travelTinder.selectionChangedAbort,
+        });
+        return;
+      }
       matchingLockRef.current = true;
       setMatching(true);
       // C14 — visa deemfas + "kopplar…"-indikator på raden direkt så
@@ -509,6 +523,7 @@ export default function TravelTinder() {
     },
     [
       matching,
+      selectedPaymentId,
       data.missing_receipts,
       completedPaymentIds,
       refresh,
@@ -516,6 +531,7 @@ export default function TravelTinder() {
       t.travelTinder.matchSuccess,
       t.travelTinder.matchFailed,
       t.travelTinder.alreadyCoupled,
+      t.travelTinder.selectionChangedAbort,
       toast,
     ],
   );
@@ -674,14 +690,9 @@ export default function TravelTinder() {
                 <MatchCandidates
                   aiSuggestion={activeSuggestion}
                   userPickMessage={userPickMessage}
+                  paymentId={selected.missing_receipt.id}
                   onClearUserPick={onClearCandidate}
-                  onCouple={(messageRow, aiContext) =>
-                    couple(
-                      messageRow,
-                      selected.missing_receipt.id,
-                      aiContext,
-                    )
-                  }
+                  onCouple={couple}
                   onOpenDrawer={(messageRow) =>
                     openDrawer(messageRow, 'gmail')
                   }

@@ -370,10 +370,14 @@ class MatchToBezalaSetsMatchedAtTest(_Base):
     def test_match_to_bezala_captures_payment_snapshot(self):
         """När bill_line finns i Bezalas missing_receipts-lista ska
         merchant/amount/currency/date snapshotas på raden."""
+        # Recept-beloppet hålls nära bill_line:s 503 EUR så C20 amount-
+        # mismatch-checken inte avbryter testet (testet är om snapshot-
+        # logiken, inte om mismatch-guarden).
         self._seed(
             message_id="m-snap",
             file_name="m-snap.pdf",
             drive_file_id="drv-snap",
+            amount=503.0,
         )
 
         fake_drive = MagicMock()

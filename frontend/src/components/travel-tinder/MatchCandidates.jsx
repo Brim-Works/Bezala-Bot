@@ -162,8 +162,12 @@ function CandidateCard({
 export default function MatchCandidates({
   aiSuggestion,           // { message, score, score_breakdown } | null
   userPickMessage,        // ProcessedMessage | null
+  paymentId,              // bill_line_id captured at this render — locks
+                          //   the target so a silent refresh shuffling
+                          //   `selected` under us can't divert the Couple
+                          //   click to a stranger bill_line (C20 bug).
   onClearUserPick,
-  onCouple,               // (message, aiContext|null) => void
+  onCouple,               // (message, paymentId, aiContext|null) => void
   onOpenDrawer,           // (message) => void
   coupling,
 }) {
@@ -201,7 +205,7 @@ export default function MatchCandidates({
             message={aiMessage}
             score={aiScore}
             onCouple={() =>
-              onCouple(aiMessage, {
+              onCouple(aiMessage, paymentId, {
                 score: aiScore,
                 score_breakdown: aiBreakdown,
               })
@@ -228,7 +232,7 @@ export default function MatchCandidates({
             message={aiMessage}
             score={aiScore}
             onCouple={() =>
-              onCouple(aiMessage, {
+              onCouple(aiMessage, paymentId, {
                 score: aiScore,
                 score_breakdown: aiBreakdown,
               })
@@ -243,7 +247,7 @@ export default function MatchCandidates({
             variant="user"
             message={userPickMessage}
             score={null}
-            onCouple={() => onCouple(userPickMessage, null)}
+            onCouple={() => onCouple(userPickMessage, paymentId, null)}
             onOpenDrawer={() => onOpenDrawer(userPickMessage)}
             onClear={onClearUserPick}
             coupling={coupling}
