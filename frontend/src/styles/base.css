@@ -5037,3 +5037,123 @@ html[data-theme='B'] {
   background: color-mix(in oklch, var(--info) 12%, var(--surface));
   border-color: color-mix(in oklch, var(--info) 30%, var(--border));
 }
+
+/* ---------- Resor R1 — kalenderresor (bara tema-tokens) ---------- */
+
+.cal-trips__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.cal-trips__desc {
+  margin: 4px 0 0;
+  font-size: 13px;
+}
+
+.cal-trips__notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  border-color: var(--warn);
+  background: color-mix(in oklch, var(--warn) 10%, var(--surface));
+  color: var(--text);
+}
+
+.cal-trips__ungrouped summary {
+  cursor: pointer;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.cal-trips__ungrouped ul {
+  list-style: none;
+  margin: 8px 0 0;
+  padding: 0;
+}
+
+.cal-trip__pills {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.cal-trip__days {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.cal-trip__day {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.cal-trip__day-head {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: baseline;
+  font-size: 13.5px;
+}
+
+.cal-trip__date {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.cal-trip__line {
+  font-size: 13px;
+}
+
+.cal-trip__strong {
+  color: var(--text);
+}
+
+.cal-trip__meetings {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.cal-trip__meeting {
+  display: grid;
+  grid-template-columns: 110px 1fr;
+  gap: 8px;
+  font-size: 13px;
+  color: var(--text-2);
+}
+
+.cal-trip__receipts {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.cal-trip__label {
+  font-size: 11.5px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+@media (max-width: 560px) {
+  .cal-trip__meeting {
+    grid-template-columns: 1fr;
+    gap: 0;
+  }
+}

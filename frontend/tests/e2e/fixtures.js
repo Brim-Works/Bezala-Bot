@@ -421,6 +421,10 @@ export async function setupApiMocks(page, overrides = {}) {
     // FAS 11.1 — Resor
     tripSuggestions: overrides.tripSuggestions || [buildTripSuggestion()],
     activeTrips: overrides.activeTrips || [buildActiveTrip()],
+    calendarTrips: overrides.calendarTrips || [],
+    calendarRefreshResponse: overrides.calendarRefreshResponse || {
+      status: 'ok', stats: { trips: 0 }, ungrouped: [], trips: [],
+    },
     lastTripRequest: null,
     refreshTripsResponse: overrides.refreshTripsResponse || { generated: 1 },
     // FAS 11.1.1 — manuell tagging + SaaS-lista
@@ -510,8 +514,21 @@ export async function setupApiMocks(page, overrides = {}) {
     const url = new URL(request.url());
     const pathname = url.pathname;
 
+    if (
+      method === 'GET'
+      && pathname.endsWith('/api/trips/suggestions')
+      && url.searchParams.get('source') === 'calendar'
+    ) {
+      return route.fulfill(jsonResponse({
+        source: 'calendar', trips: state.calendarTrips,
+      }));
+    }
     if (method === 'GET' && pathname.endsWith('/api/trips/suggestions')) {
       return route.fulfill(jsonResponse({ trips: state.tripSuggestions }));
+    }
+    if (method === 'POST' && pathname.endsWith('/api/trips/refresh')) {
+      state.lastTripRequest = { kind: 'calendar-refresh' };
+      return route.fulfill(jsonResponse(state.calendarRefreshResponse));
     }
     if (method === 'GET' && pathname.endsWith('/api/trips/active')) {
       return route.fulfill(jsonResponse({ trips: state.activeTrips }));

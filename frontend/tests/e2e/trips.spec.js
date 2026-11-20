@@ -165,3 +165,75 @@ test('Trip-drawer skiljer AI-förslag från manuellt tillagda kvitton', async ({
     page.getByTestId('trip-drawer-receipt-manual-1'),
   ).toHaveAttribute('data-added-by', 'manual');
 });
+
+// ---------- Resor R1 — kalenderresor ----------
+
+const CAL_TRIP = {
+  id: 7,
+  start_date: '2026-04-14',
+  end_date: '2026-04-15',
+  destination: 'Stockholm',
+  open_return: false,
+  status: 'suggested',
+  flights: [],
+  hotels: [{ id: 'h1', name: 'Scandic Klara' }],
+  source_event_ids: ['f1', 'h1', 'm1', 'f2'],
+  days: [
+    {
+      date: '2026-04-14', start_time: '16:00', end_time: null,
+      destination: 'Stockholm', meetings: [],
+      hotel: { id: 'h1', name: 'Scandic Klara' }, source_event_ids: ['f1', 'h1'],
+    },
+    {
+      date: '2026-04-15', start_time: null, end_time: '20:05',
+      destination: 'Stockholm',
+      meetings: [{ id: 'm1', summary: 'Workshop Visma', start_time: '09:00', end_time: '15:00', location: '' }],
+      hotel: null, source_event_ids: ['m1', 'f2'],
+    },
+  ],
+  receipts: [
+    { message_id: 'r1', vendor: 'Finnair', amount: 250, currency: 'EUR', receipt_date: '2026-04-10', trip_id: 1 },
+  ],
+};
+
+test('Kalenderresor visas som kort med tider, hotell, möten och kvitton', async ({ page }) => {
+  await setupApiMocks(page, { calendarTrips: [CAL_TRIP] });
+  await page.goto('/trips');
+  const card = page.getByTestId('calendar-trip-7');
+  await expect(card).toBeVisible();
+  await expect(card).toContainText('Stockholm');
+  await expect(card).toContainText('Avresa 16:00');
+  await expect(card).toContainText('Hemkomst 20:05');
+  await expect(card).toContainText('Scandic Klara');
+  await expect(card).toContainText('Workshop Visma');
+  await expect(card).toContainText('Finnair');
+});
+
+test('Läs kalendern utan consent visar Återanslut Gmail', async ({ page }) => {
+  await setupApiMocks(page, {
+    calendarRefreshResponse: { status: 'consent_required', detail: 'x' },
+  });
+  await page.goto('/trips');
+  await expect(page.getByTestId('trips-calendar-empty')).toBeVisible();
+  await page.getByTestId('trips-calendar-refresh').click();
+  const notice = page.getByTestId('trips-calendar-notice');
+  await expect(notice).toBeVisible();
+  await expect(notice.getByRole('link', { name: 'Återanslut Gmail' })).toHaveAttribute(
+    'href', '/api/auth/gmail/start',
+  );
+});
+
+test('Läs kalendern visar nya resor och ogrupperade event', async ({ page }) => {
+  await setupApiMocks(page, {
+    calendarRefreshResponse: {
+      status: 'ok',
+      stats: { trips: 1 },
+      trips: [CAL_TRIP],
+      ungrouped: [{ id: 'h9', summary: 'Hotel Kämp', date: '2026-06-03', reason: 'hotel_without_flight' }],
+    },
+  });
+  await page.goto('/trips');
+  await page.getByTestId('trips-calendar-refresh').click();
+  await expect(page.getByTestId('calendar-trip-7')).toBeVisible();
+  await expect(page.getByTestId('trips-calendar-ungrouped')).toContainText('Kunde inte grupperas (1)');
+});

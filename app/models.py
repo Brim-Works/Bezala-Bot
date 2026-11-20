@@ -451,3 +451,64 @@ class HtmlOnlySender(Base):
     description = Column(Text, nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+# ---------- Resor R1 — kalenderbaserade reseförslag ----------
+#
+# OBS: tabellnamnen har prefixet `calendar_` eftersom `trips` redan
+# används av FAS 11.1 (kvittobaserade resor). R1 är read-only mot
+# Netvisor/Bezala — dessa tabeller fylls bara från Google Calendar.
+
+
+class CalendarTrip(Base):
+    """En resa upptäckt i kalendern (flyg ut → flyg hem).
+
+    status: 'suggested' (default) | 'edited' | 'approved'.
+    Refresh ersätter bara 'suggested'-rader; edited/approved (R2) lämnas.
+    """
+
+    __tablename__ = "calendar_trips"
+
+    id = Column(Integer, primary_key=True)
+    start_date = Column(Date, nullable=False)
+    end_date = Column(Date, nullable=False)
+    start_at = Column(String(40), nullable=True)  # ISO med tidszon
+    end_at = Column(String(40), nullable=True)
+    destination = Column(Text, nullable=True)
+    open_return = Column(Boolean, nullable=False, default=False)
+    status = Column(String(20), nullable=False, default="suggested", index=True)
+    source_event_ids = Column(JSON, nullable=False, default=list)
+    flights = Column(JSON, nullable=False, default=list)
+    hotels = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
+Index("idx_calendar_trips_dates", CalendarTrip.start_date, CalendarTrip.end_date)
+
+
+class CalendarTripDay(Base):
+    """En resdag i en CalendarTrip."""
+
+    __tablename__ = "calendar_trip_days"
+    __table_args__ = (
+        UniqueConstraint("trip_id", "day_date", name="uq_calendar_trip_day"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(
+        Integer,
+        ForeignKey("calendar_trips.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    day_date = Column(Date, nullable=False)
+    start_time = Column(String(5), nullable=True)  # HH:MM
+    end_time = Column(String(5), nullable=True)
+    destination = Column(Text, nullable=True)
+    meetings = Column(JSON, nullable=False, default=list)
+    hotel = Column(JSON, nullable=True)
+    source_event_ids = Column(JSON, nullable=False, default=list)
+    status = Column(String(20), nullable=False, default="suggested")

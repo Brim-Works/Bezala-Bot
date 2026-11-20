@@ -115,6 +115,13 @@ _INDEXES = [
         "trips",
         "start_date, end_date",
     ),
+    # Resor R1 — tabellerna calendar_trips/calendar_trip_days skapas av
+    # create_all() vid startup (nya tabeller). Indexet säkras även här.
+    (
+        "idx_calendar_trips_dates",
+        "calendar_trips",
+        "start_date, end_date",
+    ),
 ]
 
 
