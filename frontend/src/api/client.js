@@ -232,6 +232,11 @@ export const api = {
     request(`/api/trips/${id}`, { method: 'DELETE' }),
   tripsRefreshSuggestions: () =>
     request('/api/trips/refresh-suggestions', { method: 'POST' }),
+  // Resor R1 — kalenderbaserade förslag (read-only mot Google Calendar).
+  tripsCalendarSuggestions: () =>
+    request('/api/trips/suggestions?source=calendar'),
+  tripsCalendarRefresh: () =>
+    request('/api/trips/refresh', { method: 'POST' }),
   tripsFeedback: (id, payload) =>
     request(`/api/trips/${id}/feedback`, { method: 'POST', body: payload }),
   // FAS 11.1.1 — manuell tagging + SaaS-lista

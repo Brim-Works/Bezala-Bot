@@ -280,6 +280,10 @@ OAUTH_SCOPES = {
         "https://www.googleapis.com/auth/gmail.modify",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.labels",
+        # Resor R1 — kalendern ligger på samma konto som Gmail. Läggs till
+        # här så "Återanslut Gmail" ger consent för båda. GmailClient
+        # begär fortfarande bara sina egna scopes vid refresh.
+        "https://www.googleapis.com/auth/calendar.readonly",
     ],
     "drive": [
         "https://www.googleapis.com/auth/drive.file",
@@ -321,7 +325,13 @@ def _build_oauth_redirect_uri(request: Request, service: str) -> str:
 
 def _build_oauth_flow(service: str, redirect_uri: str):
     """Bygg Google OAuth Flow från env-credentials."""
+    import os
     from google_auth_oauthlib.flow import Flow
+
+    # Google kan returnera scopes i annan ordning/omfattning än begärt
+    # (t.ex. efter tillagd calendar.readonly). Utan detta kastar oauthlib
+    # "Scope has changed" i fetch_token.
+    os.environ.setdefault("OAUTHLIB_RELAX_TOKEN_SCOPE", "1")
 
     settings = get_settings()
     if not (settings.gmail_client_id and settings.gmail_client_secret):
@@ -4387,11 +4397,60 @@ def _list_trips_filtered(db: Session, status: str) -> list[dict]:
 
 @app.get("/api/trips/suggestions")
 def list_trip_suggestions(
+    source: str | None = None,
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
-    """Lista AI-genererade resa-förslag som väntar på användarbeslut."""
+    """Lista resa-förslag som väntar på användarbeslut.
+
+    Default: kvittobaserade AI-förslag (FAS 11.1).
+    `?source=calendar`: kalenderbaserade förslag (Resor R1) med resdagar,
+    möten, hotell och redan kopplade kvitton.
+    """
+    if source == "calendar":
+        from app.services.calendar_trip_store import list_trips
+        return {"source": "calendar", "trips": list_trips(db)}
     return {"trips": _list_trips_filtered(db, "suggested")}
+
+
+@app.post("/api/trips/refresh")
+def post_refresh_calendar_trips(
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """Resor R1 — läs Google Calendar (read-only) och bygg om förslagen.
+
+    Svarar alltid 200 med `status`:
+      'ok' | 'consent_required' | 'not_configured' | 'api_disabled' | 'error'
+    så UI:t kan visa rätt hjälptext. Skriver aldrig till Bezala/Netvisor.
+    """
+    from app.services.calendar_client import CalendarAuthError, fetch_events
+    from app.services.calendar_trip_store import list_trips, persist_detected
+    from app.services.trip_detector import detect_trips
+
+    try:
+        events = fetch_events()
+    except CalendarAuthError as exc:
+        logger.warning("Calendar refresh: %s (%s)", exc.reason, exc)
+        return {"status": exc.reason, "detail": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Calendar refresh misslyckades")
+        return {"status": "error", "detail": str(exc)}
+
+    detected = detect_trips(events)
+    saved = persist_detected(db, detected)
+    logger.info(
+        "Calendar refresh OK: stats=%s saved=%s ungrouped=%s",
+        detected["stats"], saved,
+        [(u["date"], u["summary"], u["reason"]) for u in detected["ungrouped"]],
+    )
+    return {
+        "status": "ok",
+        "stats": detected["stats"],
+        "saved": saved,
+        "ungrouped": detected["ungrouped"],
+        "trips": list_trips(db),
+    }
 
 
 @app.get("/api/trips/active")
