@@ -83,6 +83,9 @@ _SCAN_RUNS_ADDITIONS = {
     # Gate 1.5 — Loggtransparens. Array av filtrerade mail med reason +
     # confidence. Nullable — gamla körningar har NULL (tolkas som []).
     "filtered_messages": "JSON",
+    # C46 — privat Gmail per körning
+    "private_found": "INTEGER",
+    "private_rejected": "INTEGER",
 }
 
 # C44 — detaljer ur mailtexten (parkeringstider, flygsegment, PNR).

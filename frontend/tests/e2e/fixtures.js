@@ -460,6 +460,11 @@ export async function setupApiMocks(page, overrides = {}) {
     route.fulfill(jsonResponse({ status: 'started', max_results: 50 })),
   );
 
+  // C46 — avsändare i privat Gmail (tom lista som default)
+  await page.route('**/api/private-gmail/senders**', (route) =>
+    route.fulfill(jsonResponse({ senders: [], last_scan: null })),
+  );
+
   await page.route('**/api/settings', async (route) => {
     const request = route.request();
     if (request.method() === 'PUT') {

@@ -5220,3 +5220,31 @@ html[data-theme='B'] {
     gap: 0;
   }
 }
+
+/* C46 — avsändare för privat Gmail */
+.private-senders {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 0;
+}
+.private-senders__table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.private-senders__table th,
+.private-senders__table td {
+  text-align: left;
+  padding: 4px 8px 4px 0;
+  vertical-align: middle;
+}
+.private-senders__add {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.private-senders__add input {
+  flex: 1 1 200px;
+  min-width: 0;
+}

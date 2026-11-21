@@ -145,3 +145,63 @@ test('Settings — SaveBar nollställs efter lyckad save och aktiveras igen vid 
   await expect(saveButton).toBeEnabled();
   await expect(saveBar).toContainText(/Ändringar är inte sparade/i);
 });
+
+test('C46 — avsändare i privat Gmail: lista, lägg till, ta bort, fel visas', async ({ page }) => {
+  let senders = [
+    {
+      address: 'no_reply@email.apple.com', kind: 'email', active: true, added_via: 'env',
+      note: null, last_scan_at: '2026-11-21T10:00:00', fetched: 3, saved: 2, rejected: 1,
+    },
+  ];
+  let lastPost = null;
+  await page.route('**/api/private-gmail/senders**', async (route) => {
+    const req = route.request();
+    if (req.method() === 'POST') {
+      lastPost = req.postDataJSON();
+      if (lastPost.address.endsWith('@gmail.com')) {
+        return route.fulfill({
+          status: 400, contentType: 'application/json',
+          body: JSON.stringify({ detail: 'gmail.com är en publik e-posttjänst och får inte läggas till' }),
+        });
+      }
+      senders = [...senders, {
+        address: lastPost.address, kind: 'domain', active: true, added_via: 'ui',
+        note: lastPost.note, last_scan_at: null, fetched: 0, saved: 0, rejected: 0,
+      }];
+      return route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ status: 'added', backfill_started: true }),
+      });
+    }
+    if (req.method() === 'DELETE') {
+      const addr = new URL(req.url()).searchParams.get('address');
+      senders = senders.map((s) => (s.address === addr ? { ...s, active: false } : s));
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    }
+    return route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify({
+        senders,
+        last_scan: { at: '2026-11-21T10:00:00', found: 4, rejected_unknown_sender: 1 },
+      }),
+    });
+  });
+  await page.goto('/settings');
+  const block = page.getByTestId('private-senders-block');
+  await expect(block.getByTestId('private-sender-row')).toHaveCount(1);
+  await expect(block.getByTestId('private-senders-last-scan')).toContainText('4');
+
+  await block.getByTestId('private-sender-input').fill('@scandichotels.com');
+  await block.getByTestId('private-sender-note').fill('Hotell');
+  await block.getByTestId('private-sender-add').click();
+  await expect(block.getByTestId('private-sender-row')).toHaveCount(2);
+  await expect(block.getByTestId('private-sender-info')).toBeVisible();
+  expect(lastPost).toEqual({ address: '@scandichotels.com', note: 'Hotell' });
+
+  await block.getByTestId('private-sender-input').fill('x@gmail.com');
+  await block.getByTestId('private-sender-add').click();
+  await expect(block.getByTestId('private-sender-error')).toContainText('gmail.com');
+
+  await block.getByTestId('private-sender-remove').first().click();
+  await expect(block.getByTestId('private-sender-row')).toHaveCount(1);
+});

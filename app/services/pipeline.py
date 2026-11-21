@@ -56,6 +56,7 @@ from app.services.private_gmail import (
     sender_address,
 )
 from app.services.reply_receipts import match_reply_receipt
+from app.services.receipt_details import find_saved_duplicate, identity_from_message
 from app.services.settings_service import (
     build_gmail_query,
     build_gmail_query_html_only,
@@ -87,6 +88,7 @@ class ScanResult:
     # eller avsändare för avvisade mail).
     private_found: int = 0
     private_rejected: int = 0
+    private_ran: bool = False
 
     def __post_init__(self):
         if self.notes is None:
@@ -116,50 +118,6 @@ FILTERED_REASON_DUPLICATE_OTHER_ACCOUNT = "duplicate_other_account"
 
 def _acct(msg) -> str:
     return getattr(msg, "source_account", None) or ACCOUNT_VISMA
-
-
-def _sender_domain(sender: str | None) -> str:
-    addr = sender_address(sender)
-    dom = addr.split("@", 1)[1] if "@" in addr else ""
-    # email.apple.com → apple.com (sista två leden räcker för jämförelsen)
-    return ".".join(dom.split(".")[-2:]) if dom else ""
-
-
-def find_cross_account_duplicate(
-    db, *, msg, amount: float | None, currency: str | None,
-    receipt_date: str | None,
-) -> "ProcessedMessage | None":
-    """C45 — samma kvitto i båda brevlådorna (t.ex. ett Apple-kvitto som
-    Mikko någon gång vidarebefordrat till jobbet). Matchar en sparad rad
-    från ANDRA kontot med samma belopp, valuta, kvittodatum och samma
-    avsändardomän (vidarebefordrat mail: domänen finns i ämne/summary/vendor).
-    """
-    if amount is None or not receipt_date:
-        return None
-    this_acct = _acct(msg)
-    dom = _sender_domain(msg.sender)
-    token = dom.split(".")[0] if dom else ""
-    q = (
-        db.query(ProcessedMessage)
-        .filter(ProcessedMessage.deleted_at.is_(None))
-        .filter(ProcessedMessage.status == "saved")
-        .filter(ProcessedMessage.receipt_date == receipt_date)
-        .filter(ProcessedMessage.message_id != msg.message_id)
-    )
-    for row in q.all():
-        row_acct = row.source_account or ACCOUNT_VISMA
-        if row_acct == this_acct:
-            continue
-        if row.amount is None or abs(float(row.amount) - float(amount)) > 0.01:
-            continue
-        if currency and row.currency and row.currency.upper() != currency.upper():
-            continue
-        hay = " ".join(
-            x or "" for x in (row.sender, row.vendor, row.subject, row.summary)
-        ).lower()
-        if token and token in hay:
-            return row
-    return None
 
 
 def _record_filtered(
@@ -519,7 +477,8 @@ def _process_thread_siblings(
 
 def run_private_pass(
     drive, namer, analyzer, bezala, result: ScanResult, *,
-    max_results: int = 50, after: str | None = None, **kwargs,
+    max_results: int = 50, after: str | None = None,
+    senders: list[str] | None = None, **kwargs,
 ) -> None:
     """C45 — skanna privat Gmail. Bara om kontot är anslutet. Frågan byggs
     enbart av allowlisten; varje meddelande kontrolleras igen mot den
@@ -531,10 +490,15 @@ def run_private_pass(
     if not get_refresh_token("gmail_private"):
         logger.info("C45: privat Gmail ej anslutet — hoppar privat pass")
         return
+    # C46 — aktiva rader i private_gmail_senders. `senders` (engångs-
+    # skanning för en ny avsändare) får bara smalna av, aldrig vidga.
     allowlist = get_private_allowlist()
-    query = build_private_query(allowlist, after=after or PRIVATE_SCAN_AFTER)
+    wanted = allowlist
+    if senders is not None:
+        wanted = [a for a in allowlist if a in {x.strip().lower() for x in senders}]
+    query = build_private_query(wanted, after=after or PRIVATE_SCAN_AFTER)
     if not query:
-        logger.info("C45: PRIVATE_GMAIL_SENDER_ALLOWLIST tom — hoppar privat pass")
+        logger.info("C46: inga aktiva avsändare för privat Gmail — hoppar privat pass")
         return
     try:
         gmail = GmailClient(account=ACCOUNT_PRIVATE)
@@ -567,11 +531,18 @@ def run_private_pass(
             # loggas redan inne i _process_one_message med msg-kontext.)
             logger.error("C45: fel i privat pass: %s", type(exc).__name__)
             result.errors += 1
+    result.private_ran = True
     if result.private_rejected:
         logger.info(
             "C45 privat pass: %d meddelanden avvisades (ej i allowlist) — "
             "inget innehåll hämtat", result.private_rejected,
         )
+    try:
+        from app.services.private_senders import mark_scanned
+
+        mark_scanned(list(wanted))
+    except Exception:  # noqa: BLE001
+        logger.exception("C46: kunde inte spara senaste skanning per avsändare")
 
 
 def fetch_bezala_metadata(bezala: BezalaClient) -> dict:
@@ -1006,12 +977,22 @@ def _process_one_message(
         if apple is not None and analysis is not None:
             _apply_apple_receipt(analysis, apple, msg)
 
-        # C45 — samma kvitto redan sparat från det andra Gmail-kontot?
+        # Samma kvitto redan sparat från det andra Gmail-kontot? Samma regel
+        # som C44:s dubblettkontroll (belopp + datum + leverantör + biljett-/
+        # bokningsnummer; Apples order-id räknas som bokningsnummer).
+        identity = identity_from_message(
+            msg.subject, msg.body_text, msg.body_html,
+            order_id=getattr(apple, "order_id", None) if apple is not None else None,
+        )
         if analysis is not None and not force:
             with session_scope() as db:
-                dup = find_cross_account_duplicate(
-                    db, msg=msg, amount=analysis.amount,
+                dup = find_saved_duplicate(
+                    db, message_id=msg.message_id, amount=analysis.amount,
                     currency=analysis.currency, receipt_date=analysis.date,
+                    vendor=analysis.vendor,
+                    booking_ref=identity.get("booking_ref"),
+                    ticket_number=identity.get("ticket_number"),
+                    other_account_than=_acct(msg),
                 )
                 dup_id = dup.id if dup is not None else None
             if dup_id is not None:
@@ -1135,6 +1116,8 @@ def _process_one_message(
                         bezala_error_message=bezala_err,
                         kind=receipt_kind,
                         source_account=_acct(msg),
+                        booking_ref=identity.get("booking_ref"),
+                        ticket_number=identity.get("ticket_number"),
                     )
                 )
                 db.add(
@@ -1722,6 +1705,9 @@ def _finalize_run(run_id: int, result: ScanResult, *, status: str, note: str | N
             run.errors = result.errors
             run.status = status
             run.filtered_messages = list(result.filtered or [])
+            if result.private_ran:
+                run.private_found = result.private_found
+                run.private_rejected = result.private_rejected
             if note:
                 result.notes.append(note)
             if result.notes:

@@ -373,6 +373,60 @@ async def list_duplicate_receipts(year: int | None = None) -> dict:
     return await _run(duplicate_report, year)
 
 
+# ---------- C46: avsändare för privat Gmail ----------
+
+
+def _sender_error(exc: Exception) -> TripEditError:
+    return TripEditError(str(exc))
+
+
+@mcp.tool()
+async def list_private_senders() -> dict:
+    """List the senders Bezala Bot may read in Mikko's PRIVATE Gmail (read-only
+    access). Each sender: address (exact address or '@domain.com', which also
+    matches subdomains), active, added_via (ui/mcp/env), note, last scan and how
+    many mails were fetched/saved/rejected. last_scan.rejected_unknown_sender is
+    only a count — mail from other senders is never fetched or stored."""
+    from app.services.private_senders import list_senders
+
+    return await _run(list_senders)
+
+
+@mcp.tool()
+async def add_private_sender(address: str, note: str | None = None) -> dict:
+    """Add a sender for Mikko's PRIVATE Gmail, e.g. when a work expense receipt
+    arrives there. address: exact e-mail address or '@domain.com' (matches
+    subdomains too). Public mail domains (gmail.com, outlook.com, icloud.com …)
+    and the private account itself are refused. Starts a one-time background scan
+    from 2026-01-01 for just this sender (already processed mails are skipped).
+    Returns what was added and whether the scan started. Only on Mikko's word."""
+    from app.services.private_senders import InvalidSender, add_sender
+
+    def work(db):
+        try:
+            return add_sender(db, address, note, via="mcp")
+        except InvalidSender as exc:
+            raise _sender_error(exc) from exc
+
+    return await _run(work)
+
+
+@mcp.tool()
+async def remove_private_sender(address: str) -> dict:
+    """Stop reading a sender in Mikko's PRIVATE Gmail (the row is kept with
+    active=false, so the environment default never adds it back). Already saved
+    receipts are not touched."""
+    from app.services.private_senders import InvalidSender, remove_sender
+
+    def work(db):
+        try:
+            return remove_sender(db, address)
+        except InvalidSender as exc:
+            raise _sender_error(exc) from exc
+
+    return await _run(work)
+
+
 # ---------- ASGI: auth + Streamable HTTP ----------
 
 _manager: StreamableHTTPSessionManager | None = None
