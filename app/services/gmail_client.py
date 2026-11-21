@@ -291,6 +291,32 @@ class GmailClient:
             })
         return out
 
+    def list_thread_messages(self, thread_id: str) -> list[dict]:
+        """C46 — alla meddelanden i en tråd med id, labels, From, Subject och
+        Date (bara metadata). Endast jobbkontot."""
+        if self.is_private:
+            return []
+        raw = (
+            self._service.users().threads()
+            .get(userId="me", id=thread_id, format="metadata",
+                 metadataHeaders=["From", "Subject", "Date"])
+            .execute()
+        )
+        out: list[dict] = []
+        for m in raw.get("messages", []) or []:
+            h = {
+                (x.get("name") or "").lower(): x.get("value") or ""
+                for x in m.get("payload", {}).get("headers", []) or []
+            }
+            out.append({
+                "message_id": m.get("id", ""),
+                "labels": list(m.get("labelIds") or []),
+                "sender": h.get("from", ""),
+                "subject": h.get("subject", ""),
+                "date": h.get("date", ""),
+            })
+        return out
+
     def list_candidates_with_threads(
         self, query: str, max_results: int = 50,
     ) -> list[tuple[str, str]]:
