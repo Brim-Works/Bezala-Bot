@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../../api/client.js';
 import { useI18n } from '../../i18n/useI18n.jsx';
+import PrivateSendersBlock from './PrivateSendersBlock.jsx';
 
 /* OAuth-anslutningar för Gmail och Drive. Visar varningsbanner när
  * backend-flaggan gmail_auth_required/drive_auth_required är satt
@@ -144,6 +145,7 @@ export default function AuthSection({ form }) {
           )}
         </div>
       </div>
+      <PrivateSendersBlock />
     </section>
   );
 }

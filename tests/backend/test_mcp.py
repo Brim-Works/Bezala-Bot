@@ -275,6 +275,8 @@ def test_valid_token_works(env):
         "mark_private_expense",
         # C44
         "couple_receipt", "get_card_line", "search_receipts", "list_duplicate_receipts",
+        # C46
+        "list_private_senders", "add_private_sender", "remove_private_sender",
     }
 
 

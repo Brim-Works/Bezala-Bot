@@ -200,6 +200,22 @@ def _run_c45_migrations() -> None:
         start_thread_scan_in_background()
 
 
+def _run_c46_migrations() -> None:
+    """C46 — PRIVATE_GMAIL_SENDER_ALLOWLIST → private_gmail_senders (bara
+    saknade adresser läggs in; env tar aldrig bort något)."""
+    from app.db import SessionLocal
+    from app.services.private_senders import seed_from_env
+
+    db = SessionLocal()
+    try:
+        seed_from_env(db)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("C46: seed private_gmail_senders misslyckades")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -217,6 +233,7 @@ async def lifespan(app: FastAPI):
     _run_c41_migrations()
     _run_c43_migrations()
     _run_c45_migrations()
+    _run_c46_migrations()
     # C44 — kvittodetaljer (Gmail, read-only), dubbletter, parkeringstider,
     # omräknade checklistor. I bakgrunden så att uppstarten inte väntar.
     if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":
@@ -805,6 +822,58 @@ def disconnect_private_gmail(_: None = Depends(require_auth)):
 def private_gmail_status_endpoint(_: None = Depends(require_auth)):
     from app.services.settings_service import private_gmail_status
     return private_gmail_status()
+
+
+# ---------- C46 — avsändare för privat Gmail ----------
+
+
+class PrivateSenderPayload(BaseModel):
+    address: str
+    note: str | None = None
+
+
+@app.get("/api/private-gmail/senders")
+def list_private_senders_endpoint(_: None = Depends(require_auth)):
+    from app.db import SessionLocal
+    from app.services.private_senders import list_senders
+
+    db = SessionLocal()
+    try:
+        return list_senders(db)
+    finally:
+        db.close()
+
+
+@app.post("/api/private-gmail/senders")
+def add_private_sender_endpoint(
+    payload: PrivateSenderPayload, _: None = Depends(require_auth),
+):
+    from app.db import SessionLocal
+    from app.services.private_senders import InvalidSender, add_sender
+
+    db = SessionLocal()
+    try:
+        return add_sender(db, payload.address, payload.note, via="ui")
+    except InvalidSender as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        db.close()
+
+
+@app.delete("/api/private-gmail/senders")
+def remove_private_sender_endpoint(
+    address: str, _: None = Depends(require_auth),
+):
+    from app.db import SessionLocal
+    from app.services.private_senders import InvalidSender, remove_sender
+
+    db = SessionLocal()
+    try:
+        return remove_sender(db, address)
+    except InvalidSender as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    finally:
+        db.close()
 
 
 # Global exception-hanterare: konvertera OAuth-fel från Gmail/Drive till

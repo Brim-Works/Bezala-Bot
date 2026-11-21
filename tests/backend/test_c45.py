@@ -120,8 +120,9 @@ def test_private_query_contains_only_allowlist_senders():
 
 
 def test_allowlist_rejects_wildcards_and_empty():
-    assert parse_allowlist("apple.com, @apple.com, *, , no_reply@email.apple.com") == [
-        "no_reply@email.apple.com",
+    # C46: '@domän' är tillåtet (domän + underdomäner); bara 'apple.com' inte.
+    assert parse_allowlist("apple.com, @apple.com, *, , no_reply@email.apple.com, @gmail.com") == [
+        "@apple.com", "no_reply@email.apple.com",
     ]
     assert build_private_query([]) is None
     assert build_private_query(["apple"]) is None

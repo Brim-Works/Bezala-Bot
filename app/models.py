@@ -132,6 +132,9 @@ class ScanRun(Base):
     # Gate 1.5 — Loggtransparens. Array av filtrerade mail med reason +
     # confidence. NULL = gammal körning utan detaljer (tolkas som [] i API).
     filtered_messages = Column(JSON, nullable=True)
+    # C46 — privat Gmail: kandidater och avvisade (okänd avsändare, bara antal)
+    private_found = Column(Integer, nullable=True)
+    private_rejected = Column(Integer, nullable=True)
 
 
 class AppSettings(Base):
@@ -725,3 +728,28 @@ class CardLine(Base):
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
     )
+
+
+class PrivateGmailSender(Base):
+    """C46 — avsändare som boten får läsa i privata Gmail (bara läsrätt).
+
+    Tabellen är sanningen: PRIVATE_GMAIL_SENDER_ALLOWLIST lägger bara in
+    saknade adresser vid start (added_via='env') och tar aldrig bort något.
+    kind='email' = exakt adress, kind='domain' = '@domän.se' (även
+    underdomäner). Ta bort = active=False (raden finns kvar)."""
+
+    __tablename__ = "private_gmail_senders"
+    __table_args__ = (
+        UniqueConstraint("address", name="uq_private_gmail_senders_address"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    address = Column(String(255), nullable=False)
+    kind = Column(String(8), nullable=False, default="email")
+    active = Column(Boolean, nullable=False, default=True)
+    added_at = Column(DateTime, server_default=func.now(), nullable=False)
+    added_via = Column(String(8), nullable=False, default="ui")
+    note = Column(Text, nullable=True)
+    last_scan_at = Column(DateTime, nullable=True)
+    backfill_status = Column(String(16), nullable=True)
+    backfill_at = Column(DateTime, nullable=True)

@@ -88,6 +88,7 @@ class ScanResult:
     # eller avsändare för avvisade mail).
     private_found: int = 0
     private_rejected: int = 0
+    private_ran: bool = False
 
     def __post_init__(self):
         if self.notes is None:
@@ -476,7 +477,8 @@ def _process_thread_siblings(
 
 def run_private_pass(
     drive, namer, analyzer, bezala, result: ScanResult, *,
-    max_results: int = 50, after: str | None = None, **kwargs,
+    max_results: int = 50, after: str | None = None,
+    senders: list[str] | None = None, **kwargs,
 ) -> None:
     """C45 — skanna privat Gmail. Bara om kontot är anslutet. Frågan byggs
     enbart av allowlisten; varje meddelande kontrolleras igen mot den
@@ -488,10 +490,15 @@ def run_private_pass(
     if not get_refresh_token("gmail_private"):
         logger.info("C45: privat Gmail ej anslutet — hoppar privat pass")
         return
+    # C46 — aktiva rader i private_gmail_senders. `senders` (engångs-
+    # skanning för en ny avsändare) får bara smalna av, aldrig vidga.
     allowlist = get_private_allowlist()
-    query = build_private_query(allowlist, after=after or PRIVATE_SCAN_AFTER)
+    wanted = allowlist
+    if senders is not None:
+        wanted = [a for a in allowlist if a in {x.strip().lower() for x in senders}]
+    query = build_private_query(wanted, after=after or PRIVATE_SCAN_AFTER)
     if not query:
-        logger.info("C45: PRIVATE_GMAIL_SENDER_ALLOWLIST tom — hoppar privat pass")
+        logger.info("C46: inga aktiva avsändare för privat Gmail — hoppar privat pass")
         return
     try:
         gmail = GmailClient(account=ACCOUNT_PRIVATE)
@@ -524,11 +531,18 @@ def run_private_pass(
             # loggas redan inne i _process_one_message med msg-kontext.)
             logger.error("C45: fel i privat pass: %s", type(exc).__name__)
             result.errors += 1
+    result.private_ran = True
     if result.private_rejected:
         logger.info(
             "C45 privat pass: %d meddelanden avvisades (ej i allowlist) — "
             "inget innehåll hämtat", result.private_rejected,
         )
+    try:
+        from app.services.private_senders import mark_scanned
+
+        mark_scanned(list(wanted))
+    except Exception:  # noqa: BLE001
+        logger.exception("C46: kunde inte spara senaste skanning per avsändare")
 
 
 def fetch_bezala_metadata(bezala: BezalaClient) -> dict:
@@ -1691,6 +1705,9 @@ def _finalize_run(run_id: int, result: ScanResult, *, status: str, note: str | N
             run.errors = result.errors
             run.status = status
             run.filtered_messages = list(result.filtered or [])
+            if result.private_ran:
+                run.private_found = result.private_found
+                run.private_rejected = result.private_rejected
             if note:
                 result.notes.append(note)
             if result.notes:

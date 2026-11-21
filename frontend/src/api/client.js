@@ -89,6 +89,13 @@ export const api = {
   runs: (limit = 20) => request(`/api/runs?limit=${limit}`),
   settings: () => request('/api/settings'),
   disconnectPrivateGmail: () => request('/api/auth/gmail_private', { method: 'DELETE' }),
+  privateSenders: () => request('/api/private-gmail/senders'),
+  addPrivateSender: (payload) =>
+    request('/api/private-gmail/senders', { method: 'POST', body: payload }),
+  removePrivateSender: (address) =>
+    request(`/api/private-gmail/senders?address=${encodeURIComponent(address)}`, {
+      method: 'DELETE',
+    }),
   updateSettings: (payload) => request('/api/settings', { method: 'PUT', body: payload }),
   scan: () => request('/api/scan', { method: 'POST' }),
   uploadToBezala: (id, overrides) =>
