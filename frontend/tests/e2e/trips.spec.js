@@ -209,6 +209,24 @@ test('Kalenderresor visas som kort med tider, hotell, möten och kvitton', async
   await expect(card).toContainText('Finnair');
 });
 
+test('C40: kalenderkortet visar status, flaggor, land och syfte från chatten', async ({ page }) => {
+  const edited = {
+    ...CAL_TRIP,
+    id: 8,
+    status: 'edited',
+    country: 'SE',
+    purpose: 'Customer workshop',
+    flags: ['needs_review'],
+  };
+  await setupApiMocks(page, { calendarTrips: [edited] });
+  await page.goto('/trips');
+  const card = page.getByTestId('calendar-trip-8');
+  await expect(card).toContainText('Redigerad');
+  await expect(page.getByTestId('calendar-trip-review-8')).toHaveText('Välj flyg');
+  await expect(card).toContainText('SE');
+  await expect(page.getByTestId('calendar-trip-purpose-8')).toContainText('Customer workshop');
+});
+
 test('Läs kalendern utan consent visar Återanslut Gmail', async ({ page }) => {
   await setupApiMocks(page, {
     calendarRefreshResponse: { status: 'consent_required', detail: 'x' },

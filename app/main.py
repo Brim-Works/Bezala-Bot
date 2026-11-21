@@ -21,6 +21,8 @@ from app.db import get_db, init_db, session_scope
 from app.models import MaintenanceTask, ProcessedMessage, SavedFile, ScanRun
 from app.scheduler import reschedule_scheduler, shutdown_scheduler, start_scheduler
 from app.routers.bezala_config import router as bezala_config_router
+from app.mcp_oauth import owner as mcp_owner, router as mcp_oauth_router
+from app.mcp_server import McpEndpoint, lifespan as mcp_lifespan
 from app.services.bezala_client import BezalaClient, BezalaError
 from app.services.bezala_field_mapper import build_receipt_params
 from app.services.drive_client import DriveClient
@@ -164,7 +166,8 @@ async def lifespan(app: FastAPI):
     _run_once_seed_html_only_senders()
     _run_once_seed_bezala_vendor_mappings()
     start_scheduler()
-    yield
+    async with mcp_lifespan():
+        yield
     shutdown_scheduler()
     logger.info("Stoppar Bezala Bot.")
 
@@ -188,6 +191,10 @@ app.add_middleware(
 )
 
 app.include_router(bezala_config_router)
+# C40 — MCP-connector för Claude-chatten: OAuth + /mcp (Streamable HTTP).
+app.include_router(mcp_oauth_router)
+app.add_route("/mcp", McpEndpoint(), methods=["GET", "POST", "DELETE"])
+app.add_route("/mcp/", McpEndpoint(), methods=["GET", "POST", "DELETE"])
 
 
 def require_auth(request: Request) -> None:
@@ -219,6 +226,7 @@ LOGIN_PAGE = """<!doctype html>
 <form method="post" action="/login">
   <h1>Bezala Bot</h1>
   {error_block}
+  <input type="hidden" name="next" value="{next_value}">
   <input type="password" name="password" placeholder="Lösenord" autofocus required>
   <button type="submit">Logga in</button>
 </form>
@@ -227,21 +235,41 @@ LOGIN_PAGE = """<!doctype html>
 """
 
 
+def _safe_next(value: str | None) -> str:
+    """Bara relativa sökvägar i appen (skydd mot open redirect)."""
+    if value and value.startswith("/") and not value.startswith("//") and "\\" not in value:
+        return value
+    return "/"
+
+
 @app.get("/login", response_class=HTMLResponse)
-def login_page(request: Request, error: str | None = None):
-    if request.session.get("authenticated"):
-        return RedirectResponse(url="/", status_code=303)
-    error_block = f'<p class="err">{error}</p>' if error else ""
-    return HTMLResponse(LOGIN_PAGE.replace("{error_block}", error_block))
+def login_page(request: Request, error: str | None = None, next: str | None = None):
+    target = _safe_next(next)
+    if request.session.get("authenticated") and request.session.get("user"):
+        return RedirectResponse(url=target, status_code=303)
+    import html as _html
+    error_block = f'<p class="err">{_html.escape(error)}</p>' if error else ""
+    return HTMLResponse(
+        LOGIN_PAGE.replace("{error_block}", error_block)
+        .replace("{next_value}", _html.escape(target, quote=True))
+    )
 
 
 @app.post("/login")
-def login(request: Request, password: str = Form(...)):
+def login(request: Request, password: str = Form(...), next: str = Form("/")):
+    from urllib.parse import urlencode as _urlencode
+    target = _safe_next(next)
     expected = settings.app_password
     if not expected or not secrets.compare_digest(password, expected):
-        return RedirectResponse(url="/login?error=Fel+l%C3%B6senord", status_code=303)
+        q = {"error": "Fel lösenord"}
+        if target != "/":
+            q["next"] = target
+        return RedirectResponse(url="/login?" + _urlencode(q), status_code=303)
     request.session["authenticated"] = True
-    return RedirectResponse(url="/", status_code=303)
+    # C40 — appen har ett konto (ägaren). Sessionen bär identiteten så att
+    # MCP-inloggningen kan kontrollera att det är just ägarkontot.
+    request.session["user"] = mcp_owner()
+    return RedirectResponse(url=target, status_code=303)
 
 
 @app.post("/logout")
@@ -4424,33 +4452,12 @@ def post_refresh_calendar_trips(
       'ok' | 'consent_required' | 'not_configured' | 'api_disabled' | 'error'
     så UI:t kan visa rätt hjälptext. Skriver aldrig till Bezala/Netvisor.
     """
-    from app.services.calendar_client import CalendarAuthError, fetch_events
-    from app.services.calendar_trip_store import list_trips, persist_detected
-    from app.services.trip_detector import detect_trips
+    from app.services.calendar_trip_store import list_trips, refresh_from_calendar
 
-    try:
-        events = fetch_events()
-    except CalendarAuthError as exc:
-        logger.warning("Calendar refresh: %s (%s)", exc.reason, exc)
-        return {"status": exc.reason, "detail": str(exc)}
-    except Exception as exc:  # noqa: BLE001
-        logger.exception("Calendar refresh misslyckades")
-        return {"status": "error", "detail": str(exc)}
-
-    detected = detect_trips(events)
-    saved = persist_detected(db, detected)
-    logger.info(
-        "Calendar refresh OK: stats=%s saved=%s ungrouped=%s",
-        detected["stats"], saved,
-        [(u["date"], u["summary"], u["reason"]) for u in detected["ungrouped"]],
-    )
-    return {
-        "status": "ok",
-        "stats": detected["stats"],
-        "saved": saved,
-        "ungrouped": detected["ungrouped"],
-        "trips": list_trips(db),
-    }
+    result = refresh_from_calendar(db)
+    if result["status"] != "ok":
+        return result
+    return {**result, "trips": list_trips(db)}
 
 
 @app.get("/api/trips/active")

@@ -896,7 +896,7 @@ export default {
     confirmArchive: 'Arkivera resan?',
     calendar: {
       title: 'Från kalendern',
-      description: 'Resor upptäckta i Google Calendar (flyg ut → flyg hem). Endast läsning — inget skickas till Bezala eller Netvisor.',
+      description: 'Resor upptäckta i Google Calendar (flyg ut → flyg hem). Granska, ändra och godkänn i Claude-chatten. Inget skickas till Bezala eller Netvisor.',
       refreshButton: 'Läs kalendern',
       refreshing: 'Läser kalendern…',
       refreshed: '{count} resor hittade i kalendern',
@@ -910,6 +910,8 @@ export default {
       edited: 'Redigerad',
       approved: 'Godkänd',
       openReturn: 'Hemresa saknas',
+      needsReview: 'Välj flyg',
+      purpose: 'Syfte',
       daysCount: '{count} dagar',
       dayCount: '1 dag',
       departure: 'Avresa {time}',

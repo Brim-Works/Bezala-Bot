@@ -101,6 +101,16 @@ _CALENDAR_TRIPS_ADDITIONS = {
     "flags": "JSON",
     "flight_options": "JSON",
     "country": "VARCHAR(20)",
+    # C40 — redigering via MCP
+    "purpose": "TEXT",
+    "edited_at": "TIMESTAMP",
+    "approved_at": "TIMESTAMP",
+}
+
+_CALENDAR_TRIP_DAYS_ADDITIONS = {
+    # C40 — per dag: land + syfte
+    "country": "VARCHAR(20)",
+    "purpose": "TEXT",
 }
 
 _INDEXES = [
@@ -207,6 +217,20 @@ def _apply_schema_migrations() -> None:
                         text(f"ALTER TABLE calendar_trips ADD COLUMN {name} {col_type}")
                     )
                     logger.info("Lade till kolumn calendar_trips.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
+    if "calendar_trip_days" in tables:
+        existing = {col["name"] for col in insp.get_columns("calendar_trip_days")}
+        with engine.begin() as conn:
+            for name, col_type in _CALENDAR_TRIP_DAYS_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE calendar_trip_days ADD COLUMN {name} {col_type}")
+                    )
+                    logger.info("Lade till kolumn calendar_trip_days.%s", name)
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 
