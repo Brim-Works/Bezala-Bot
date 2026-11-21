@@ -31,7 +31,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from sqlalchemy.orm import Session
 
 from app.db import get_db
-from app.models import McpOAuthClient, McpOAuthCode, McpOAuthToken
+from app.models import McpOAuthClient, McpOAuthCode, McpOAuthPending, McpOAuthToken
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +42,8 @@ SCOPE = "trips"
 ACCESS_TTL = timedelta(hours=1)
 REFRESH_TTL = timedelta(days=30)
 CODE_TTL = timedelta(minutes=5)
+# C41 — authorize-begäran måste överleva inloggningen (≥ 10 min).
+PENDING_TTL = timedelta(minutes=15)
 MAX_CLIENTS = 200
 
 DEFAULT_REDIRECT_URIS = (
@@ -272,7 +274,18 @@ _CONSENT_PAGE = """<!doctype html>
     <button type="submit" name="decision" value="deny">Avbryt</button>
     <button type="submit" name="decision" value="allow" class="ok">Tillåt</button>
   </div>
-</form></body></html>
+</form>
+<script>
+  // C41 — skicka bara en gång (ett dubbelklick gav tidigare felsidan).
+  (function () {{
+    var sent = false;
+    document.querySelector('form').addEventListener('submit', function (e) {{
+      if (sent) {{ e.preventDefault(); return; }}
+      sent = true;
+    }});
+  }})();
+</script>
+</body></html>
 """
 
 
@@ -284,9 +297,80 @@ def _error_redirect(redirect_uri: str, state: str | None, error: str, desc: str,
     return RedirectResponse(redirect_uri + sep + urlencode(params), status_code=302)
 
 
+_MESSAGE_PAGE = """<!doctype html>
+<html lang="sv"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Bezala Bot</title>
+<style>body{{font-family:system-ui,-apple-system,sans-serif;display:grid;
+place-items:center;min-height:100vh;margin:0;padding:16px;box-sizing:border-box}}
+@media (prefers-color-scheme: dark){{body{{background:#111412;color:#eef0ec}}}}
+.card{{max-width:420px}}</style></head>
+<body><div class="card"><h1 style="font-size:1.15rem">{title}</h1><p>{text}</p></div></body></html>
+"""
+
+EXPIRED_TEXT = "Ogiltig eller utgången begäran. Börja om från Claude."
+
+
+def _message(title: str, text: str, status: int = 200) -> HTMLResponse:
+    return HTMLResponse(
+        _MESSAGE_PAGE.format(title=html.escape(title), text=html.escape(text)),
+        status_code=status, headers=_NO_STORE,
+    )
+
+
+def _purge_pending(db: Session) -> None:
+    db.query(McpOAuthPending).filter(
+        McpOAuthPending.expires_at < _now() - timedelta(days=1)
+    ).delete(synchronize_session=False)
+
+
+def _load_pending(db: Session, request_id: str) -> McpOAuthPending | None:
+    if not request_id or len(request_id) > 64:
+        return None
+    row = db.get(McpOAuthPending, request_id)
+    if row is None or row.expires_at < _now():
+        return None
+    return row
+
+
+def _consent(request: Request, db: Session, row: McpOAuthPending):
+    """Visa Tillåt-sidan för en sparad begäran (kräver ägarens session)."""
+    user = session_user(request)
+    if user is None:
+        nxt = "/oauth/authorize?" + urlencode({"request_id": row.id})
+        return RedirectResponse("/login?" + urlencode({"next": nxt}), status_code=303)
+    if user != owner():
+        logger.warning("MCP OAuth: nekade authorize för användare %r", user)
+        row.completed_at, row.decision = _now(), "deny"
+        db.commit()
+        return _error_redirect(row.redirect_uri, row.state, "access_denied",
+                               "This account may not use Bezala Bot MCP.",
+                               public_base_url(request))
+    if row.completed_at is not None:
+        return _message("Redan klart",
+                        "Den här begäran är redan besvarad. Du kan stänga "
+                        "fönstret och gå tillbaka till Claude.")
+    client = db.get(McpOAuthClient, row.client_id)
+    page = _CONSENT_PAGE.format(
+        client=html.escape((client.client_name if client else None) or "Claude"),
+        redirect_host=html.escape(urlsplit(row.redirect_uri).netloc),
+        request_id=html.escape(row.id),
+        csrf=html.escape(row.csrf),
+    )
+    return HTMLResponse(page, headers={"X-Frame-Options": "DENY", **_NO_STORE})
+
+
 @router.get("/oauth/authorize")
 def authorize(request: Request, db: Session = Depends(get_db)):
     q = request.query_params
+
+    # C41 — återkomst efter /login: begäran finns redan i databasen.
+    if "request_id" in q and "client_id" not in q:
+        row = _load_pending(db, q.get("request_id", ""))
+        if row is None:
+            return _message("Begäran gick ut", EXPIRED_TEXT, status=400)
+        return _consent(request, db, row)
+
     client_id = q.get("client_id", "")
     redirect_uri = q.get("redirect_uri", "")
     state = q.get("state")
@@ -311,34 +395,23 @@ def authorize(request: Request, db: Session = Depends(get_db)):
         return _error_redirect(redirect_uri, state, "invalid_target",
                                "Unknown resource.", iss)
 
-    user = session_user(request)
-    if user is None:
-        nxt = "/oauth/authorize?" + str(request.url.query)
-        return RedirectResponse("/login?" + urlencode({"next": nxt}), status_code=303)
-    if user != owner():
-        logger.warning("MCP OAuth: nekade authorize för användare %r", user)
-        return _error_redirect(redirect_uri, state, "access_denied",
-                               "This account may not use Bezala Bot MCP.", iss)
-
-    request_id = secrets.token_urlsafe(16)
-    csrf = secrets.token_urlsafe(16)
-    request.session["mcp_authz"] = {
-        "id": request_id,
-        "csrf": csrf,
-        "client_id": client_id,
-        "redirect_uri": redirect_uri,
-        "state": state,
-        "code_challenge": challenge,
-        "resource": resource,
-        "scope": (q.get("scope") or SCOPE)[:255],
-    }
-    page = _CONSENT_PAGE.format(
-        client=html.escape(client.client_name or "Claude"),
-        redirect_host=html.escape(urlsplit(redirect_uri).netloc),
-        request_id=request_id,
-        csrf=csrf,
+    # C41 — spara begäran i databasen (inte i sessionen). Varje GET ger en
+    # egen rad, så att en omladdning inte ogiltigförklarar en öppen sida.
+    _purge_pending(db)
+    row = McpOAuthPending(
+        id=secrets.token_urlsafe(24),
+        csrf=secrets.token_urlsafe(24),
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        state=state,
+        code_challenge=challenge,
+        resource=resource,
+        scope=(q.get("scope") or SCOPE)[:255],
+        expires_at=_now() + PENDING_TTL,
     )
-    return HTMLResponse(page, headers={"X-Frame-Options": "DENY", **_NO_STORE})
+    db.add(row)
+    db.commit()
+    return _consent(request, db, row)
 
 
 @router.post("/oauth/authorize")
@@ -346,36 +419,40 @@ def authorize_decision(
     request: Request,
     request_id: str = Form(...),
     csrf: str = Form(...),
-    decision: str = Form(...),
+    decision: str = Form(""),
     db: Session = Depends(get_db),
 ):
-    pending = request.session.pop("mcp_authz", None)
-    if (
-        not pending
-        or not secrets.compare_digest(pending.get("id", ""), request_id)
-        or not secrets.compare_digest(pending.get("csrf", ""), csrf)
-    ):
-        return HTMLResponse("Ogiltig eller utgången begäran. Börja om från Claude.", status_code=400)
+    row = _load_pending(db, request_id)
+    if row is None or not secrets.compare_digest(row.csrf, csrf):
+        return _message("Begäran gick ut", EXPIRED_TEXT, status=400)
     iss = public_base_url(request)
-    redirect_uri = pending["redirect_uri"]
-    state = pending.get("state")
+    redirect_uri = row.redirect_uri
+    state = row.state
 
     user = session_user(request)
     if user is None or user != owner():
         return _error_redirect(redirect_uri, state, "access_denied",
                                "This account may not use Bezala Bot MCP.", iss)
+    if row.completed_at is not None:
+        # Dubbelklick/omsändning: första svaret har redan gått till Claude.
+        return _message("Redan klart",
+                        "Åtkomsten är redan besvarad. Du kan stänga fönstret "
+                        "och gå tillbaka till Claude.")
+    row.completed_at = _now()
+    row.decision = "allow" if decision == "allow" else "deny"
     if decision != "allow":
+        db.commit()
         return _error_redirect(redirect_uri, state, "access_denied",
                                "The user denied access.", iss)
 
     code = secrets.token_urlsafe(32)
     db.add(McpOAuthCode(
         code_hash=hash_secret(code),
-        client_id=pending["client_id"],
+        client_id=row.client_id,
         redirect_uri=redirect_uri,
-        code_challenge=pending["code_challenge"],
-        resource=pending["resource"],
-        scope=pending.get("scope"),
+        code_challenge=row.code_challenge,
+        resource=row.resource,
+        scope=row.scope,
         subject=user,
         expires_at=_now() + CODE_TTL,
     ))
@@ -384,8 +461,28 @@ def authorize_decision(
     if state:
         params["state"] = state
     sep = "&" if "?" in redirect_uri else "?"
-    logger.info("MCP OAuth: kod utfärdad för klient %s", pending["client_id"])
+    logger.info("MCP OAuth: kod utfärdad för klient %s", row.client_id)
     return RedirectResponse(redirect_uri + sep + urlencode(params), status_code=302)
+
+
+def delete_clients_named(db: Session, name: str) -> int:
+    """Ta bort registrerade klienter med ett visst namn (t.ex. testklienten
+    'deploy-check' från C40) inklusive deras koder och tokens."""
+    ids = [c.client_id for c in db.query(McpOAuthClient)
+           .filter(McpOAuthClient.client_name == name).all()]
+    if not ids:
+        return 0
+    db.query(McpOAuthToken).filter(McpOAuthToken.client_id.in_(ids)).delete(
+        synchronize_session=False)
+    db.query(McpOAuthCode).filter(McpOAuthCode.client_id.in_(ids)).delete(
+        synchronize_session=False)
+    db.query(McpOAuthPending).filter(McpOAuthPending.client_id.in_(ids)).delete(
+        synchronize_session=False)
+    db.query(McpOAuthClient).filter(McpOAuthClient.client_id.in_(ids)).delete(
+        synchronize_session=False)
+    db.commit()
+    logger.info("MCP OAuth: tog bort %d klient(er) med namnet %r", len(ids), name)
+    return len(ids)
 
 
 # ---------- Token ----------

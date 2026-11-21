@@ -71,6 +71,9 @@ def persist_detected(db: Session, detected: dict) -> dict:
             flags=t.get("flags") or [],
             flight_options=t.get("flight_options") or [],
             country=t.get("country"),
+            purpose=t.get("purpose"),
+            travel_start_at=t.get("travel_start_at"),
+            travel_end_at=t.get("travel_end_at"),
         )
         db.add(row)
         db.flush()
@@ -85,6 +88,10 @@ def persist_detected(db: Session, detected: dict) -> dict:
                 hotel=day.get("hotel"),
                 source_event_ids=day.get("source_event_ids") or [],
                 status="suggested",
+                country=day.get("country"),
+                purpose=day.get("purpose"),
+                airport=day.get("airport"),
+                destination_source=day.get("destination_source"),
             ))
         created += 1
 
@@ -134,7 +141,38 @@ def _linked_receipts(db: Session, start: date, end: date) -> list[dict]:
     return out
 
 
+def _flight_times_by_day(flights: list[dict]) -> dict[str, dict]:
+    """{'YYYY-MM-DD': {'departure': 'HH:MM', 'arrival': 'HH:MM'}} i
+    Helsingfors-tid — flygtiderna visas i mindre text i UI."""
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    hel = ZoneInfo("Europe/Helsinki")
+    out: dict[str, dict] = {}
+    for f in flights or []:
+        for key, field in (("departure", "start"), ("arrival", "end")):
+            raw = f.get(field)
+            if not raw:
+                continue
+            try:
+                dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if dt.tzinfo is not None:
+                dt = dt.astimezone(hel)
+            slot = out.setdefault(dt.date().isoformat(), {})
+            # Första avgången / sista ankomsten den dagen.
+            if key == "departure":
+                slot.setdefault(key, dt.strftime("%H:%M"))
+            else:
+                slot[key] = dt.strftime("%H:%M")
+    return out
+
+
 def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
+    from app.services.trip_english import country_name
+
+    flight_times = _flight_times_by_day(trip.flights or [])
     days = (
         db.query(CalendarTripDay)
         .filter(CalendarTripDay.trip_id == trip.id)
@@ -152,7 +190,10 @@ def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
         "country": trip.country,
         "flags": trip.flags or [],
         "flight_options": trip.flight_options or [],
+        "country_name": country_name(trip.country),
         "purpose": trip.purpose,
+        "travel_start_at": trip.travel_start_at,
+        "travel_end_at": trip.travel_end_at,
         "status": trip.status,
         "flights": trip.flights or [],
         "hotels": trip.hotels or [],
@@ -166,6 +207,11 @@ def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
                 "meetings": d.meetings or [],
                 "hotel": d.hotel,
                 "country": d.country,
+                "country_name": country_name(d.country),
+                "airport": d.airport,
+                "destination_source": d.destination_source,
+                "flight_departure": flight_times.get(d.day_date.isoformat(), {}).get("departure"),
+                "flight_arrival": flight_times.get(d.day_date.isoformat(), {}).get("arrival"),
                 "purpose": d.purpose,
                 "source_event_ids": d.source_event_ids or [],
             }
@@ -203,7 +249,7 @@ def refresh_from_calendar(db: Session) -> dict:
         logger.exception("Calendar refresh misslyckades")
         return {"status": "error", "detail": str(exc)}
 
-    detected = detect_trips(events)
+    detected = detect_trips(events, receipts_by_date=receipt_texts_by_date(db))
     saved = persist_detected(db, detected)
     logger.info(
         "Calendar refresh OK: stats=%s saved=%s ungrouped=%s",
@@ -216,3 +262,97 @@ def refresh_from_calendar(db: Session) -> dict:
         "saved": saved,
         "ungrouped": detected["ungrouped"],
     }
+
+
+# ---------- C41 ----------
+
+
+def receipt_texts_by_date(db: Session) -> dict[str, list[str]]:
+    """Kvitton i boten per datum (text att leta ortnamn i): leverantör,
+    ämne, sammanfattning, filnamn. Sista ledtråden för arbetsort."""
+    rows = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None),
+                ProcessedMessage.receipt_date.isnot(None))
+        .all()
+    )
+    out: dict[str, list[str]] = {}
+    for m in rows:
+        key = str(m.receipt_date or "")[:10]
+        if len(key) != 10:
+            continue
+        text = " ".join(
+            str(v) for v in (m.vendor, m.subject, m.summary, m.file_name,
+                             getattr(m, "ai_description_en", None)) if v
+        )
+        if text:
+            out.setdefault(key, []).append(text)
+    return out
+
+
+def migrate_c41(db: Session) -> dict:
+    """Idempotent, körs vid uppstart.
+
+    * Svenska stadsnamn → engelska (Köpenhamn → Copenhagen) på alla rader.
+      Syftet rörs aldrig här.
+    * 'suggested'-resor utan resetider får resetider beräknade ur
+      flygtiderna (marginal på hemänden). edited/approved räknas aldrig om.
+    * Rapporterar (loggar) edited/approved-resor vars syfte inte ser
+      engelskt ut — de ändras inte automatiskt.
+    """
+    from datetime import datetime as _dt
+
+    from app.services.trip_detector import home_iatas, travel_times
+    from app.services.trip_english import destination_to_english, non_english_warnings
+
+    renamed = recalculated = 0
+    non_english: list[dict] = []
+    homes = home_iatas()
+    for trip in db.query(CalendarTrip).all():
+        new = destination_to_english(trip.destination)
+        if new != trip.destination:
+            trip.destination = new
+            renamed += 1
+        days = (
+            db.query(CalendarTripDay)
+            .filter(CalendarTripDay.trip_id == trip.id)
+            .order_by(CalendarTripDay.day_date)
+            .all()
+        )
+        for d in days:
+            new = destination_to_english(d.destination)
+            if new != d.destination:
+                d.destination = new
+                renamed += 1
+        if trip.status in LOCKED_STATUSES:
+            texts = [trip.purpose] + [d.purpose for d in days]
+            if any(non_english_warnings("purpose", t) for t in texts if t):
+                non_english.append({
+                    "id": trip.id, "status": trip.status,
+                    "start_date": trip.start_date.isoformat(),
+                    "purpose": trip.purpose,
+                })
+            continue
+        if trip.status != "suggested" or trip.travel_start_at or not trip.start_at:
+            continue
+        flights = trip.flights or []
+        origin = flights[0].get("origin") if flights else None
+
+        def _p(v):
+            return _dt.fromisoformat(v.replace("Z", "+00:00")) if v else None
+
+        start, end = travel_times(_p(trip.start_at), origin, _p(trip.end_at), homes)
+        trip.travel_start_at = start.isoformat() if start else None
+        trip.travel_end_at = end.isoformat() if end else None
+        if days and start is not None:
+            days[0].start_time = start.strftime("%H:%M")
+        if days and end is not None:
+            days[-1].end_time = end.strftime("%H:%M")
+        recalculated += 1
+    db.commit()
+    if non_english:
+        logger.warning("C41: låsta resor med syfte som inte ser engelskt ut: %s", non_english)
+    logger.info("C41-migrering: %d namn → engelska, %d resor fick resetider",
+                renamed, recalculated)
+    return {"renamed": renamed, "recalculated": recalculated,
+            "locked_non_english_purpose": non_english}

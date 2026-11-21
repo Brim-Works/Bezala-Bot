@@ -128,6 +128,8 @@ def normalize_event(raw: dict) -> dict | None:
         "all_day": all_day,
         "event_type": raw.get("eventType") or "default",
         "organizer": organizer,
+        # C41 — Mikkos egna event (t.ex. heldagsevent "Malmö").
+        "organizer_self": bool((raw.get("organizer") or {}).get("self")),
         "transparency": raw.get("transparency") or "opaque",
         "visibility": raw.get("visibility") or "default",
         "self_response": self_response,

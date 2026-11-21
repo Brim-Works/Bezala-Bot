@@ -5118,6 +5118,11 @@ html[data-theme='B'] {
   font-size: 13px;
 }
 
+/* C41 — flygtider/flygplats i mindre text under resetiderna. */
+.cal-trip__small {
+  font-size: 11px;
+}
+
 .cal-trip__strong {
   color: var(--text);
 }

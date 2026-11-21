@@ -144,6 +144,11 @@ de inte laddats upp av appen.
 | `SESSION_SECRET` | Hemlighet för signering av session-cookies. Generera med `python3 -c "import secrets; print(secrets.token_hex(32))"` |
 | `PUBLIC_BASE_URL` | (C40, rekommenderad) Appens publika adress, t.ex. `https://bezala-bot-production.up.railway.app`. Används i MCP/OAuth-metadata. Utan den läses `X-Forwarded-Proto`/`Host`. |
 | `APP_OWNER` | (C40, valfri) Namnet på det enda konto som får använda MCP-connectorn. Default `mikko`. Byter du värde slutar alla gamla MCP-tokens att fungera. |
+| `TRIP_HOME_AIRPORT_BEFORE_DEPARTURE_MIN` | (C41) Minuter på flygplatsen före avgång från HEL. Default `60`. |
+| `TRIP_HOME_DRIVE_MIN` | (C41) Bilresa Borgå ↔ HEL i minuter, varje riktning. Default `40`. |
+| `TRIP_HOME_AIRPORT_AFTER_LANDING_MIN` | (C41) Minuter från landning på HEL till bilen. Default `20`. |
+| `TRIP_AIRPORT_DEFAULT_COUNTRY` | (C41) JSON: flygplats → arbetsland när flygplats ≠ arbetsort. Default `{"CPH":"SE"}`. |
+| `TRIP_CPH_KNOWN_CITIES` | (C41) Kända arbetsorter för CPH-resor. Default `Malmö,Helsingborg,Växjö,Ljungby`. |
 
 ## Deployment till Railway
 

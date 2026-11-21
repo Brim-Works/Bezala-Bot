@@ -31,8 +31,26 @@ Gruppering:
   - Saknas hemresa (eller går det > MAX_TRIP_DAYS till nästa flyg)
     flaggas resan `missing_return`.
 
-Destination normaliseras via IATA-kod till svenskt namn
-(CPH Köpenhamn, ARN Stockholm, GOT Göteborg, OSL Oslo, HEL Helsingfors).
+Destination normaliseras via IATA-kod till kanoniskt engelskt namn
+(CPH Copenhagen, ARN Stockholm, GOT Gothenburg, OSL Oslo, HEL Helsinki).
+
+C41 — restid och arbetsort:
+  * Hemänden får marginal (env, minuter): resan börjar
+    TRIP_HOME_AIRPORT_BEFORE_DEPARTURE_MIN (60) + TRIP_HOME_DRIVE_MIN (40)
+    före avgång från HEL och slutar TRIP_HOME_AIRPORT_AFTER_LANDING_MIN
+    (20) + TRIP_HOME_DRIVE_MIN (40) efter landning på HEL. Ingen marginal
+    på utlandsänden. Flygtiderna sparas oförändrade bredvid.
+  * Flygplats ≠ arbetsort: för flygplatser i TRIP_AIRPORT_DEFAULT_COUNTRY
+    (JSON, default {"CPH": "SE"}) härleds orten per dag i ordning:
+      0. Mikkos egna heldagsevent med bara ett ortnamn ("Malmö")
+      1. ort i mötestitel eller plats
+      2. mötesrum (prefix + kontor, t.ex. MAL-OAS, HEL-FAB)
+      3. hotell-event (namn eller adress)
+      4. kvitton samma dag (skickas in av store)
+    Kandidater: TRIP_CPH_KNOWN_CITIES (Malmö, Helsingborg, Växjö, Ljungby)
+    → Sweden, eller orter i flygplatsens eget land (Denmark). Dag utan
+    ledtråd ärver grannens ort; finns ingen alls blir orten tom, landet
+    default och resan flaggas `destination_unconfirmed`.
 
 Möten per resdag filtreras (se `is_relevant_meeting`).
 """
@@ -50,6 +68,7 @@ MAX_TRIP_DAYS = 21
 
 FLAG_MISSING_RETURN = "missing_return"
 FLAG_NEEDS_REVIEW = "needs_review"
+FLAG_DESTINATION_UNCONFIRMED = "destination_unconfirmed"
 
 # Event-typer från Google som aldrig är möten (normaliserade: gemener,
 # utan "_", så både API:ts "workingLocation" och "WORKING_LOCATION" matchar).
@@ -76,24 +95,25 @@ _STAY_NAME_RE = re.compile(
     r"^\s*(?:stay at|vistelse på|vistelse vid|majoitus:?)\s+(.+)$", re.IGNORECASE,
 )
 
-# IATA → (svenskt namn, landskod)
+# IATA → (kanoniskt engelskt namn, landskod). C41: engelska exonymer
+# (Copenhagen, Gothenburg, Helsinki) — svenska visas bara i UI.
 IATA_INFO: dict[str, tuple[str, str]] = {
-    "HEL": ("Helsingfors", "FI"), "CPH": ("Köpenhamn", "DK"),
+    "HEL": ("Helsinki", "FI"), "CPH": ("Copenhagen", "DK"),
     "ARN": ("Stockholm", "SE"), "BMA": ("Stockholm", "SE"),
-    "GOT": ("Göteborg", "SE"), "MMX": ("Malmö", "SE"),
+    "GOT": ("Gothenburg", "SE"), "MMX": ("Malmö", "SE"),
     "OSL": ("Oslo", "NO"), "BGO": ("Bergen", "NO"), "TRD": ("Trondheim", "NO"),
     "SVG": ("Stavanger", "NO"), "AAL": ("Aalborg", "DK"), "BLL": ("Billund", "DK"),
-    "AAR": ("Århus", "DK"), "RIX": ("Riga", "LV"), "TLL": ("Tallinn", "EE"),
+    "AAR": ("Aarhus", "DK"), "RIX": ("Riga", "LV"), "TLL": ("Tallinn", "EE"),
     "VNO": ("Vilnius", "LT"), "KEF": ("Reykjavik", "IS"),
     "LHR": ("London", "GB"), "LGW": ("London", "GB"), "STN": ("London", "GB"),
-    "AMS": ("Amsterdam", "NL"), "FRA": ("Frankfurt", "DE"), "MUC": ("München", "DE"),
+    "AMS": ("Amsterdam", "NL"), "FRA": ("Frankfurt", "DE"), "MUC": ("Munich", "DE"),
     "BER": ("Berlin", "DE"), "HAM": ("Hamburg", "DE"), "CDG": ("Paris", "FR"),
-    "ORY": ("Paris", "FR"), "BRU": ("Bryssel", "BE"), "ZRH": ("Zürich", "CH"),
-    "VIE": ("Wien", "AT"), "WAW": ("Warszawa", "PL"), "DUB": ("Dublin", "IE"),
-    "BCN": ("Barcelona", "ES"), "MAD": ("Madrid", "ES"), "FCO": ("Rom", "IT"),
-    "MXP": ("Milano", "IT"), "LIS": ("Lissabon", "PT"), "PRG": ("Prag", "CZ"),
+    "ORY": ("Paris", "FR"), "BRU": ("Brussels", "BE"), "ZRH": ("Zurich", "CH"),
+    "VIE": ("Vienna", "AT"), "WAW": ("Warsaw", "PL"), "DUB": ("Dublin", "IE"),
+    "BCN": ("Barcelona", "ES"), "MAD": ("Madrid", "ES"), "FCO": ("Rome", "IT"),
+    "MXP": ("Milan", "IT"), "LIS": ("Lisbon", "PT"), "PRG": ("Prague", "CZ"),
     "BUD": ("Budapest", "HU"), "IST": ("Istanbul", "TR"),
-    "OUL": ("Uleåborg", "FI"), "TKU": ("Åbo", "FI"), "TMP": ("Tammerfors", "FI"),
+    "OUL": ("Oulu", "FI"), "TKU": ("Turku", "FI"), "TMP": ("Tampere", "FI"),
     "RVN": ("Rovaniemi", "FI"),
 }
 
@@ -135,6 +155,189 @@ _WEBINAR_RE = re.compile(
 # Mötesrum med platskod, t.ex. "GOT-LIN-19-193", "OSL-SKO-3-Stockholm",
 # "HEL-RAU-6-Pixel".
 _ROOM_CODE_RE = re.compile(r"\b[A-Z]{3}-[A-Z]{3}-")
+
+# C41 — mötesrum: prefix + kontor (två första delarna) → (ort, land).
+# "HEL" ensamt räcker inte: HEL-RAU är Helsingfors (Rautatalo) men
+# HEL-FAB är Helsingborg.
+ROOM_OFFICES: dict[str, tuple[str, str]] = {
+    "MAL-OAS": ("Malmö", "SE"),
+    "HEL-FAB": ("Helsingborg", "SE"),
+    "VXO-SAM": ("Växjö", "SE"),
+    "LBY-LHQ": ("Ljungby", "SE"),
+    "GOT-LIN": ("Gothenburg", "SE"),
+    "STO-BLH": ("Stockholm", "SE"),
+    "OSL-SKO": ("Oslo", "NO"),
+    "HEL-RAU": ("Helsinki", "FI"),
+}
+_ROOM_OFFICE_RE = re.compile(r"\b([A-Z]{3}-[A-Z]{3})-")
+
+# C41 — orter som kan vara arbetsort (vikt token → (engelskt namn, land)).
+_WORK_CITIES: dict[str, tuple[str, str]] = {
+    "malmo": ("Malmö", "SE"), "helsingborg": ("Helsingborg", "SE"),
+    "vaxjo": ("Växjö", "SE"), "ljungby": ("Ljungby", "SE"), "lund": ("Lund", "SE"),
+    "stockholm": ("Stockholm", "SE"), "goteborg": ("Gothenburg", "SE"),
+    "gothenburg": ("Gothenburg", "SE"),
+    "copenhagen": ("Copenhagen", "DK"), "kobenhavn": ("Copenhagen", "DK"),
+    "kopenhamn": ("Copenhagen", "DK"), "aarhus": ("Aarhus", "DK"),
+    "arhus": ("Aarhus", "DK"), "odense": ("Odense", "DK"),
+    "aalborg": ("Aalborg", "DK"), "roskilde": ("Roskilde", "DK"),
+    "helsingor": ("Helsingør", "DK"), "billund": ("Billund", "DK"),
+    "oslo": ("Oslo", "NO"), "helsinki": ("Helsinki", "FI"),
+    "helsingfors": ("Helsinki", "FI"),
+}
+
+DEFAULT_AIRPORT_COUNTRY = {"CPH": "SE"}
+DEFAULT_CPH_KNOWN_CITIES = ("Malmö", "Helsingborg", "Växjö", "Ljungby")
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, "").strip() or default)
+    except ValueError:
+        return default
+
+
+def travel_margins() -> tuple[int, int, int]:
+    """(före avgång på flygplatsen, bilresa, efter landning) i minuter."""
+    return (
+        _env_int("TRIP_HOME_AIRPORT_BEFORE_DEPARTURE_MIN", 60),
+        _env_int("TRIP_HOME_DRIVE_MIN", 40),
+        _env_int("TRIP_HOME_AIRPORT_AFTER_LANDING_MIN", 20),
+    )
+
+
+def airport_default_country() -> dict[str, str]:
+    """TRIP_AIRPORT_DEFAULT_COUNTRY='{"CPH":"SE"}' (JSON, går att utöka)."""
+    import json
+
+    raw = os.environ.get("TRIP_AIRPORT_DEFAULT_COUNTRY", "").strip()
+    if raw:
+        try:
+            data = json.loads(raw)
+            if isinstance(data, dict):
+                return {str(k).upper(): str(v).upper() for k, v in data.items()}
+        except ValueError:
+            pass
+    return dict(DEFAULT_AIRPORT_COUNTRY)
+
+
+def known_cities(airport: str) -> list[str]:
+    """Kända arbetsorter för en flygplats (TRIP_<IATA>_KNOWN_CITIES)."""
+    raw = os.environ.get(f"TRIP_{airport}_KNOWN_CITIES", "").strip()
+    if raw:
+        return [c.strip() for c in raw.split(",") if c.strip()]
+    return list(DEFAULT_CPH_KNOWN_CITIES) if airport == "CPH" else []
+
+
+def _candidates(airport: str) -> dict[str, tuple[str, str]]:
+    """Vikt token → (ort, land) som får bli arbetsort för flygplatsen:
+    kända orter (→ flygplatsens default-land) + orter i flygplatsens eget
+    land (t.ex. en annan dansk ort → Denmark)."""
+    default_cc = airport_default_country().get(airport) or iata_country(airport)
+    own_cc = iata_country(airport)
+    known = {_fold(c) for c in known_cities(airport)}
+    out: dict[str, tuple[str, str]] = {}
+    for tok, (city, cc) in _WORK_CITIES.items():
+        if _fold(city) in known or tok in known:
+            out[tok] = (city, default_cc or cc)
+        elif cc == own_cc:
+            out[tok] = (city, cc)
+    for name in known_cities(airport):
+        tok = _fold(name)
+        if tok not in out:
+            out[tok] = (name, default_cc or "")
+    return out
+
+
+def _cities_in(text: str, cands: dict[str, tuple[str, str]]) -> list[tuple[str, str]]:
+    out = []
+    for tok in _tokens(text):
+        if tok in cands and cands[tok] not in out:
+            out.append(cands[tok])
+    return out
+
+
+def _room_cities(location: str, cands: dict[str, tuple[str, str]]) -> list[tuple[str, str]]:
+    out = []
+    names = {c for c, _ in cands.values()}
+    for code in _ROOM_OFFICE_RE.findall(location or ""):
+        office = ROOM_OFFICES.get(code)
+        if office and office[0] in names:
+            hit = next(v for v in cands.values() if v[0] == office[0])
+            if hit not in out:
+                out.append(hit)
+    return out
+
+
+def _pick(hits: list[tuple[str, str]]) -> tuple[str, str] | None:
+    """Vanligaste orten (vid lika: den som kom först)."""
+    if not hits:
+        return None
+    counts: dict[tuple[str, str], int] = {}
+    for h in hits:
+        counts[h] = counts.get(h, 0) + 1
+    return max(counts, key=lambda h: (counts[h], -hits.index(h)))
+
+
+def is_city_marker(ev: dict, cands: dict[str, tuple[str, str]]) -> tuple[str, str] | None:
+    """Mikkos eget heldagsevent med bara ett ortnamn som titel ("Malmö")."""
+    if not ev.get("all_day"):
+        return None
+    if not (ev.get("organizer_self") or int(ev.get("attendees_other") or 0) == 0):
+        return None
+    toks = _tokens(ev.get("summary") or "")
+    if len(toks) != 1 or toks[0] not in cands:
+        return None
+    return cands[toks[0]]
+
+
+def resolve_work_city(
+    day: date,
+    airport: str,
+    day_meetings: list[dict],
+    all_events: list[dict],
+    hotels: list[dict],
+    receipt_texts: list[str] = (),
+) -> tuple[tuple[str, str] | None, str, bool]:
+    """Härled arbetsort för en dag. Returnerar ((ort, land) | None,
+    källa, på_kontoret)."""
+    cands = _candidates(airport)
+    markers = [
+        m for m in (is_city_marker(e, cands) for e in all_events
+                    if _start_date(e) <= day <= _end_date(e))
+        if m
+    ]
+    room_hits = []
+    for m in day_meetings:
+        room_hits += _room_cities(m.get("location") or "", cands)
+    hit = _pick(markers)
+    if hit:
+        return hit, "calendar_marker", hit in room_hits
+    title_hits = []
+    for m in day_meetings:
+        title_hits += _cities_in(f"{m.get('summary') or ''} {m.get('location') or ''}", cands)
+    hit = _pick(title_hits)
+    if hit:
+        return hit, "meeting_title", hit in room_hits
+    hit = _pick(room_hits)
+    if hit:
+        return hit, "meeting_room", True
+    hotel_hits = []
+    for h in hotels:
+        s = _start_date(h)
+        last_night = max(s, _end_date(h) - timedelta(days=1))
+        if s <= day <= last_night + timedelta(days=1):
+            hotel_hits += _cities_in(f"{h.get('summary') or ''} {h.get('location') or ''}", cands)
+    hit = _pick(hotel_hits)
+    if hit:
+        return hit, "hotel", False
+    receipt_hits = []
+    for text in receipt_texts:
+        receipt_hits += _cities_in(text, cands)
+    hit = _pick(receipt_hits)
+    if hit:
+        return hit, "receipt", False
+    return None, "unconfirmed", False
 
 
 # ---------- Hjälpare ----------
@@ -294,7 +497,7 @@ def classify(ev: dict) -> str:
 
 
 def flight_destination(ev: dict) -> str | None:
-    """Svenskt stadsnamn för flygets destination (eller None)."""
+    """Engelskt stadsnamn för flygets destination (eller None)."""
     info = parse_flight(ev)
     if not info:
         return None
@@ -500,16 +703,61 @@ def _flight_dict(f: dict) -> dict:
     }
 
 
+def _helsinki():
+    from zoneinfo import ZoneInfo
+
+    return ZoneInfo("Europe/Helsinki")
+
+
+def _aware_dt(value) -> datetime | None:
+    if not isinstance(value, datetime):
+        return None
+    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+
+
+def travel_times(
+    first_flight_start, first_origin: str | None,
+    return_flight_end, homes: tuple[str, ...],
+) -> tuple[datetime | None, datetime | None]:
+    """Resans start/slut (Helsingfors-tid) med marginal på hemänden.
+
+    Start = avgång − (före avgång + bilresa) om flyget går från hemorten
+    (eller avreseort saknas — resans första flyg utgår hemifrån).
+    Slut = landning + (efter landning + bilresa). Ingen hemresa → None.
+    """
+    before, drive, after = travel_margins()
+    hel = _helsinki()
+    start = _aware_dt(first_flight_start)
+    if start is not None:
+        if first_origin is None or first_origin in homes:
+            start = start - timedelta(minutes=before + drive)
+        start = start.astimezone(hel)
+    end = _aware_dt(return_flight_end)
+    if end is not None:
+        end = (end + timedelta(minutes=after + drive)).astimezone(hel)
+    return start, end
+
+
 def _build_trip(
     raw: dict,
     hotels: list[dict],
     meetings: list[dict],
     next_start: date | None,
+    homes: tuple[str, ...] = DEFAULT_HOME_IATA,
+    receipts_by_date: dict[str, list[str]] | None = None,
 ) -> dict:
+    from app.services.trip_english import combine_purposes, generate_purpose
+
     flights = raw["flights"]
     first = flights[0]
     ret = raw["return_flight"]
+    first_origin = raw["outbound"][0][1].get("origin")
+    travel_start, travel_end = travel_times(
+        first["start"], first_origin, ret["end"] if ret else None, homes,
+    )
     start_date = _start_date(first)
+    if travel_start is not None:
+        start_date = min(start_date, travel_start.date())
 
     span_end = _end_date(ret) if ret else _end_date(flights[-1])
     trip_hotels = [
@@ -518,6 +766,8 @@ def _build_trip(
     ]
     if ret:
         end_date = _end_date(ret)
+        if travel_end is not None:
+            end_date = max(end_date, travel_end.date())
     else:
         # Saknad hemresa: förläng genom sista hotellnatten, men aldrig
         # in i nästa resa.
@@ -529,29 +779,39 @@ def _build_trip(
         (f, iata_name(i["dest"]) if i["dest"] else (i["dest_text"] or None), i["dest"])
         for f, i in raw["outbound"]
     ]
-    dests: list[str] = []
-    for _, name, _code in outbound:
-        if name and name not in dests:
-            dests.append(name)
-    countries: list[str] = []
-    for _, _name, code in outbound:
-        c = iata_country(code)
-        if c and c not in countries:
-            countries.append(c)
-
-    trip_cities = list(dests)
-    day_meetings_all = [m for m in meetings if is_relevant_meeting(m, trip_cities)]
+    airport_cities = [name for _, name, _ in outbound if name]
+    day_meetings_all = [m for m in meetings if is_relevant_meeting(m, airport_cities)]
+    inferred_airports = airport_default_country()
 
     days = []
     d = start_date
     while d <= end_date:
-        day_dest = None
-        for f, name, _code in outbound:
-            if _start_date(f) <= d and name:
-                day_dest = name
+        airport, airport_city = None, None
+        for f, name, code in outbound:
+            if _start_date(f) <= d:
+                airport, airport_city = code, name
+        if airport is None and outbound:
+            airport, airport_city = outbound[0][2], outbound[0][1]
         day_flights = [f for f in flights if _start_date(f) == d]
         day_hotel = next((h for h in trip_hotels if _covers(h, d)), None)
         day_meetings = [m for m in day_meetings_all if _meeting_on(m, d)]
+
+        if airport in inferred_airports:
+            hit, source, office = resolve_work_city(
+                d, airport, day_meetings, meetings, trip_hotels,
+                (receipts_by_date or {}).get(d.isoformat(), []),
+            )
+            city, country = hit if hit else (None, None)
+        else:
+            source = "airport"
+            city, country = airport_city, iata_country(airport)
+            office = False
+            if city:
+                office = any(
+                    ROOM_OFFICES.get(code, ("",))[0] == city
+                    for m in day_meetings
+                    for code in _ROOM_OFFICE_RE.findall(m.get("location") or "")
+                )
 
         source_ids = [f["id"] for f in day_flights]
         if day_hotel:
@@ -560,9 +820,20 @@ def _build_trip(
 
         days.append({
             "date": d.isoformat(),
-            "start_time": _hhmm(first["start"]) if d == start_date else None,
-            "end_time": _hhmm(ret["end"]) if ret and d == end_date else None,
-            "destination": day_dest,
+            "start_time": (
+                travel_start.strftime("%H:%M")
+                if travel_start is not None and d == travel_start.date() else None
+            ),
+            "end_time": (
+                travel_end.strftime("%H:%M")
+                if travel_end is not None and d == travel_end.date() else None
+            ),
+            "airport": airport,
+            "destination": city,
+            "country": country,
+            "destination_source": source,
+            "_office": office,
+            "_meetings_raw": day_meetings,
             "meetings": [_meeting_dict(m) for m in day_meetings],
             "hotel": (
                 {"id": day_hotel["id"], "name": hotel_name(day_hotel)}
@@ -571,6 +842,38 @@ def _build_trip(
             "source_event_ids": source_ids,
         })
         d += timedelta(days=1)
+
+    # Dag utan ledtråd ärver närmaste dag med samma flygplats (föregående
+    # först). Finns ingen alls: tom ort, default-land, flagga.
+    flags = list(raw["flags"])
+    for i, day in enumerate(days):
+        if day["destination_source"] != "unconfirmed":
+            continue
+        same = [x for x in days if x["airport"] == day["airport"]
+                and x["destination_source"] not in ("unconfirmed", "carried")]
+        prev = [x for x in same if x["date"] < day["date"]]
+        nxt = [x for x in same if x["date"] > day["date"]]
+        src = prev[-1] if prev else (nxt[0] if nxt else None)
+        if src is not None:
+            day["destination"], day["country"] = src["destination"], src["country"]
+            day["destination_source"] = "carried"
+        else:
+            day["country"] = inferred_airports.get(day["airport"]) or iata_country(day["airport"])
+            if FLAG_DESTINATION_UNCONFIRMED not in flags:
+                flags.append(FLAG_DESTINATION_UNCONFIRMED)
+
+    for day in days:
+        day["purpose"] = generate_purpose(
+            day.pop("_meetings_raw"), day["destination"], office=day.pop("_office"),
+        )
+
+    dests: list[str] = []
+    countries: list[str] = []
+    for day in days:
+        if day["destination"] and day["destination"] not in dests:
+            dests.append(day["destination"])
+        if day["country"] and day["country"] not in countries:
+            countries.append(day["country"])
 
     all_ids: list[str] = []
     for f in flights:
@@ -589,16 +892,16 @@ def _build_trip(
             _flight_dict(f) for f, _ in raw["alternatives"]
         ]
 
-    flags = list(raw["flags"])
     return {
         "start_date": start_date.isoformat(),
         "end_date": end_date.isoformat(),
         "start_at": _iso(first["start"]),
         "end_at": _iso(ret["end"]) if ret else None,
+        "travel_start_at": _iso(travel_start),
+        "travel_end_at": _iso(travel_end),
         "destination": " → ".join(dests) if dests else None,
-        "country": countries[0] if len(countries) == 1 else (
-            ",".join(countries) if countries else None
-        ),
+        "country": ",".join(countries) if countries else None,
+        "purpose": combine_purposes([d["purpose"] for d in days]),
         "open_return": FLAG_MISSING_RETURN in flags,
         "flags": flags,
         "flights": [_flight_dict(f) for f in flights],
@@ -609,8 +912,15 @@ def _build_trip(
     }
 
 
-def detect_trips(events: Iterable[dict], homes: Iterable[str] | None = None) -> dict:
-    """Huvudfunktion. Returnerar {'trips', 'ungrouped', 'stats'}."""
+def detect_trips(
+    events: Iterable[dict],
+    homes: Iterable[str] | None = None,
+    receipts_by_date: dict[str, list[str]] | None = None,
+) -> dict:
+    """Huvudfunktion. Returnerar {'trips', 'ungrouped', 'stats'}.
+
+    receipts_by_date: {'YYYY-MM-DD': [kvittotext, …]} — kvitton i boten,
+    sista ledtråden för arbetsort (C41)."""
     home_codes = _homes_to_iata(homes)
     evs = sorted((e for e in events if e and e.get("start") is not None), key=_sort_key)
 
@@ -632,7 +942,7 @@ def detect_trips(events: Iterable[dict], homes: Iterable[str] | None = None) -> 
     trips = []
     for i, r in enumerate(raw_trips):
         nxt = _start_date(raw_trips[i + 1]["flights"][0]) if i + 1 < len(raw_trips) else None
-        trips.append(_build_trip(r, hotels, meetings, nxt))
+        trips.append(_build_trip(r, hotels, meetings, nxt, home_codes, receipts_by_date))
 
     used_hotels = {h["id"] for t in trips for h in t["hotels"]}
     for h in hotels:
@@ -662,6 +972,9 @@ def detect_trips(events: Iterable[dict], homes: Iterable[str] | None = None) -> 
             "open_return": sum(1 for t in trips if t["open_return"]),
             "missing_return": sum(1 for t in trips if FLAG_MISSING_RETURN in t["flags"]),
             "needs_review": sum(1 for t in trips if FLAG_NEEDS_REVIEW in t["flags"]),
+            "destination_unconfirmed": sum(
+                1 for t in trips if FLAG_DESTINATION_UNCONFIRMED in t["flags"]
+            ),
             "ungrouped": len(ungrouped),
         },
     }

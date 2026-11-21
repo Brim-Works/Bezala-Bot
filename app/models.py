@@ -490,6 +490,10 @@ class CalendarTrip(Base):
     purpose = Column(Text, nullable=True)  # syfte, på engelska
     edited_at = Column(DateTime, nullable=True)
     approved_at = Column(DateTime, nullable=True)
+    # C41 — resetider (hemifrån → hem, med marginal på hemänden). start_at/
+    # end_at ovan är flygtiderna (oförändrade). Netvisor använder resetiderna.
+    travel_start_at = Column(String(40), nullable=True)
+    travel_end_at = Column(String(40), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
@@ -525,6 +529,11 @@ class CalendarTripDay(Base):
     # C40 — per dag: land + syfte (engelska)
     country = Column(String(20), nullable=True)
     purpose = Column(Text, nullable=True)
+    # C41 — ankomstflygplats (IATA) skild från arbetsort (destination) och
+    # varifrån orten kom: calendar_marker | meeting_title | meeting_room |
+    # hotel | receipt | carried | airport | unconfirmed | manual
+    airport = Column(String(8), nullable=True)
+    destination_source = Column(String(32), nullable=True)
 
 
 # --- C40 — OAuth för MCP-connectorn (claude.ai) ----------------------------
@@ -559,6 +568,30 @@ class McpOAuthCode(Base):
     subject = Column(String(255), nullable=False)
     expires_at = Column(DateTime, nullable=False)
     used_at = Column(DateTime, nullable=True)
+
+
+class McpOAuthPending(Base):
+    """C41 — pågående authorize-begäran (från claude.ai till Tillåt/Avbryt).
+
+    Lagras i databasen, inte i sessionskakan, så att den överlever
+    inloggningen och ett dubbelklick på Tillåt. Id:t och csrf-värdet är
+    slumpade; bara ägarkontot kan se consent-sidan där csrf visas.
+    """
+
+    __tablename__ = "mcp_oauth_pending"
+
+    id = Column(String(64), primary_key=True)
+    csrf = Column(String(64), nullable=False)
+    client_id = Column(String(64), nullable=False)
+    redirect_uri = Column(Text, nullable=False)
+    state = Column(Text, nullable=True)
+    code_challenge = Column(String(128), nullable=False)
+    resource = Column(Text, nullable=False)
+    scope = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    completed_at = Column(DateTime, nullable=True)
+    decision = Column(String(16), nullable=True)  # allow | deny
 
 
 class McpOAuthToken(Base):

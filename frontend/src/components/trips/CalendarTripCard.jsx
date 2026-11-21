@@ -15,6 +15,23 @@ function fill(template, params) {
   );
 }
 
+/* C41 — databasen har engelska värden (Copenhagen, SE); UI översätter. */
+function cityLabel(c, value) {
+  if (!value) return value;
+  return value
+    .split(' → ')
+    .map((part) => (c.cities && c.cities[part]) || part)
+    .join(' → ');
+}
+
+function countryLabel(c, code) {
+  if (!code) return '';
+  return code
+    .split(',')
+    .map((cc) => (c.countries && c.countries[cc.trim()]) || cc.trim())
+    .join(', ');
+}
+
 function statusPill(status) {
   if (status === 'approved') return 'pill pill--ok mono';
   if (status === 'edited') return 'pill pill--warn mono';
@@ -46,6 +63,11 @@ export default function CalendarTripCard({ trip }) {
                 {c.openReturn}
               </span>
             ) : null}
+            {(trip.flags || []).includes('destination_unconfirmed') ? (
+              <span className="pill pill--warn mono" data-testid={`calendar-trip-unconfirmed-${trip.id}`}>
+                {c.unconfirmed}
+              </span>
+            ) : null}
             {(trip.flags || []).includes('needs_review') ? (
               <span className="pill pill--warn mono" data-testid={`calendar-trip-review-${trip.id}`}>
                 {c.needsReview}
@@ -53,10 +75,10 @@ export default function CalendarTripCard({ trip }) {
             ) : null}
           </div>
           <h4 className="trip-card__title">
-            {trip.destination || c.unknownDestination}
+            {cityLabel(c, trip.destination) || c.unknownDestination}
           </h4>
           <div className="trip-card__meta mono muted">
-            {range}{trip.country ? ` · ${trip.country}` : ''}
+            {range}{trip.country ? ` · ${countryLabel(c, trip.country)}` : ''}
           </div>
           {trip.purpose ? (
             <div className="cal-trip__line" data-testid={`calendar-trip-purpose-${trip.id}`}>
@@ -76,15 +98,29 @@ export default function CalendarTripCard({ trip }) {
           <li key={day.date} className="cal-trip__day" data-testid={`calendar-trip-day-${day.date}`}>
             <div className="cal-trip__day-head">
               <span className="mono cal-trip__date">{day.date}</span>
-              {day.destination ? <span>{day.destination}</span> : null}
-              {day.country ? <span className="mono muted">{day.country}</span> : null}
+              {day.destination ? <span>{cityLabel(c, day.destination)}</span> : null}
+              {day.country ? (
+                <span className="mono muted">{countryLabel(c, day.country)}</span>
+              ) : null}
+              {day.airport && day.airport !== 'HEL' ? (
+                <span className="mono muted cal-trip__small">{fill(c.airport, { code: day.airport })}</span>
+              ) : null}
               {day.start_time ? (
-                <span className="mono muted">{fill(c.departure, { time: day.start_time })}</span>
+                <span className="mono">{fill(c.departure, { time: day.start_time })}</span>
               ) : null}
               {day.end_time ? (
-                <span className="mono muted">{fill(c.arrival, { time: day.end_time })}</span>
+                <span className="mono">{fill(c.arrival, { time: day.end_time })}</span>
               ) : null}
             </div>
+            {day.flight_departure || day.flight_arrival ? (
+              <div className="mono muted cal-trip__small" data-testid={`calendar-trip-flight-${day.date}`}>
+                {day.flight_departure && day.flight_arrival
+                  ? fill(c.flightTimes, { dep: day.flight_departure, arr: day.flight_arrival })
+                  : day.flight_departure
+                    ? fill(c.flightDeparture, { time: day.flight_departure })
+                    : fill(c.flightArrival, { time: day.flight_arrival })}
+              </div>
+            ) : null}
             {day.hotel ? (
               <div className="cal-trip__line muted">
                 {c.hotel}: <span className="cal-trip__strong">{day.hotel.name}</span>

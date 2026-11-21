@@ -31,8 +31,12 @@ INSTRUCTIONS = (
     "Bezala Bot travel review. Trips are detected from Mikko's Google Calendar. "
     "Use these tools to review, correct and approve trips. Edits only change "
     "Bezala Bot's own trip list; nothing is sent to Bezala or Netvisor. "
-    "Times without a timezone are Helsinki time. Write purposes in English. "
-    "Ask Mikko before approving."
+    "Times without a timezone are Helsinki time. Everything that goes to Netvisor "
+    "is in English: purpose, destination (English city name, e.g. 'Copenhagen', "
+    "'Gothenburg', 'Malmö') and country (ISO code). Trip times are travel times "
+    "(leaving home → back home: 100 min before a HEL departure, 60 min after a HEL "
+    "landing); flight times are shown separately. A flight to CPH usually means "
+    "work in Sweden (Malmö, Helsingborg, Växjö, Ljungby). Ask Mikko before approving."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -70,11 +74,13 @@ async def list_trips(
     date_to: str | None = None,
     flagged_only: bool = False,
 ) -> dict:
-    """List calendar trips: id, dates, destination, country, purpose, status, flags.
+    """List calendar trips: id, dates, destination (work city, English), country,
+    purpose (English), status, flags, travel times and flight times (Helsinki).
 
     status: 'suggested' | 'edited' | 'approved'. date_from/date_to: YYYY-MM-DD
     (trips overlapping the range). flagged_only: only trips with flags
-    ('needs_review' = pick the outbound flight, 'missing_return' = no return flight found).
+    ('needs_review' = pick the outbound flight, 'missing_return' = no return flight
+    found, 'destination_unconfirmed' = work city unknown, ask Mikko).
     """
     trips = await _run(edit.list_trips, status=status, date_from=date_from,
                        date_to=date_to, flagged_only=flagged_only)
@@ -83,8 +89,11 @@ async def list_trips(
 
 @mcp.tool()
 async def get_trip(trip_id: int) -> dict:
-    """Full trip: every day with times (UTC + Helsinki), destination, country,
-    hotel, meetings, purpose, linked receipts and flight options."""
+    """Full trip: travel times (travel_start/travel_end) and flight times
+    (flight_departure/flight_arrival), every day with travel times (UTC + Helsinki),
+    arrival airport, work city (destination) and where it came from
+    (destination_source), country + English name, hotel, meetings, purpose,
+    linked receipts, flight options and the prepared Netvisor line description."""
     return await _run(edit.get_trip, trip_id)
 
 
@@ -100,10 +109,14 @@ async def update_trip(
 ) -> dict:
     """Edit a trip. Sets status to 'edited' (an approved trip must be approved again).
 
-    start/end: ISO datetime, e.g. '2026-08-25T07:25' (Helsinki) or with offset/Z.
-    country: ISO alpha-2, comma-separated for several ('DK,NO'). purpose: in English.
+    start/end: TRAVEL times (leaving home/office, back home), ISO datetime, e.g.
+    '2026-08-25T06:15' (Helsinki) or with offset/Z. Flight times are not changed.
+    destination: work city in English. country: ISO alpha-2, comma-separated for
+    several ('SE,NO'). purpose: one sentence in English (sent to Netvisor).
     selected_flight_id: for 'needs_review' trips, the flight_id from flight_options
-    that Mikko actually took. Only omitted fields stay unchanged. Returns the updated trip.
+    that Mikko actually took (travel start is recalculated from it).
+    Only omitted fields stay unchanged. Returns the updated trip; non-English text
+    is saved but gives a 'warnings' entry.
     """
     return await _run(edit.update_trip, trip_id, start=start, end=end,
                       destination=destination, country=country, purpose=purpose,
@@ -121,8 +134,10 @@ async def update_trip_day(
     hotel: str | None = None,
     purpose: str | None = None,
 ) -> dict:
-    """Edit one day of a trip. date: YYYY-MM-DD. Times HH:MM Helsinki time.
-    Pass an empty string to clear a field. Status → 'edited'. Returns the updated trip."""
+    """Edit one day of a trip. date: YYYY-MM-DD. Times HH:MM Helsinki (travel times).
+    destination = work city in English (e.g. 'Malmö', 'Copenhagen'); purpose in
+    English. Pass an empty string to clear a field. Status → 'edited'.
+    Returns the updated trip (with 'warnings' if a field is not in English)."""
     return await _run(edit.update_trip_day, trip_id, date, start_time=start_time,
                       end_time=end_time, destination=destination, country=country,
                       hotel=hotel, purpose=purpose)
@@ -140,7 +155,7 @@ async def add_trip_day(
     purpose: str | None = None,
 ) -> dict:
     """Add a day to a trip (extends the trip if outside it). date: YYYY-MM-DD.
-    Status → 'edited'. Returns the updated trip."""
+    destination/purpose in English. Status → 'edited'. Returns the updated trip."""
     return await _run(edit.add_trip_day, trip_id, date, start_time=start_time,
                       end_time=end_time, destination=destination, country=country,
                       hotel=hotel, purpose=purpose)

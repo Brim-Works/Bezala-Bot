@@ -105,12 +105,18 @@ _CALENDAR_TRIPS_ADDITIONS = {
     "purpose": "TEXT",
     "edited_at": "TIMESTAMP",
     "approved_at": "TIMESTAMP",
+    # C41 — resetider
+    "travel_start_at": "VARCHAR(40)",
+    "travel_end_at": "VARCHAR(40)",
 }
 
 _CALENDAR_TRIP_DAYS_ADDITIONS = {
     # C40 — per dag: land + syfte
     "country": "VARCHAR(20)",
     "purpose": "TEXT",
+    # C41 — flygplats skild från arbetsort
+    "airport": "VARCHAR(8)",
+    "destination_source": "VARCHAR(32)",
 }
 
 _INDEXES = [
