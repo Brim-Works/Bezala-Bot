@@ -523,3 +523,32 @@ def test_seed_adds_airport_recovery_html_only_sender(SessionLocal):
         assert seed_c45_html_only_senders(db) == 0
         pats = [s.sender_pattern for s in db.query(HtmlOnlySender).all()]
     assert "support@airportrecovery.com" in pats
+
+
+def test_c45b_reprocesses_known_but_rejected_reply_receipt(SessionLocal):
+    from app.models import ProcessedMessage
+    from app.services import c45_migrations as c45
+    from app.services import pipeline as pl
+
+    sender = "Concierge Agent1 <support@airportrecovery.com>"
+    with SessionLocal() as db:
+        db.add_all([
+            ProcessedMessage(message_id="m1", sender=sender, status="skipped:not_receipt"),
+            ProcessedMessage(message_id="m3", sender=sender, status="skipped:not_receipt"),
+            ProcessedMessage(message_id="ok", sender=sender, status="saved"),
+        ])
+        db.commit()
+    msgs = {
+        "m1": _msg("m1", sender=sender, text="Your lost item was not turned in."),
+        "m3": _msg("m3", sender=sender, text=AIRPORT_RECEIPT),
+    }
+    gmail = MagicMock()
+    gmail.fetch_message.side_effect = lambda mid: msgs[mid]
+    with patch.object(pl, "GmailClient", return_value=gmail), \
+         patch.object(pl, "force_process_message_ids",
+                      return_value={"processed": 1, "details": []}) as fp:
+        out = c45.reprocess_known_reply_receipts()
+        again = c45.reprocess_known_reply_receipts()
+    fp.assert_called_once_with(["m3"])
+    assert out["forced"] == ["m3"] and out["candidates"] == 3
+    assert again == {"skipped": "already_done"}
