@@ -77,6 +77,41 @@ class ProcessedMessage(Base):
     upload_source = Column(String(20), nullable=True, default="gmail")
     manual_uploaded_at = Column(DateTime, nullable=True)
     manual_comment = Column(Text, nullable=True)
+    # C43 — dokumenttyp. NULL = vanligt kvitto. 'change_fee' = Finnair/
+    # Amadeus-ombokning (prisskillnad/ändringsavgift) — räknas inte som
+    # resans flygbiljett.
+    kind = Column(String(32), nullable=True)
+
+
+class BillLineStatus(Base):
+    """C43 — Mikkos beslut om en Bezala-kortrad (bill_line) som inte ska
+    larma i list_missing.
+
+    status:
+      'private_expense'        — privat köp på jobbkortet; Bezala-kommentar
+                                 "Private expense – to be deducted from
+                                 salary." och lönen drar av beloppet.
+      'receipt_not_available'  — leverantören ger inget kvitto (förklaring
+                                 i note).
+    Inget skickas för attest automatiskt.
+    """
+
+    __tablename__ = "bill_line_statuses"
+
+    bill_line_id = Column(String(64), primary_key=True)
+    status = Column(String(32), nullable=False)
+    note = Column(Text, nullable=True)
+    # Snapshot av kortraden när statusen sattes (för UI/rapport).
+    description = Column(Text, nullable=True)
+    amount = Column(Float, nullable=True)
+    currency = Column(String(16), nullable=True)
+    line_date = Column(String(32), nullable=True)
+    # Bezala-draft skapad för raden (om Mikko bad om det).
+    bezala_transaction_id = Column(String(255), nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
 
 
 class SavedFile(Base):

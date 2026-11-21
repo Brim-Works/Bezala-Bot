@@ -58,6 +58,8 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "upload_source": "VARCHAR(20) DEFAULT 'gmail'",
     "manual_uploaded_at": "TIMESTAMP",
     "manual_comment": "TEXT",
+    # C43 — dokumenttyp ('change_fee' för Finnair-ombokningar)
+    "kind": "VARCHAR(32)",
 }
 
 _APP_SETTINGS_ADDITIONS = {

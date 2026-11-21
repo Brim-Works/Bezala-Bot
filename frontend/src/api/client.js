@@ -106,6 +106,18 @@ export const api = {
       method: 'POST',
       body: { missing_receipt_id: missingReceiptId },
     }),
+  // C43 — kortradsstatus: 'private_expense' | 'receipt_not_available'.
+  // createDraft (bara private_expense) skapar ett Bezala-UTKAST med engelsk
+  // kommentar — skickas aldrig för attest.
+  setBillLineStatus: (billLineId, { status, note = null, createDraft = false }) =>
+    request(`/api/bezala/bill-lines/${encodeURIComponent(billLineId)}/status`, {
+      method: 'POST',
+      body: { status, note, create_draft: createDraft },
+    }),
+  clearBillLineStatus: (billLineId) =>
+    request(`/api/bezala/bill-lines/${encodeURIComponent(billLineId)}/status`, {
+      method: 'DELETE',
+    }),
   // C33 / FAS 7a — manuell upload av fysiskt kvitto. file = File-objekt.
   // billLineId valfri — om satt kopplas raden direkt till Bezala-kortraden.
   // paymentMethod = 'company_card' (default) eller 'private_card' (stub).

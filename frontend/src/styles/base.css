@@ -4129,6 +4129,34 @@ html[data-theme='B'] {
   width: 100%;
 }
 
+/* C43 — kamera direkt (mobil) */
+.tt-upload-card-v2__camera {
+  width: 100%;
+  min-height: 44px;
+  font-size: 15px;
+}
+
+/* C43 — privat utlägg */
+.tt-upload-card-v2__private {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 10px;
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-md);
+  font-size: 13px;
+}
+.tt-upload-card-v2__private.is-flagged {
+  border-color: var(--warn);
+  border-style: solid;
+}
+.tt-upload-card-v2__private-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+}
+
 .tt-upload-card-v2__error {
   margin: 0;
   padding: 8px 10px;

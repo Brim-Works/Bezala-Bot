@@ -125,6 +125,11 @@ def _msg_date(msg: ProcessedMessage) -> date | None:
 
 
 def _is_flight(msg: ProcessedMessage) -> bool:
+    # C43 — en Finnair-ombokning (change_fee) är ingen flygbiljett: den ska
+    # inte bli resans flygkvitto/ankare, men kopplas fortfarande till resan
+    # som vanlig resekostnad (kategorin är fortfarande flyg/travel).
+    if getattr(msg, "kind", None) == "change_fee":
+        return False
     if msg.category and "flyg" in msg.category.lower():
         return True
     haystack = " ".join([

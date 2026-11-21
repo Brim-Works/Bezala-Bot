@@ -268,6 +268,9 @@ def test_valid_token_works(env):
     assert names == {
         "list_trips", "get_trip", "update_trip", "update_trip_day", "add_trip_day",
         "remove_trip_day", "approve_trip", "unapprove_trip", "refresh_calendar",
+        # C43 — kortrader utan kvitto
+        "list_missing", "mark_private_expense", "mark_receipt_not_available",
+        "clear_bill_line_status",
     }
 
 

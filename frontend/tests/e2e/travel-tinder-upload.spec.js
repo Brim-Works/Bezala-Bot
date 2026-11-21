@@ -129,3 +129,54 @@ test('upload skickar payment_method=company_card och bill_line_id', async ({ pag
   expect(capturedForm).toContain(String(MISSING_ID));
   expect(capturedForm).toContain('biltvatt.pdf');
 });
+
+// C43 — mobil: kameraknappen laddar upp direkt utan extra klick.
+test('C43 — kameraknapp laddar upp och kopplar direkt', async ({ page }) => {
+  await setupTinderMocks(page);
+  let capturedForm = null;
+  await page.route('**/api/messages/upload', async (route) => {
+    capturedForm = route.request().postDataBuffer()?.toString('utf-8') || '';
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        message: { id: 1000, vendor: 'Porvoon Autopesu', file_name: 'foto.jpg' },
+        coupling: { ok: true, bill_line_id: String(MISSING_ID) },
+      }),
+    });
+  });
+
+  await page.goto('/travel-tinder');
+  const camera = page.getByTestId('tt-upload-camera-input');
+  await expect(camera).toHaveAttribute('capture', 'environment');
+  await expect(page.getByTestId('tt-upload-camera')).toBeVisible();
+  await camera.setInputFiles({
+    name: 'foto.jpg',
+    mimeType: 'image/jpeg',
+    buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0]),
+  });
+  await expect.poll(() => capturedForm).not.toBeNull();
+  expect(capturedForm).toContain('name="bill_line_id"');
+  expect(capturedForm).toContain(String(MISSING_ID));
+  expect(capturedForm).toContain('foto.jpg');
+});
+
+// C43 — privat utlägg markeras via knappen (inget skickas för attest).
+test('C43 — markera kortrad som privat utlägg', async ({ page }) => {
+  await setupTinderMocks(page);
+  let body = null;
+  await page.route(`**/api/bezala/bill-lines/${MISSING_ID}/status`, async (route) => {
+    body = route.request().postDataJSON();
+    route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({ bill_line_id: String(MISSING_ID), status: 'private_expense' }),
+    });
+  });
+
+  await page.goto('/travel-tinder');
+  await expect(page.getByTestId('tt-private-expense')).toBeVisible();
+  await page.getByTestId('tt-private-mark').click();
+  await expect.poll(() => body).not.toBeNull();
+  expect(body).toEqual({ status: 'private_expense', note: null, create_draft: false });
+});

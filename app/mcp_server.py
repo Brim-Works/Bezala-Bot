@@ -1,7 +1,10 @@
 """C40 — MCP-server (Streamable HTTP) på /mcp för Claude-chatten.
 
-Verktygen läser och ändrar BARA `calendar_trips` / `calendar_trip_days`.
-Inget skickas till Bezala eller Netvisor.
+Reseverktygen läser och ändrar BARA `calendar_trips` / `calendar_trip_days`.
+C43-verktygen (list_missing, mark_private_expense, mark_receipt_not_available,
+clear_bill_line_status) läser Bezalas saknade kvitton och skriver bara i
+`bill_line_statuses`; mark_private_expense(create_draft=True) skapar ett
+Bezala-UTKAST. Inget skickas för attest och inget går till Netvisor.
 
 Varje anrop kräver en giltig OAuth-access-token (se app/mcp_oauth.py).
 Utan token svarar /mcp 401 med `WWW-Authenticate: Bearer
@@ -36,7 +39,11 @@ INSTRUCTIONS = (
     "'Gothenburg', 'Malmö') and country (ISO code). Trip times are travel times "
     "(leaving home → back home: 100 min before a HEL departure, 60 min after a HEL "
     "landing); flight times are shown separately. A flight to CPH usually means "
-    "work in Sweden (Malmö, Helsingborg, Växjö, Ljungby). Ask Mikko before approving."
+    "work in Sweden (Malmö, Helsingborg, Växjö, Ljungby). Ask Mikko before approving. "
+    "Receipts: list_missing shows company-card rows in Bezala that still lack a "
+    "receipt. Rows flagged 'possible_private' (parking outside any trip) — ask Mikko "
+    "whether it was private. mark_private_expense / mark_receipt_not_available only "
+    "on Mikko's word. Nothing is ever submitted for approval in Bezala."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -195,6 +202,112 @@ async def refresh_calendar() -> dict:
                 for u in result.get("ungrouped", [])
             ]
         return result
+
+    return await _run(work)
+
+
+# ---------- C43: kortrader utan kvitto ----------
+
+
+def _missing_rows() -> list[dict]:
+    from app.services.bezala_client import BezalaClient
+    from app.services.bill_line_status import normalize_missing_receipt
+
+    bezala = BezalaClient()
+    try:
+        return [normalize_missing_receipt(r) for r in bezala.list_missing_receipts()]
+    finally:
+        bezala.close()
+
+
+def _snapshot(bill_line_id: str) -> dict | None:
+    try:
+        return next(
+            (r for r in _missing_rows() if str(r.get("id")) == str(bill_line_id)),
+            None,
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning("MCP: kunde inte hämta kortrad %s från Bezala", bill_line_id)
+        return None
+
+
+@mcp.tool()
+async def list_missing(include_handled: bool = False) -> dict:
+    """Company-card rows in Bezala that still lack a receipt: bill_line_id,
+    description, amount, currency, date, trip_id (calendar trip around the date)
+    and flags. 'possible_private' = parking (e.g. Helsinki airport / Moovy)
+    outside any calendar trip — ask Mikko if it was a private expense.
+    Rows marked private_expense or receipt_not_available are handled and not
+    counted as missing (include_handled=True lists them too)."""
+    from app.services.bill_line_status import build_missing_list
+
+    rows = await anyio.to_thread.run_sync(_missing_rows)
+    return await _run(build_missing_list, rows, include_handled=include_handled)
+
+
+@mcp.tool()
+async def mark_private_expense(
+    bill_line_id: str, note: str | None = None, create_draft: bool = False,
+) -> dict:
+    """Mark a company-card row as a PRIVATE expense (paid by mistake with the
+    company card). The Bezala comment becomes 'Private expense – to be deducted
+    from salary.' so payroll deducts it. create_draft=True also creates a Bezala
+    DRAFT for the row with that comment — it is never submitted for approval.
+    Only use on Mikko's word."""
+    from app.services import bill_line_status as bls
+
+    snap = await anyio.to_thread.run_sync(_snapshot, bill_line_id)
+
+    def work(db):
+        try:
+            row = bls.set_status(
+                db, bill_line_id, bls.STATUS_PRIVATE_EXPENSE, note=note, snapshot=snap,
+            )
+        except bls.BillLineStatusError as exc:
+            raise TripEditError(str(exc)) from exc
+        if create_draft:
+            from app.services.bezala_client import BezalaClient
+
+            bezala = BezalaClient()
+            try:
+                bls.create_private_expense_draft(db, bezala, bill_line_id, snapshot=snap)
+            finally:
+                bezala.close()
+        return bls.serialize_status(row)
+
+    return await _run(work)
+
+
+@mcp.tool()
+async def mark_receipt_not_available(bill_line_id: str, note: str) -> dict:
+    """Mark a company-card row as 'receipt not available' (the vendor gives no
+    receipt). note = short English explanation, required. The row stops counting
+    as missing. Only use on Mikko's word."""
+    from app.services import bill_line_status as bls
+
+    snap = await anyio.to_thread.run_sync(_snapshot, bill_line_id)
+
+    def work(db):
+        try:
+            row = bls.set_status(
+                db, bill_line_id, bls.STATUS_RECEIPT_NOT_AVAILABLE, note=note,
+                snapshot=snap,
+            )
+        except bls.BillLineStatusError as exc:
+            raise TripEditError(str(exc)) from exc
+        return bls.serialize_status(row)
+
+    return await _run(work)
+
+
+@mcp.tool()
+async def clear_bill_line_status(bill_line_id: str) -> dict:
+    """Undo mark_private_expense / mark_receipt_not_available for a row
+    (it counts as missing again). Does not delete anything in Bezala."""
+    from app.services import bill_line_status as bls
+
+    def work(db):
+        return {"bill_line_id": bill_line_id, "cleared": bls.clear_status(db, bill_line_id)}
 
     return await _run(work)
 
