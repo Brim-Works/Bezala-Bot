@@ -484,3 +484,18 @@ def test_same_amount_and_day_without_ticket_is_not_duplicate(db):
         _receipt(db, date(2026, 11, 5), category="Kollektivtrafik", vendor="Skånetrafiken",
                  amount=150.0, subject="Ditt kvitto")
     assert rd.mark_duplicates(db)["groups"] == 0
+
+
+def test_parking_matches_when_first_flight_has_no_origin(db):
+    from app.services.trip_parking import apply_parking_times
+
+    t = _trip(db, date(2026, 5, 7), date(2026, 5, 8), status="edited", destination="Båstad")
+    _with_flights(db, t, datetime(2026, 5, 7, 6, 20, tzinfo=HEL_TZ),
+                  datetime(2026, 5, 8, 19, 35, tzinfo=HEL_TZ))
+    t.flights = [dict(t.flights[0], origin=None), dict(t.flights[1], origin=None)]
+    db.commit()
+    _moovy(db, "Finavia P2 07.05.2026 05:19, 1 dygn 15h 0min 2s", date(2026, 5, 9))
+    assert apply_parking_times(db)["suggested_on_locked"] == 1
+    db.refresh(t)
+    tt = t.suggestions["travel_times"]
+    assert tt["start"].startswith("2026-05-07T04:39") and tt["end"].startswith("2026-05-08T20:59")
