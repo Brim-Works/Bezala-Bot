@@ -53,6 +53,23 @@ def run_c44(db) -> dict:
         db.rollback()
         logger.exception("[c44] parkeringstider misslyckades")
     try:
+        from app.services.trip_parking import hel_flight_window, load_parking
+
+        parking = load_parking(db)
+        for p in sorted(parking, key=lambda p: p.entry):
+            logger.info("[c44-parking-receipt] %s entry=%s exit=%s", p.message_id,
+                        p.entry.isoformat(), p.exit.isoformat())
+        for t in db.query(CalendarTrip).order_by(CalendarTrip.start_date).all():
+            dep, arr = hel_flight_window(t)
+            logger.info("[c44-parking-trip] trip=%s %s status=%s hel_dep=%s hel_arr=%s flights=%s",
+                        t.id, t.start_date, t.status, dep and dep.isoformat(),
+                        arr and arr.isoformat(),
+                        [(f.get("flight_no"), f.get("origin"), f.get("destination_iata"))
+                         for f in (t.flights or [])])
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("[c44] parkeringsdiagnostik misslyckades")
+    try:
         trips = db.query(CalendarTrip).order_by(CalendarTrip.start_date).all()
         lists = checklists_for(db, trips)
         for t in trips:

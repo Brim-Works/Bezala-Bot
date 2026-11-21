@@ -370,7 +370,9 @@ def _same_purchase(a: ProcessedMessage, b: ProcessedMessage) -> bool:
         return a.ticket_number == b.ticket_number
     if a.booking_ref and b.booking_ref:
         return a.booking_ref == b.booking_ref
-    return bool(a.subject) and (a.subject or "").strip().lower() == (b.subject or "").strip().lower()
+    # Utan biljett-/bokningsnummer är samma belopp + datum inte nog (två
+    # Skånetrafiken-biljetter à 150 SEK samma dag kan vara två resor).
+    return False
 
 
 def mark_duplicates(db: Session) -> dict:
@@ -384,13 +386,21 @@ def mark_duplicates(db: Session) -> dict:
     )
     groups = find_duplicates(rows)
     marked = 0
+    want: dict[int, str] = {}
     for g in groups:
         for d in g["dupes"]:
-            if d.duplicate_of != g["keep"].message_id:
-                d.duplicate_of = g["keep"].message_id
-                marked += 1
+            want[d.id] = g["keep"].message_id
+    cleared = 0
+    for m in rows:
+        target = want.get(m.id)
+        if target and m.duplicate_of != target:
+            m.duplicate_of = target
+            marked += 1
+        elif not target and m.duplicate_of:
+            m.duplicate_of = None  # regeln skärpt / inte längre dubblett
+            cleared += 1
     db.commit()
-    return {"groups": len(groups), "newly_marked": marked}
+    return {"groups": len(groups), "newly_marked": marked, "cleared": cleared}
 
 
 def duplicate_report(db: Session, year: int | None = None) -> dict:
