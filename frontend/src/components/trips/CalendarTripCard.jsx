@@ -3,7 +3,9 @@ import { fmtAmount } from '../../lib/format.js';
 
 /* Resor R1 — en resa upptäckt i Google Calendar.
  * Read-only: visar tider, destination, möten, hotell och kvitton som
- * redan är kopplade till överlappande kvittoresor. Ingen redigering (R2).
+ * redan är kopplade till överlappande kvittoresor. Ingen redigering här —
+ * C40: resor granskas/redigeras/godkänns i Claude-chatten (MCP). Kortet
+ * visar status, flaggor, land och syfte så ändringarna syns.
  */
 
 function fill(template, params) {
@@ -39,16 +41,28 @@ export default function CalendarTripCard({ trip }) {
             <span className={statusPill(trip.status)}>
               {c[trip.status] || trip.status}
             </span>
-            {trip.open_return ? (
+            {trip.open_return || (trip.flags || []).includes('missing_return') ? (
               <span className="pill pill--warn mono" data-testid={`calendar-trip-open-${trip.id}`}>
                 {c.openReturn}
+              </span>
+            ) : null}
+            {(trip.flags || []).includes('needs_review') ? (
+              <span className="pill pill--warn mono" data-testid={`calendar-trip-review-${trip.id}`}>
+                {c.needsReview}
               </span>
             ) : null}
           </div>
           <h4 className="trip-card__title">
             {trip.destination || c.unknownDestination}
           </h4>
-          <div className="trip-card__meta mono muted">{range}</div>
+          <div className="trip-card__meta mono muted">
+            {range}{trip.country ? ` · ${trip.country}` : ''}
+          </div>
+          {trip.purpose ? (
+            <div className="cal-trip__line" data-testid={`calendar-trip-purpose-${trip.id}`}>
+              {c.purpose}: <span className="cal-trip__strong">{trip.purpose}</span>
+            </div>
+          ) : null}
         </div>
         <div className="trip-card__totals">
           <div className="pill pill--muted mono">
@@ -63,6 +77,7 @@ export default function CalendarTripCard({ trip }) {
             <div className="cal-trip__day-head">
               <span className="mono cal-trip__date">{day.date}</span>
               {day.destination ? <span>{day.destination}</span> : null}
+              {day.country ? <span className="mono muted">{day.country}</span> : null}
               {day.start_time ? (
                 <span className="mono muted">{fill(c.departure, { time: day.start_time })}</span>
               ) : null}
@@ -73,6 +88,11 @@ export default function CalendarTripCard({ trip }) {
             {day.hotel ? (
               <div className="cal-trip__line muted">
                 {c.hotel}: <span className="cal-trip__strong">{day.hotel.name}</span>
+              </div>
+            ) : null}
+            {day.purpose ? (
+              <div className="cal-trip__line muted">
+                {c.purpose}: <span className="cal-trip__strong">{day.purpose}</span>
               </div>
             ) : null}
             {(day.meetings || []).length ? (

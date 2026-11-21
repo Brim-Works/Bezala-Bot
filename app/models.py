@@ -486,6 +486,10 @@ class CalendarTrip(Base):
     flight_options = Column(JSON, nullable=True, default=list)
     # C39 — landskod(er) för destinationen, t.ex. "DK" eller "DK,NO"
     country = Column(String(20), nullable=True)
+    # C40 — redigering via MCP (Claude-chatten)
+    purpose = Column(Text, nullable=True)  # syfte, på engelska
+    edited_at = Column(DateTime, nullable=True)
+    approved_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
@@ -518,3 +522,61 @@ class CalendarTripDay(Base):
     hotel = Column(JSON, nullable=True)
     source_event_ids = Column(JSON, nullable=False, default=list)
     status = Column(String(20), nullable=False, default="suggested")
+    # C40 — per dag: land + syfte (engelska)
+    country = Column(String(20), nullable=True)
+    purpose = Column(Text, nullable=True)
+
+
+# --- C40 — OAuth för MCP-connectorn (claude.ai) ----------------------------
+#
+# Bezala Bot är egen OAuth-auktoriseringsserver för /mcp. Alla hemligheter
+# (koder, access- och refresh-tokens) lagras som SHA-256-hash — klartexten
+# finns bara hos klienten.
+
+
+class McpOAuthClient(Base):
+    """Dynamiskt registrerad klient (RFC 7591). Publik klient (PKCE)."""
+
+    __tablename__ = "mcp_oauth_clients"
+
+    client_id = Column(String(64), primary_key=True)
+    client_name = Column(String(255), nullable=True)
+    redirect_uris = Column(JSON, nullable=False, default=list)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class McpOAuthCode(Base):
+    """Engångs-auktoriseringskod (giltig några minuter)."""
+
+    __tablename__ = "mcp_oauth_codes"
+
+    code_hash = Column(String(64), primary_key=True)
+    client_id = Column(String(64), nullable=False)
+    redirect_uri = Column(Text, nullable=False)
+    code_challenge = Column(String(128), nullable=False)
+    resource = Column(Text, nullable=False)
+    scope = Column(String(255), nullable=True)
+    subject = Column(String(255), nullable=False)
+    expires_at = Column(DateTime, nullable=False)
+    used_at = Column(DateTime, nullable=True)
+
+
+class McpOAuthToken(Base):
+    """Access- eller refresh-token. kind: 'access' | 'refresh'."""
+
+    __tablename__ = "mcp_oauth_tokens"
+
+    id = Column(Integer, primary_key=True)
+    token_hash = Column(String(64), nullable=False, unique=True, index=True)
+    kind = Column(String(16), nullable=False)
+    client_id = Column(String(64), nullable=False, index=True)
+    subject = Column(String(255), nullable=False)
+    resource = Column(Text, nullable=False)
+    scope = Column(String(255), nullable=True)
+    # Access- och refresh-token från samma utfärdande delar grant_id så att
+    # återkallelse/rotation kan slå ut hela paret.
+    grant_id = Column(String(64), nullable=False, index=True)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)

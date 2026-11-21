@@ -895,7 +895,7 @@ export default {
     confirmArchive: 'Archive the trip?',
     calendar: {
       title: 'From your calendar',
-      description: 'Trips detected in Google Calendar (flight out → flight home). Read-only — nothing is sent to Bezala or Netvisor.',
+      description: 'Trips detected in Google Calendar (flight out → flight home). Review, edit and approve in the Claude chat. Nothing is sent to Bezala or Netvisor.',
       refreshButton: 'Read calendar',
       refreshing: 'Reading calendar…',
       refreshed: '{count} trips found in the calendar',
@@ -909,6 +909,8 @@ export default {
       edited: 'Edited',
       approved: 'Approved',
       openReturn: 'Return flight missing',
+      needsReview: 'Pick flight',
+      purpose: 'Purpose',
       daysCount: '{count} days',
       dayCount: '1 day',
       departure: 'Departure {time}',

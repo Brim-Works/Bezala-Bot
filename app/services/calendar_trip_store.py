@@ -152,6 +152,7 @@ def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
         "country": trip.country,
         "flags": trip.flags or [],
         "flight_options": trip.flight_options or [],
+        "purpose": trip.purpose,
         "status": trip.status,
         "flights": trip.flights or [],
         "hotels": trip.hotels or [],
@@ -164,6 +165,8 @@ def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
                 "destination": d.destination,
                 "meetings": d.meetings or [],
                 "hotel": d.hotel,
+                "country": d.country,
+                "purpose": d.purpose,
                 "source_event_ids": d.source_event_ids or [],
             }
             for d in days
@@ -179,3 +182,37 @@ def list_trips(db: Session) -> list[dict]:
         .all()
     )
     return [serialize_trip(db, t) for t in rows]
+
+
+def refresh_from_calendar(db: Session) -> dict:
+    """Läs Google Calendar (read-only), kör detektorn och spara förslagen.
+
+    Resor med status 'edited'/'approved' rörs aldrig (persist_detected).
+    Returnerar {'status': 'ok'|'consent_required'|'not_configured'|
+    'api_disabled'|'error', ...}.
+    """
+    from app.services.calendar_client import CalendarAuthError, fetch_events
+    from app.services.trip_detector import detect_trips
+
+    try:
+        events = fetch_events()
+    except CalendarAuthError as exc:
+        logger.warning("Calendar refresh: %s (%s)", exc.reason, exc)
+        return {"status": exc.reason, "detail": str(exc)}
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Calendar refresh misslyckades")
+        return {"status": "error", "detail": str(exc)}
+
+    detected = detect_trips(events)
+    saved = persist_detected(db, detected)
+    logger.info(
+        "Calendar refresh OK: stats=%s saved=%s ungrouped=%s",
+        detected["stats"], saved,
+        [(u["date"], u["summary"], u["reason"]) for u in detected["ungrouped"]],
+    )
+    return {
+        "status": "ok",
+        "stats": detected["stats"],
+        "saved": saved,
+        "ungrouped": detected["ungrouped"],
+    }

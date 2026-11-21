@@ -142,6 +142,8 @@ de inte laddats upp av appen.
 | `LOG_LEVEL` | `INFO` / `DEBUG` |
 | `APP_PASSWORD` | Lösenord för att logga in i dashboarden |
 | `SESSION_SECRET` | Hemlighet för signering av session-cookies. Generera med `python3 -c "import secrets; print(secrets.token_hex(32))"` |
+| `PUBLIC_BASE_URL` | (C40, rekommenderad) Appens publika adress, t.ex. `https://bezala-bot-production.up.railway.app`. Används i MCP/OAuth-metadata. Utan den läses `X-Forwarded-Proto`/`Host`. |
+| `APP_OWNER` | (C40, valfri) Namnet på det enda konto som får använda MCP-connectorn. Default `mikko`. Byter du värde slutar alla gamla MCP-tokens att fungera. |
 
 ## Deployment till Railway
 
@@ -184,6 +186,66 @@ uppstart — men då logggas alla ut vid varje deploy.
 - `GET /api/runs?limit=20` — scanning-körningar *(auth)*
 - `POST /api/scan` — triggar manuell scanning (async) *(auth)*
 - `GET /` — React-dashboard (om `frontend/dist/` finns)
+
+## Claude-chatten (MCP-connector) — C40
+
+Resorna från kalendern granskas, ändras och godkänns i Claude-chatten.
+Bezala Bot har en MCP-server på `/mcp` (Streamable HTTP).
+
+**Connector-URL:** `https://bezala-bot-production.up.railway.app/mcp`
+
+Verktygen ändrar **bara** Bezala Bots egna tabeller `calendar_trips` och
+`calendar_trip_days`. Inget skickas till Bezala eller Netvisor.
+
+| Verktyg | Gör |
+| --- | --- |
+| `list_trips(status?, date_from?, date_to?, flagged_only?)` | Lista resor: id, datum, destination, land, syfte, status, flaggor |
+| `get_trip(trip_id)` | Alla dagar: tider (UTC + Helsingfors), destination, land, hotell, möten, syfte, kopplade kvitton, flygalternativ |
+| `update_trip(trip_id, start?, end?, destination?, country?, purpose?, selected_flight_id?)` | Ändra resan, välj flyg vid `needs_review`. Status → `edited` |
+| `update_trip_day` / `add_trip_day` / `remove_trip_day` | Ändra/lägg till/ta bort en dag. Status → `edited` |
+| `approve_trip` / `unapprove_trip` | Bara statusbyte. Inget skickas |
+| `refresh_calendar()` | Läs kalendern igen. Skriver aldrig över `edited`/`approved` |
+
+### Lägg till connectorn i claude.ai — steg för steg
+
+1. Se till att `PUBLIC_BASE_URL` är satt i Railway (se tabellen ovan) och
+   att senaste versionen är deployad.
+2. Öppna **claude.ai** → klicka på ditt namn nere till vänster →
+   **Settings** → **Connectors**.
+3. Klicka **Add custom connector**.
+4. Fyll i:
+   - **Name:** `Bezala Bot`
+   - **Remote MCP server URL:** `https://bezala-bot-production.up.railway.app/mcp`
+   - Lämna OAuth-fälten (client id/secret) tomma — Claude registrerar
+     sig själv automatiskt. Får du välja, ta **Register automatically**.
+5. Klicka **Add**, sedan **Connect**.
+6. Ett fönster öppnas mot Bezala Bot. Logga in med appens vanliga
+   lösenord (om du inte redan är inloggad).
+7. Sidan "Ge Claude åtkomst till dina resor?" visas. Klicka **Tillåt**.
+8. Klart. I en ny chatt: klicka på verktygsikonen och slå på
+   **Bezala Bot**. Prova: *"Visa mina resor som behöver granskas."*
+
+### Hur inloggningen fungerar
+
+- Bezala Bot är själv OAuth-server (OAuth 2.1 enligt MCP-specen).
+- `/mcp` utan giltig token svarar **401** med
+  `WWW-Authenticate: Bearer resource_metadata="…/.well-known/oauth-protected-resource/mcp"`.
+- claude.ai läser metadata (`/.well-known/oauth-protected-resource/mcp`,
+  `/.well-known/oauth-authorization-server`), registrerar sig på
+  `/oauth/register` (bara claude.ai:s callback och localhost tillåts),
+  och skickar dig till `/oauth/authorize` med PKCE (S256).
+- Authorize använder appens vanliga inloggning. Bara ägarkontot
+  (`APP_OWNER`) godkänns. Du måste klicka **Tillåt**.
+- Access-token gäller 1 timme, refresh-token 30 dagar och byts vid
+  varje förnyelse. Alla koder och tokens sparas bara som SHA-256-hash
+  i Postgres (`mcp_oauth_tokens`, `mcp_oauth_codes`).
+
+### Återkalla åtkomst
+
+- Ta bort connectorn i claude.ai, **och/eller**
+- Inloggad i appen: `POST /api/mcp/tokens/revoke-all` (alla tokens) eller
+  `POST /api/mcp/tokens/{grant_id}/revoke`. Lista aktiva:
+  `GET /api/mcp/tokens`.
 
 ## Dubblettskydd — detaljer
 
