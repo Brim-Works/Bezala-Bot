@@ -62,6 +62,8 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "kind": "VARCHAR(32)",
     # C45 — källkonto: 'visma' (default) eller 'private'
     "source_account": "VARCHAR(16) DEFAULT 'visma'",
+    # C46 — 'forwarded' (omläsningen 2026)
+    "source_note": "VARCHAR(32)",
 }
 
 _APP_SETTINGS_ADDITIONS = {

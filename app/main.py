@@ -246,6 +246,11 @@ async def lifespan(app: FastAPI):
     _run_c43_migrations()
     _run_c45_migrations()
     _run_c46_migrations()
+    # C46 Del 4 — läs om jobb-Gmail 2026 (torrläge, sedan riktigt). En gång.
+    if settings.scan_enabled and os.environ.get("C46_RESCAN_ENABLED", "true").lower() != "false":
+        from app.services.c46_rescan import start_background as _c46_rescan
+
+        _c46_rescan()
     # C44 — kvittodetaljer (Gmail, read-only), dubbletter, parkeringstider,
     # omräknade checklistor. I bakgrunden så att uppstarten inte väntar.
     if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":

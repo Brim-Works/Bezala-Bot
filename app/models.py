@@ -99,6 +99,8 @@ class ProcessedMessage(Base):
     # default) eller 'private' (Mikkos privata Gmail, bara allowlistade
     # kvittoavsändare som Apple).
     source_account = Column(String(16), nullable=True, default="visma")
+    # C46 — 'forwarded' när bara Mikkos vidarebefordran fanns (Del 4)
+    source_note = Column(String(32), nullable=True)
 
 
 class SavedFile(Base):
