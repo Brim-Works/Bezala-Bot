@@ -165,7 +165,7 @@ test('C43 — kameraknapp laddar upp och kopplar direkt', async ({ page }) => {
 test('C43 — markera kortrad som privat utlägg', async ({ page }) => {
   await setupTinderMocks(page);
   let body = null;
-  await page.route(`**/api/bezala/bill-lines/${MISSING_ID}/status`, async (route) => {
+  await page.route(`**/api/bezala/bill-lines/${MISSING_ID}/private-expense`, async (route) => {
     body = route.request().postDataJSON();
     route.fulfill({
       status: 200,
@@ -178,5 +178,5 @@ test('C43 — markera kortrad som privat utlägg', async ({ page }) => {
   await expect(page.getByTestId('tt-private-expense')).toBeVisible();
   await page.getByTestId('tt-private-mark').click();
   await expect.poll(() => body).not.toBeNull();
-  expect(body).toEqual({ status: 'private_expense', note: null, create_draft: false });
+  expect(body).toEqual({ note: null, create_draft: false });
 });

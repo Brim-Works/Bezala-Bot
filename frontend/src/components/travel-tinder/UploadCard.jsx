@@ -150,10 +150,9 @@ export default function UploadCard({ payment, onUploaded, onStatusChanged }) {
     setStatusMsg(null);
     try {
       if (action === 'undo') {
-        await api.clearBillLineStatus(billLineId);
+        await api.unmarkPrivateExpense(billLineId);
       } else {
-        await api.setBillLineStatus(billLineId, {
-          status: 'private_expense',
+        await api.markPrivateExpense(billLineId, {
           note: comment || null,
           createDraft: action === 'draft',
         });

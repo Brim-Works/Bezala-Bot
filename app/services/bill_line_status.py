@@ -1,20 +1,16 @@
-"""C43 — status på Bezala-kortrader + `list_missing`.
+"""C43 — privat utlägg på kortrader + gemensam normalisering.
 
-Mikko kan markera en kortrad som:
-  - 'private_expense'       — privat köp på jobbkortet (t.ex. HEL-parkering
-                              8,49 EUR 2026-08-01). Rutinen enligt Finance
-                              (Riikka): kommentar i Bezala "Private expense –
-                              to be deducted from salary." så drar lönen av
-                              beloppet.
-  - 'receipt_not_available' — leverantören ger inget kvitto (förklaring i
-                              note).
+Bygger på C42:s `card_lines` (spegel av Bezalas kortrader utan kvitto).
+C43 lägger till statusen 'private_expense': privat köp på jobbkortet (t.ex.
+HEL-parkering 8,49 EUR 2026-08-01). Rutinen enligt Finance (Riikka):
+kommentar i Bezala "Private expense – to be deducted from salary." så drar
+lönen av beloppet. Räknas som hanterad i list_missing (inget larm).
 
-Båda räknas som hanterade i list_missing (inget larm). Inget skickas någonsin
-för attest automatiskt — ett utkast skapas bara när Mikko ber om det, och då
-med state=unapproved (samma väg som vanliga kopplingar).
+Inget skickas någonsin för attest automatiskt — ett utkast skapas bara när
+Mikko ber om det (create_draft), med state=unapproved.
 
-Dessutom: parkeringsrader (HEL/Moovy/Europark/Finavia) som INTE ligger inom
-en kalenderresa flaggas 'possible_private' så Mikko får frågan direkt.
+Parkeringsrader (HEL/Moovy/Europark/Finavia) som INTE ligger inom en
+kalenderresa flaggas 'possible_private' så Mikko får frågan direkt.
 """
 
 from __future__ import annotations
@@ -26,13 +22,11 @@ from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
 
-from app.models import BillLineStatus, CalendarTrip, CalendarTripDay
+from app.models import CalendarTrip, CalendarTripDay, CardLine
 
 logger = logging.getLogger(__name__)
 
 STATUS_PRIVATE_EXPENSE = "private_expense"
-STATUS_RECEIPT_NOT_AVAILABLE = "receipt_not_available"
-VALID_STATUSES = (STATUS_PRIVATE_EXPENSE, STATUS_RECEIPT_NOT_AVAILABLE)
 
 PRIVATE_EXPENSE_COMMENT = "Private expense – to be deducted from salary."
 
@@ -53,7 +47,7 @@ TRIP_MARGIN_AFTER_DAYS = 3
 
 
 class BillLineStatusError(ValueError):
-    """Ogiltig indata (okänd status, tom bill_line_id osv.)."""
+    """Ogiltig indata (okänd kortrad, fel status osv.)."""
 
 
 # ---------- Normalisering av Bezalas missing_receipts ----------
@@ -118,85 +112,46 @@ def normalize_missing_receipt(raw: dict) -> dict:
     return out
 
 
-# ---------- Status-CRUD ----------
+# ---------- Status på card_lines (C42-tabellen) ----------
 
 
-def _clean_id(bill_line_id: Any) -> str:
-    s = str(bill_line_id or "").strip()
-    if not s:
-        raise BillLineStatusError("bill_line_id saknas")
-    return s
-
-
-def get_status(db: Session, bill_line_id: Any) -> BillLineStatus | None:
-    return db.get(BillLineStatus, _clean_id(bill_line_id))
-
-
-def status_map(db: Session) -> dict[str, BillLineStatus]:
-    return {r.bill_line_id: r for r in db.query(BillLineStatus).all()}
-
-
-def set_status(
-    db: Session,
-    bill_line_id: Any,
-    status: str,
-    *,
-    note: str | None = None,
-    snapshot: dict | None = None,
-) -> BillLineStatus:
-    if status not in VALID_STATUSES:
-        raise BillLineStatusError(
-            f"Okänd status {status!r} — tillåtna: {', '.join(VALID_STATUSES)}"
-        )
-    bid = _clean_id(bill_line_id)
-    note = (note or "").strip() or None
-    if status == STATUS_RECEIPT_NOT_AVAILABLE and not note:
-        raise BillLineStatusError(
-            "receipt_not_available kräver en förklaring (note)"
-        )
-    row = db.get(BillLineStatus, bid)
-    if row is None:
-        row = BillLineStatus(bill_line_id=bid, status=status)
-        db.add(row)
-    row.status = status
-    row.note = note
-    if snapshot:
-        row.description = snapshot.get("description") or row.description
-        amt = snapshot.get("amount")
-        row.amount = float(amt) if amt is not None else row.amount
-        row.currency = snapshot.get("currency") or row.currency
-        row.line_date = snapshot.get("date") or row.line_date
-    db.commit()
-    logger.info("C43 bill_line %s → %s (note=%r)", bid, status, note)
-    return row
-
-
-def clear_status(db: Session, bill_line_id: Any) -> bool:
-    row = db.get(BillLineStatus, _clean_id(bill_line_id))
-    if row is None:
-        return False
-    db.delete(row)
-    db.commit()
-    return True
-
-
-def serialize_status(row: BillLineStatus | None) -> dict | None:
-    if row is None:
+def get_card_line(db: Session, bill_line_id: Any) -> CardLine | None:
+    bid = str(bill_line_id or "").strip()
+    if not bid:
         return None
+    return db.query(CardLine).filter(CardLine.bill_line_id == bid).first()
+
+
+def status_map(db: Session) -> dict[str, str]:
+    """bill_line_id → status för rader Mikko hanterat."""
     return {
-        "bill_line_id": row.bill_line_id,
-        "status": row.status,
-        "note": row.note,
-        "description": row.description,
-        "amount": row.amount,
-        "currency": row.currency,
-        "date": row.line_date,
-        "bezala_transaction_id": row.bezala_transaction_id,
-        "bezala_comment": (
-            private_expense_description(row.note)
-            if row.status == STATUS_PRIVATE_EXPENSE else None
-        ),
+        c.bill_line_id: c.status
+        for c in db.query(CardLine)
+        .filter(CardLine.status.in_(("private_expense", "receipt_not_available")))
+        .all()
     }
+
+
+def mark_private_expense(
+    db: Session, bill_line_id: Any, note: str | None = None, *, sync=None,
+) -> CardLine:
+    """Sätt status 'private_expense' på kortraden. Finns raden inte i
+    card_lines än (ny i Bezala) synkas listan först. Committar."""
+    from app.services.calendar_trip_edit import TripEditError
+    from app.services.trip_completeness import (
+        set_card_line_status,
+        sync_card_lines_from_bezala,
+    )
+
+    if get_card_line(db, bill_line_id) is None:
+        (sync or sync_card_lines_from_bezala)(db)
+    try:
+        set_card_line_status(db, str(bill_line_id), STATUS_PRIVATE_EXPENSE, note=note)
+    except TripEditError as exc:
+        raise BillLineStatusError(str(exc)) from exc
+    row = get_card_line(db, bill_line_id)
+    logger.info("C43 kortrad %s → private_expense (note=%r)", bill_line_id, note)
+    return row
 
 
 def private_expense_description(note: str | None = None, base: str | None = None) -> str:
@@ -276,48 +231,15 @@ def is_parking_line(description: str | None) -> bool:
     return any(tok in text for tok in _PARKING_TOKENS)
 
 
-def build_missing_list(
-    db: Session,
-    rows: Iterable[dict],
-    *,
-    include_handled: bool = False,
-) -> dict:
-    """Saknade kvitton (normaliserade rader) + status/flaggor.
-
-    Hanterade rader (private_expense / receipt_not_available) räknas inte
-    som saknade; de returneras bara med include_handled=True."""
-    statuses = status_map(db)
-    missing: list[dict] = []
-    handled: list[dict] = []
-    for row in rows:
-        bid = str(row.get("id"))
-        st = statuses.get(bid)
-        item = dict(row)
-        item["status"] = st.status if st else "missing"
-        item["status_note"] = st.note if st else None
-        flags: list[str] = []
-        trip = trip_for_date(db, row.get("date"))
-        item["trip_id"] = trip.id if trip else None
-        if st is None and is_parking_line(row.get("description")) and trip is None:
-            flags.append(FLAG_POSSIBLE_PRIVATE)
-            item["question"] = (
-                "Parking outside any calendar trip — private expense? "
-                "Use mark_private_expense if so."
-            )
-        item["flags"] = flags
-        (handled if st else missing).append(item)
-    out: dict = {
-        "missing_count": len(missing),
-        "possible_private_count": sum(
-            1 for m in missing if FLAG_POSSIBLE_PRIVATE in m["flags"]
-        ),
-        "missing": missing,
-    }
-    if include_handled:
-        out["handled"] = handled
-    else:
-        out["handled_count"] = len(handled)
-    return out
+def possible_private_flags(db: Session, card_line: CardLine) -> list[str]:
+    """['possible_private'] för parkering utanför kalenderresa, annars []."""
+    if card_line.status != "missing":
+        return []
+    if not is_parking_line(card_line.description):
+        return []
+    if trip_for_date(db, card_line.txn_date) is not None:
+        return []
+    return [FLAG_POSSIBLE_PRIVATE]
 
 
 # ---------- Bezala-utkast för privat utlägg ----------
@@ -345,26 +267,19 @@ def _note_pdf(snapshot: dict, note: str | None) -> bytes:
     return html_to_pdf(html)
 
 
-def create_private_expense_draft(
-    db: Session,
-    bezala,
-    bill_line_id: Any,
-    *,
-    snapshot: dict | None = None,
-) -> str:
+def create_private_expense_draft(db: Session, bezala, bill_line_id: Any) -> str:
     """Skapa ett Bezala-UTKAST (state=unapproved, skickas inte för attest)
-    kopplat till kortraden, med engelsk kommentar. Kräver att raden redan
-    är markerad private_expense. Returnerar transaction-id."""
-    row = get_status(db, bill_line_id)
+    kopplat till kortraden, med engelsk kommentar. Kräver att raden är
+    markerad private_expense. Idempotent. Returnerar transaction-id."""
+    row = get_card_line(db, bill_line_id)
     if row is None or row.status != STATUS_PRIVATE_EXPENSE:
-        raise BillLineStatusError(
-            "Raden är inte markerad som private_expense"
-        )
+        raise BillLineStatusError("Raden är inte markerad som private_expense")
     if row.bezala_transaction_id:
         return row.bezala_transaction_id
-    snap = snapshot or {
+    snap = {
         "description": row.description, "amount": row.amount,
-        "currency": row.currency, "date": row.line_date,
+        "currency": row.currency,
+        "date": row.txn_date.isoformat() if row.txn_date else None,
     }
     pdf = _note_pdf(snap, row.note)
     result = bezala.attach_file(

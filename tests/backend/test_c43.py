@@ -292,14 +292,17 @@ def test_change_fee_is_not_a_flight_anchor():
     assert not _is_flight(SimpleNamespace(kind="change_fee", **base))
 
 
-# ---------- 2c: privat utlägg ----------
+# ---------- 2c: privat utlägg (C42 card_lines) ----------
 
-MOOVY_PRIVATE = {"id": "2316962", "description": "MIKKO KEINONEN: MOOVY, TAMPERE, FI 8.49 EUR",
-                 "amount": 8.49, "currency": "EUR", "date": "2026-08-01"}
-MOOVY_TRIP = {"id": "2355919", "description": "MIKKO KEINONEN: MOOVY, TAMPERE, FI 73.49 EUR",
-              "amount": 73.49, "currency": "EUR", "date": "2026-08-27"}
-CURSOR = {"id": "2352152", "description": "MIKKO KEINONEN: CURSOR, AI POWERED IDE, SAN FRANCISCO, US 22.03 EUR",
-          "amount": 22.03, "currency": "EUR", "date": "2026-08-24"}
+MOOVY_PRIVATE = {"bill_line_id": 2316962,
+                 "description": "MIKKO KEINONEN: MOOVY, TAMPERE, FI 8.49 EUR",
+                 "date": "2026-08-01"}
+MOOVY_TRIP = {"bill_line_id": 2355919,
+              "description": "MIKKO KEINONEN: MOOVY, TAMPERE, FI 73.49 EUR",
+              "date": "2026-08-27"}
+CURSOR = {"bill_line_id": 2352152,
+          "description": "MIKKO KEINONEN: CURSOR, AI POWERED IDE, SAN FRANCISCO, US 22.03 EUR",
+          "date": "2026-08-24"}
 
 
 def _trip_aug(db):
@@ -311,35 +314,51 @@ def _trip_aug(db):
     db.commit()
 
 
+def _sync(db, rows=(MOOVY_PRIVATE, MOOVY_TRIP, CURSOR)):
+    from app.services.trip_completeness import sync_card_lines
+
+    sync_card_lines(db, list(rows))
+
+
 def test_list_missing_flags_parking_outside_trip(db):
+    from app.services.trip_completeness import list_missing
+
     _trip_aug(db)
-    out = bls.build_missing_list(db, [MOOVY_PRIVATE, MOOVY_TRIP, CURSOR])
-    by_id = {m["id"]: m for m in out["missing"]}
+    _sync(db)
+    out = list_missing(db, older_than_days=0, sync=False)
+    by_id = {c["bill_line_id"]: c for c in out["card_lines_without_receipt"]}
     assert by_id["2316962"]["flags"] == ["possible_private"]
+    assert "private" in by_id["2316962"]["question"]
     assert by_id["2355919"]["flags"] == []  # inom resan (+3 d marginal)
-    assert by_id["2355919"]["trip_id"] is not None
     assert by_id["2352152"]["flags"] == []  # ingen parkering
     assert out["possible_private_count"] == 1
 
 
 def test_private_expense_is_handled_in_list_missing(db):
-    bls.set_status(db, "2316962", "private_expense", snapshot=MOOVY_PRIVATE)
-    out = bls.build_missing_list(db, [MOOVY_PRIVATE, CURSOR])
-    assert [m["id"] for m in out["missing"]] == ["2352152"]
-    assert out["handled_count"] == 1
-    full = bls.build_missing_list(db, [MOOVY_PRIVATE, CURSOR], include_handled=True)
-    assert full["handled"][0]["status"] == "private_expense"
+    from app.services.trip_completeness import list_missing, sync_card_lines
+
+    _sync(db)
+    row = bls.mark_private_expense(db, "2316962", "Private errand")
+    assert row.status == "private_expense" and row.amount == 8.49
+    out = list_missing(db, older_than_days=0, sync=False)
+    ids = [c["bill_line_id"] for c in out["card_lines_without_receipt"]]
+    assert "2316962" not in ids and "2352152" in ids
+    # Bezala-synken behåller Mikkos markering.
+    sync_card_lines(db, [MOOVY_PRIVATE, CURSOR])
+    assert bls.get_card_line(db, "2316962").status == "private_expense"
 
 
-def test_receipt_not_available_requires_note(db):
+def test_mark_private_expense_syncs_unknown_row_first(db):
+    called = []
+
+    def fake_sync(s):
+        called.append(True)
+        _sync(s, [MOOVY_PRIVATE])
+
+    row = bls.mark_private_expense(db, "2316962", sync=fake_sync)
+    assert called and row.status == "private_expense"
     with pytest.raises(bls.BillLineStatusError):
-        bls.set_status(db, "2176727", "receipt_not_available")
-    with pytest.raises(bls.BillLineStatusError):
-        bls.set_status(db, "2176727", "approved")
-    row = bls.set_status(db, "2176727", "receipt_not_available",
-                         note="Circle K fuel station, paper receipt lost")
-    assert row.status == "receipt_not_available"
-    assert bls.clear_status(db, "2176727") is True
+        bls.mark_private_expense(db, "999", sync=lambda s: None)
 
 
 def test_private_expense_description():
@@ -353,9 +372,12 @@ def test_private_expense_description():
 
 
 def test_private_expense_draft_only_creates_unapproved_draft(db):
-    bls.set_status(db, "2316962", "private_expense", snapshot=MOOVY_PRIVATE)
+    _sync(db)
     bezala = MagicMock()
     bezala.attach_file.return_value = SimpleNamespace(attachment_id="5001")
+    with pytest.raises(bls.BillLineStatusError):
+        bls.create_private_expense_draft(db, bezala, "2316962")  # inte markerad
+    bls.mark_private_expense(db, "2316962")
     with patch("app.services.bill_line_status._note_pdf", return_value=b"%PDF-1.4 x"):
         tx = bls.create_private_expense_draft(db, bezala, "2316962")
     assert tx == "5001"
@@ -364,9 +386,7 @@ def test_private_expense_draft_only_creates_unapproved_draft(db):
     assert kwargs["description"] == "Private expense – to be deducted from salary."
     # Bara attach_file (POST /attachments med state=unapproved) — inget
     # submit/attest-anrop.
-    called = {c[0] for c in bezala.method_calls}
-    assert called == {"attach_file"}
-    # Idempotent: andra anropet skapar inget nytt utkast.
+    assert {c[0] for c in bezala.method_calls} == {"attach_file"}
     assert bls.create_private_expense_draft(db, bezala, "2316962") == "5001"
     assert bezala.attach_file.call_count == 1
 
@@ -374,27 +394,45 @@ def test_private_expense_draft_only_creates_unapproved_draft(db):
 def test_mcp_mark_private_expense_and_list_missing(env):
     c, scope, _ = env
     at = _full_flow(c)["access_token"]
-    raw = [
-        {"bill_line_id": 2316962, "description": MOOVY_PRIVATE["description"],
-         "date": "2026-08-01"},
-        {"bill_line_id": 2352152, "description": CURSOR["description"],
-         "date": "2026-08-24"},
-    ]
     fake = MagicMock()
-    fake.list_missing_receipts.return_value = raw
+    fake.list_missing_receipts.return_value = [MOOVY_PRIVATE, CURSOR]
     with patch("app.services.bezala_client.BezalaClient", return_value=fake):
-        res = _call(c, at, "list_missing")
-        assert res["data"]["missing_count"] == 2
+        res = _call(c, at, "list_missing", older_than_days=0)
+        assert res["data"]["counts"]["card_lines"] == 2
         assert res["data"]["possible_private_count"] == 1
         res = _call(c, at, "mark_private_expense", bill_line_id="2316962",
                     note="Private errand")
         assert res["data"]["status"] == "private_expense"
         assert res["data"]["amount"] == 8.49
-        assert res["data"]["bezala_comment"].startswith("Private expense – to be deducted")
-        res = _call(c, at, "list_missing")
-        assert [m["id"] for m in res["data"]["missing"]] == [2352152]
-        res = _call(c, at, "mark_receipt_not_available", bill_line_id="2352152", note="")
-        assert res["isError"]
-        res = _call(c, at, "clear_bill_line_status", bill_line_id="2316962")
-        assert res["data"]["cleared"] is True
+        assert res["data"]["bezala_comment"] == (
+            "Private expense – to be deducted from salary. Private errand"
+        )
+        res = _call(c, at, "list_missing", older_than_days=0)
+        assert [x["bill_line_id"] for x in res["data"]["card_lines_without_receipt"]] == ["2352152"]
+        res = _call(c, at, "set_card_line_status", bill_line_id="2316962", status="missing")
+        assert res["data"]["status"] == "missing"
     fake.attach_file.assert_not_called()
+
+
+def test_change_fee_not_counted_as_trip_flight(db):
+    from app.models import CalendarTrip, ProcessedMessage
+    from app.services.trip_completeness import _match_flight, load_receipts
+
+    trip = CalendarTrip(start_date=date(2026, 10, 13), end_date=date(2026, 10, 13),
+                        destination="Gothenburg", country="SE", status="approved",
+                        source_event_ids=[], hotels=[],
+                        flights=[{"flight_no": "AY 861", "origin": "HEL"}])
+    db.add(trip)
+    db.add(ProcessedMessage(message_id="fee", sender="eticket@amadeus.com",
+                            subject="YOUR ETICKET RECEIPT DEP: 13OCT2026",
+                            summary="AY0861 HEL-GOT", category="Flyg", amount=0.02,
+                            currency="EUR", receipt_date="2026-10-07",
+                            status="saved", kind="change_fee"))
+    db.commit()
+    assert _match_flight(trip, load_receipts(db)) is None
+    db.add(ProcessedMessage(message_id="ticket", sender="eticket@amadeus.com",
+                            subject="YOUR ETICKET RECEIPT DEP: 13OCT2026",
+                            summary="AY0861 HEL-GOT", category="Flyg", amount=646.57,
+                            currency="EUR", receipt_date="2026-09-20", status="saved"))
+    db.commit()
+    assert _match_flight(trip, load_receipts(db)).message_id == "ticket"

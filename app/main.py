@@ -2563,96 +2563,56 @@ def get_bezala_missing_receipts(_: None = Depends(require_auth)):
     return [_normalize_missing_receipt(r) for r in rows]
 
 
-class BillLineStatusPayload(BaseModel):
-    status: str
+class PrivateExpensePayload(BaseModel):
     note: str | None = None
-    # Endast private_expense: skapa även ett Bezala-UTKAST (unapproved) med
-    # engelsk kommentar. Skickas aldrig för attest.
+    # Skapa även ett Bezala-UTKAST (unapproved) med engelsk kommentar.
+    # Skickas aldrig för attest.
     create_draft: bool = False
 
 
-def _bezala_missing_rows() -> list[dict]:
-    try:
-        bezala = BezalaClient()
-    except BezalaError as exc:
-        raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
-    try:
-        return [_normalize_missing_receipt(r) for r in bezala.list_missing_receipts()]
-    except BezalaError as exc:
-        raise HTTPException(
-            status_code=502, detail=f"Bezala missing_receipts: {exc}",
-        ) from exc
-    finally:
-        bezala.close()
-
-
-@app.get("/api/bezala/missing")
-def get_bezala_missing(
-    include_handled: bool = False,
-    db: Session = Depends(get_db),
-    _: None = Depends(require_auth),
-):
-    """C43 — saknade kvitton utan hanterade rader (private_expense /
-    receipt_not_available) + flaggan possible_private för parkering utanför
-    kalenderresor."""
-    from app.services.bill_line_status import build_missing_list
-
-    return build_missing_list(
-        db, _bezala_missing_rows(), include_handled=include_handled,
-    )
-
-
-@app.post("/api/bezala/bill-lines/{bill_line_id}/status")
-def set_bill_line_status(
+@app.post("/api/bezala/bill-lines/{bill_line_id}/private-expense")
+def mark_bill_line_private_expense(
     bill_line_id: str,
-    payload: BillLineStatusPayload,
+    payload: PrivateExpensePayload,
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
-    """C43 — markera kortrad som private_expense / receipt_not_available."""
+    """C43 — markera kortrad som privat utlägg (C42 card_lines.status)."""
     from app.services import bill_line_status as bls
+    from app.services.trip_completeness import card_line_dict, _today
 
-    snapshot = None
     try:
-        snapshot = next(
-            (r for r in _bezala_missing_rows() if str(r.get("id")) == bill_line_id),
-            None,
-        )
-    except HTTPException:
-        logger.warning("bill-line-status: kunde inte snapshot:a %s", bill_line_id)
-    try:
-        row = bls.set_status(
-            db, bill_line_id, payload.status, note=payload.note, snapshot=snapshot,
-        )
+        row = bls.mark_private_expense(db, bill_line_id, payload.note)
     except bls.BillLineStatusError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload.create_draft:
-        if payload.status != bls.STATUS_PRIVATE_EXPENSE:
-            raise HTTPException(
-                status_code=400, detail="create_draft gäller bara private_expense",
-            )
         try:
             bezala = BezalaClient()
         except BezalaError as exc:
             raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
         try:
-            bls.create_private_expense_draft(db, bezala, bill_line_id, snapshot=snapshot)
+            bls.create_private_expense_draft(db, bezala, bill_line_id)
         except BezalaError as exc:
             raise HTTPException(status_code=502, detail=f"Bezala: {exc}") from exc
         finally:
             bezala.close()
-    return bls.serialize_status(row)
+    return card_line_dict(row, _today())
 
 
-@app.delete("/api/bezala/bill-lines/{bill_line_id}/status")
-def clear_bill_line_status(
+@app.delete("/api/bezala/bill-lines/{bill_line_id}/private-expense")
+def unmark_bill_line_private_expense(
     bill_line_id: str,
     db: Session = Depends(get_db),
     _: None = Depends(require_auth),
 ):
-    from app.services import bill_line_status as bls
+    """C43 — ångra privat utlägg (status tillbaka till 'missing')."""
+    from app.services.calendar_trip_edit import TripEditError
+    from app.services.trip_completeness import set_card_line_status
 
-    return {"cleared": bls.clear_status(db, bill_line_id)}
+    try:
+        return set_card_line_status(db, bill_line_id, "missing")
+    except TripEditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/bezala/match-suggestions")
@@ -2738,8 +2698,7 @@ def get_match_suggestions(
         if trip:
             missing["trip"] = trip
         st = statuses.get(str(missing.get("id")))
-        missing["bill_line_status"] = st.status if st else None
-        missing["bill_line_status_note"] = st.note if st else None
+        missing["bill_line_status"] = st
         missing["flags"] = (
             [bls.FLAG_POSSIBLE_PRIVATE]
             if st is None and trip is None
@@ -3169,7 +3128,7 @@ def _do_match_to_bezala(
 
     # C43 — privat utlägg: kommentaren i Bezala ska säga det (engelska).
     from app.services import bill_line_status as _bls
-    _st = _bls.get_status(db, bill_line_id)
+    _st = _bls.get_card_line(db, bill_line_id)
     if _st is not None and _st.status == _bls.STATUS_PRIVATE_EXPENSE:
         description_override = _bls.private_expense_description(
             _st.note, base=description_override,

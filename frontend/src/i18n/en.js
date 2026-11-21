@@ -943,6 +943,18 @@ export default {
       hotel: 'Hotel',
       meetings: 'Meetings',
       noMeetings: 'No meetings',
+      check: {
+        title: 'Checklist',
+        complete: 'Complete',
+        incomplete: '{count} missing',
+        byMikko: 'marked by you',
+        cardLine: 'Card payment without receipt',
+        kind: { flight: 'Flight', hotel: 'Hotel', parking: 'HEL parking', local: 'Local transport' },
+        status: {
+          found: 'Found', missing: 'Missing', not_applicable: 'N/A',
+          optional: 'Optional', receipt_not_available: 'No receipt exists',
+        },
+      },
       receiptsTitle: 'Linked receipts',
       noReceipts: 'No receipts linked yet',
       unknownDestination: 'Unknown destination',

@@ -106,16 +106,15 @@ export const api = {
       method: 'POST',
       body: { missing_receipt_id: missingReceiptId },
     }),
-  // C43 — kortradsstatus: 'private_expense' | 'receipt_not_available'.
-  // createDraft (bara private_expense) skapar ett Bezala-UTKAST med engelsk
-  // kommentar — skickas aldrig för attest.
-  setBillLineStatus: (billLineId, { status, note = null, createDraft = false }) =>
-    request(`/api/bezala/bill-lines/${encodeURIComponent(billLineId)}/status`, {
+  // C43 — privat utlägg på kortrad (C42 card_lines.status). createDraft
+  // skapar ett Bezala-UTKAST med engelsk kommentar — skickas aldrig för attest.
+  markPrivateExpense: (billLineId, { note = null, createDraft = false } = {}) =>
+    request(`/api/bezala/bill-lines/${encodeURIComponent(billLineId)}/private-expense`, {
       method: 'POST',
-      body: { status, note, create_draft: createDraft },
+      body: { note, create_draft: createDraft },
     }),
-  clearBillLineStatus: (billLineId) =>
-    request(`/api/bezala/bill-lines/${encodeURIComponent(billLineId)}/status`, {
+  unmarkPrivateExpense: (billLineId) =>
+    request(`/api/bezala/bill-lines/${encodeURIComponent(billLineId)}/private-expense`, {
       method: 'DELETE',
     }),
   // C33 / FAS 7a — manuell upload av fysiskt kvitto. file = File-objekt.

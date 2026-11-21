@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -20,6 +21,18 @@ _scheduler: BackgroundScheduler | None = None
 _JOB_ID = "gmail_scan"
 _TRASH_JOB_ID = "trash_purge"
 _TRIP_JOB_ID = "trip_analysis"
+_CARD_LINES_JOB_ID = "card_lines_sync"
+
+
+def _card_lines_job() -> None:
+    """C42 — spegla Bezalas kortrader utan kvitto (endast läsning)."""
+    try:
+        from app.services.trip_completeness import sync_card_lines_from_bezala
+        with session_scope() as db:
+            result = sync_card_lines_from_bezala(db)
+            logger.info("C42 kortrader synkade: %s", result)
+    except Exception:
+        logger.exception("C42 kortrad-synk kraschade.")
 
 
 def _trip_analysis_job() -> None:
@@ -100,6 +113,15 @@ def start_scheduler() -> BackgroundScheduler | None:
         _trip_analysis_job,
         trigger=CronTrigger(hour=4, minute=0, timezone="UTC"),
         id=_TRIP_JOB_ID,
+        replace_existing=True,
+        max_instances=1,
+        coalesce=True,
+    )
+    _scheduler.add_job(
+        _card_lines_job,
+        trigger=IntervalTrigger(hours=2),
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=1),
+        id=_CARD_LINES_JOB_ID,
         replace_existing=True,
         max_instances=1,
         coalesce=True,

@@ -83,37 +83,6 @@ class ProcessedMessage(Base):
     kind = Column(String(32), nullable=True)
 
 
-class BillLineStatus(Base):
-    """C43 — Mikkos beslut om en Bezala-kortrad (bill_line) som inte ska
-    larma i list_missing.
-
-    status:
-      'private_expense'        — privat köp på jobbkortet; Bezala-kommentar
-                                 "Private expense – to be deducted from
-                                 salary." och lönen drar av beloppet.
-      'receipt_not_available'  — leverantören ger inget kvitto (förklaring
-                                 i note).
-    Inget skickas för attest automatiskt.
-    """
-
-    __tablename__ = "bill_line_statuses"
-
-    bill_line_id = Column(String(64), primary_key=True)
-    status = Column(String(32), nullable=False)
-    note = Column(Text, nullable=True)
-    # Snapshot av kortraden när statusen sattes (för UI/rapport).
-    description = Column(Text, nullable=True)
-    amount = Column(Float, nullable=True)
-    currency = Column(String(16), nullable=True)
-    line_date = Column(String(32), nullable=True)
-    # Bezala-draft skapad för raden (om Mikko bad om det).
-    bezala_transaction_id = Column(String(255), nullable=True)
-    created_at = Column(DateTime, server_default=func.now(), nullable=False)
-    updated_at = Column(
-        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
-    )
-
-
 class SavedFile(Base):
     """Unikhetsindex för filnamn + datum (tredje dubblettskiktet)."""
 
@@ -648,3 +617,74 @@ class McpOAuthToken(Base):
     revoked_at = Column(DateTime, nullable=True)
     last_used_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+# --- C42 — fullständighetskontroll ------------------------------------------
+
+
+class TripExpectation(Base):
+    """En förväntad utläggspost för en kalenderresa (flyg, hotellnatt,
+    parkering HEL, lokaltransport).
+
+    status: 'found' | 'missing' | 'not_applicable' | 'optional'.
+    set_by: 'auto' (räknas om varje gång) | 'user' (Mikko via MCP —
+    skrivs aldrig över av omräkningen).
+    slot: skiljer flera poster av samma slag åt, t.ex. hotellnattens datum
+    ('2026-11-18') eller ankomstflygplatsen för lokaltransport ('CPH').
+    """
+
+    __tablename__ = "trip_expectations"
+    __table_args__ = (
+        UniqueConstraint("trip_id", "kind", "slot", name="uq_trip_expectation"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(
+        Integer,
+        ForeignKey("calendar_trips.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind = Column(String(20), nullable=False)
+    slot = Column(String(40), nullable=False, default="")
+    status = Column(String(20), nullable=False, default="missing")
+    set_by = Column(String(10), nullable=False, default="auto")
+    message_id = Column(String(255), nullable=True)
+    bill_line_id = Column(String(64), nullable=True)
+    note = Column(Text, nullable=True)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
+class CardLine(Base):
+    """C42 — Bezala-kortrad (bill_line) som saknar kvitto.
+
+    Speglar Bezala GET /missing_receipts (endast läsning). En rad som
+    försvinner ur Bezalas lista har fått kvitto → status 'resolved'.
+    status: 'missing' | 'receipt_not_available' (Mikko/C43 — larmar inte)
+    | 'private_expense' (C43 — privat köp, dras från lönen; larmar inte)
+    | 'resolved'.
+    """
+
+    __tablename__ = "card_lines"
+    __table_args__ = (UniqueConstraint("bill_line_id", name="uq_card_line_bill_line"),)
+
+    id = Column(Integer, primary_key=True)
+    bill_line_id = Column(String(64), nullable=False, index=True)
+    txn_date = Column(Date, nullable=True, index=True)
+    description = Column(Text, nullable=True)
+    vendor = Column(String(255), nullable=True)
+    amount = Column(Float, nullable=True)
+    currency = Column(String(16), nullable=True)
+    status = Column(String(32), nullable=False, default="missing")
+    set_by = Column(String(10), nullable=True)
+    note = Column(Text, nullable=True)
+    # C43 — Bezala-utkast skapat för en private_expense-rad (på begäran).
+    bezala_transaction_id = Column(String(255), nullable=True)
+    first_seen_at = Column(DateTime, server_default=func.now(), nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )

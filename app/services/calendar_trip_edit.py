@@ -225,7 +225,14 @@ def list_trips(
     if date_to:
         q = q.filter(CalendarTrip.start_date <= parse_date(date_to, "to"))
     rows = q.order_by(CalendarTrip.start_date).all()
-    out = [summary(t) for t in rows]
+    from app.services.trip_completeness import checklists_for
+
+    lists = checklists_for(db, rows)
+    out = []
+    for t in rows:
+        row = summary(t)
+        row["completeness"] = lists[t.id]["completeness"]
+        out.append(row)
     if flagged_only:
         out = [t for t in out if t["flags"]]
     return out

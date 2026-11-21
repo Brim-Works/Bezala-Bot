@@ -34,8 +34,16 @@ def persist_detected(db: Session, detected: dict) -> dict:
     Förslag som överlappar en redigerad/godkänd resa hoppas över så att
     användarens ändringar (R2) aldrig skrivs över.
     """
+    from app.services.trip_completeness import (
+        delete_for_trips, restore_user_marks, snapshot_user_marks,
+    )
+
     old = db.query(CalendarTrip).filter(CalendarTrip.status == "suggested").all()
     old_ids = [t.id for t in old]
+    # C42 — Mikkos markeringar (t.ex. not_applicable) följer med till de
+    # nya förslagen (nya id:n efter refresh).
+    user_marks = snapshot_user_marks(db, old_ids)
+    delete_for_trips(db, old_ids)
     if old_ids:
         db.query(CalendarTripDay).filter(
             CalendarTripDay.trip_id.in_(old_ids)
@@ -52,6 +60,7 @@ def persist_detected(db: Session, detected: dict) -> dict:
 
     created = 0
     skipped_locked = 0
+    new_rows: list[CalendarTrip] = []
     for t in detected.get("trips", []):
         start, end = _d(t["start_date"]), _d(t["end_date"])
         if any(lt.start_date <= end and lt.end_date >= start for lt in locked):
@@ -77,6 +86,7 @@ def persist_detected(db: Session, detected: dict) -> dict:
         )
         db.add(row)
         db.flush()
+        new_rows.append(row)
         for day in t.get("days", []):
             db.add(CalendarTripDay(
                 trip_id=row.id,
@@ -95,6 +105,7 @@ def persist_detected(db: Session, detected: dict) -> dict:
             ))
         created += 1
 
+    restored = restore_user_marks(db, user_marks, new_rows)
     db.commit()
     logger.info(
         "Calendar trips: ersatte %d förslag med %d nya (%d krockade med låsta)",
@@ -104,6 +115,7 @@ def persist_detected(db: Session, detected: dict) -> dict:
         "replaced": len(old_ids),
         "created": created,
         "skipped_locked": skipped_locked,
+        "restored_marks": restored,
     }
 
 
@@ -169,7 +181,7 @@ def _flight_times_by_day(flights: list[dict]) -> dict[str, dict]:
     return out
 
 
-def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
+def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = None) -> dict:
     from app.services.trip_english import country_name
 
     flight_times = _flight_times_by_day(trip.flights or [])
@@ -218,16 +230,27 @@ def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
             for d in days
         ],
         "receipts": _linked_receipts(db, trip.start_date, trip.end_date),
+        # C42 — checklista (read-only i UI): flyg/hotell/parkering/lokal.
+        "checklist": checklist,
+        "completeness": (checklist or {}).get("completeness"),
     }
 
 
 def list_trips(db: Session) -> list[dict]:
+    from app.services.trip_completeness import checklists_for
+
     rows = (
         db.query(CalendarTrip)
         .order_by(CalendarTrip.start_date.desc())
         .all()
     )
-    return [serialize_trip(db, t) for t in rows]
+    try:
+        lists = checklists_for(db, rows)
+    except Exception:  # noqa: BLE001 — checklistan får aldrig fälla resvyn
+        db.rollback()
+        logger.exception("C42: checklistor kunde inte räknas")
+        lists = {}
+    return [serialize_trip(db, t, lists.get(t.id)) for t in rows]
 
 
 def refresh_from_calendar(db: Session) -> dict:
