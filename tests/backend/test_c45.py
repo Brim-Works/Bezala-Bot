@@ -306,7 +306,7 @@ def test_apple_receipt_parsed_to_english_description():
     assert r.service == "iCloud+"
     assert r.amount == 9.99 and r.currency == "EUR"
     assert r.order_id == "MT7QX2K9LP"
-    assert r.description_en() == "Apple iCloud+ subscription – Nov 2026"
+    assert r.description_en() == "Apple iCloud+ subscription - Nov 2026"
     assert not r.needs_review
 
 
@@ -317,7 +317,7 @@ def test_apple_hardware_is_flagged_not_guessed():
     )
     assert r.is_hardware and r.needs_review
     assert r.amount == 278.90
-    assert r.description_en() == "Apple hardware/AppleCare purchase – Aug 2026"
+    assert r.description_en() == "Apple hardware/AppleCare purchase - Aug 2026"
 
 
 def test_private_apple_receipt_becomes_pdf_with_english_description(SessionLocal):
@@ -347,7 +347,7 @@ def test_private_apple_receipt_becomes_pdf_with_english_description(SessionLocal
     with SessionLocal() as db:
         row = db.query(ProcessedMessage).filter_by(message_id="apple-1").one()
         assert row.source_account == "private"
-        assert row.ai_description_en == "Apple iCloud+ subscription – Nov 2026"
+        assert row.ai_description_en == "Apple iCloud+ subscription - Nov 2026"
         assert row.amount == 9.99 and row.currency == "EUR"
 
 
@@ -504,7 +504,7 @@ def test_thread_third_message_receipt_is_caught(SessionLocal):
         assert row.status == "saved"
         assert row.amount == 69.0 and row.currency == "USD"
         assert row.ai_description_en == (
-            "Airport Recovery Services – lost item recovery fee, order 171791"
+            "Airport Recovery Services - lost item recovery fee, order 171791"
         )
     assert analyzer.analyze.call_args_list[-1].kwargs["negative_examples"] == []
 

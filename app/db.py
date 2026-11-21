@@ -117,6 +117,9 @@ _TRIPS_ADDITIONS = {
 }
 
 _CALENDAR_TRIPS_ADDITIONS = {
+    # C46
+    "rejected_at": "TIMESTAMP",
+    "rejected_reason": "TEXT",
     # C39 — detektorflaggor, flygalternativ och land
     "flags": "JSON",
     "flight_options": "JSON",
@@ -134,6 +137,8 @@ _CALENDAR_TRIPS_ADDITIONS = {
 }
 
 _CALENDAR_TRIP_DAYS_ADDITIONS = {
+    # C46
+    "free_meal_note": "TEXT",
     # C40 — per dag: land + syfte
     "country": "VARCHAR(20)",
     "purpose": "TEXT",

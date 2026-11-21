@@ -1010,6 +1010,7 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
     trips = (
         db.query(CalendarTrip)
         .filter(CalendarTrip.end_date <= cutoff)
+        .filter(CalendarTrip.status != "rejected")  # C46
         .order_by(CalendarTrip.start_date)
         .all()
     )
@@ -1055,7 +1056,7 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
          "hotels": [h.get("name") for h in (t.hotels or [])],
          "question": "Hotel without flight — was this a business trip?"}
         for t in db.query(CalendarTrip).order_by(CalendarTrip.start_date).all()
-        if "domestic_unconfirmed" in (t.flags or [])
+        if "domestic_unconfirmed" in (t.flags or []) and t.status != "rejected"
     ]
     with_sugg = sum(1 for c in cards if c.get("suggested_receipt"))
     return {

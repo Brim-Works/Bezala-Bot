@@ -528,6 +528,10 @@ class CalendarTrip(Base):
     # automatiskt: {'travel_times': {...}, 'free_meals': {...},
     # 'flights': [...ombokade flyg...]}
     suggestions = Column(JSON, nullable=True)
+    # C46 — Mikko avvisade resan ('rejected'). refresh_calendar återskapar
+    # den aldrig (samma datum + samma flyg/händelser = samma resa).
+    rejected_at = Column(DateTime, nullable=True)
+    rejected_reason = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
@@ -578,6 +582,8 @@ class CalendarTripDay(Base):
     meals_source = Column(String(16), nullable=True)
     # C44 — 'manual' när syftet satts via update_trip_day.
     purpose_source = Column(String(16), nullable=True)
+    # C46 — fri anteckning om måltiderna (engelska)
+    free_meal_note = Column(Text, nullable=True)
 
 
 # --- C40 — OAuth för MCP-connectorn (claude.ai) ----------------------------

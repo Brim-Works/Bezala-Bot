@@ -57,6 +57,7 @@ from app.services.private_gmail import (
 )
 from app.services.reply_receipts import match_reply_receipt
 from app.services.receipt_details import find_saved_duplicate, identity_from_message
+from app.services.text_clean import plain_dashes
 from app.services.settings_service import (
     build_gmail_query,
     build_gmail_query_html_only,
@@ -1108,7 +1109,7 @@ def _process_one_message(
                         category=analysis.category if analysis else None,
                         summary=analysis.summary if analysis else None,
                         ai_description_en=(
-                            analysis.description_en if analysis else None
+                            plain_dashes(analysis.description_en) if analysis else None
                         ),
                         ai_confidence=analysis.confidence if analysis else None,
                         bezala_transaction_id=bezala_txn_id,

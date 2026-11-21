@@ -20,6 +20,8 @@ import os
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
+from app.services.text_clean import plain_dashes
+
 logger = logging.getLogger(__name__)
 
 
@@ -941,7 +943,8 @@ def build_receipt_params(
         )
     )
     params: dict = {
-        "description": description,
+        # C46 — vanligt bindestreck till Bezala (aldrig "–"/"—")
+        "description": plain_dashes(description),
         "date": receipt_date,
         # Dessa tre används INTE i Bezala-payload (fältet finns inte längre
         # top-level) men sparas för logging + UI-visning.
@@ -1020,7 +1023,7 @@ def build_transaction_extras(
     if receipt_date:
         extras["purchase_date"] = receipt_date
     if description:
-        extras["description"] = description
+        extras["description"] = plain_dashes(description)
 
     logger.info(
         "bezala-mapper: country=%s category=%s → account=%s cost_center=%s vat_rate=%s",

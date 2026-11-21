@@ -77,23 +77,30 @@ def event_sources(summary: str) -> list[str]:
     return out
 
 
+MAX_FREE_MEALS = 2  # C46 — lunch och middag; frukost räknas aldrig
+
+
 def count_meals(sources: list[str], country: str | None) -> int:
-    """Antal fria måltider (0–3) av källorna. Frukost räknas bara utrikes och
-    bara om TRIP_BREAKFAST_COUNTS_AS_MEAL_ABROAD=true. 'ticket' (måltid i
+    """Antal fria måltider (0–2: lunch och middag) av källorna. C46:
+    frukost räknas aldrig (loggas bara i källorna). 'ticket' (måltid i
     biljetten, satt manuellt) räknas som en måltid."""
-    abroad = bool(country) and HOME_COUNTRY not in (country or "").upper().split(",")
     meals: set[str] = set()
     extra = 0
     for s in sources or []:
         meal = _MEAL_OF.get(s)
         if meal == "breakfast":
-            if abroad and breakfast_counts_abroad():
-                meals.add("breakfast")
-        elif meal == "ticket":
+            continue
+        if meal == "ticket":
             extra += 1
         elif meal:
             meals.add(meal)
-    return min(3, len(meals) + extra)
+    return min(MAX_FREE_MEALS, len(meals) + extra)
+
+
+def meals_included(free_meals: int | None) -> bool:
+    """C46 — Netvisor-förslaget per dag: 'Inklusive kost' när dagen har 2
+    fria måltider (lunch + middag)."""
+    return (free_meals or 0) >= MAX_FREE_MEALS
 
 
 def meals_for_day(summaries: list[str], prev_night_hotel: str | None,
@@ -118,12 +125,11 @@ def meals_for_day(summaries: list[str], prev_night_hotel: str | None,
 
 def meal_names(sources: list[str] | None, country: str | None) -> list[str]:
     """Engelska namn på de måltider som räknas (för Netvisor-texten)."""
-    abroad = bool(country) and HOME_COUNTRY not in (country or "").upper().split(",")
     out: list[str] = []
     for s in sources or []:
         meal = _MEAL_OF.get(s)
-        if meal == "breakfast" and not (abroad and breakfast_counts_abroad()):
-            continue
+        if meal == "breakfast":
+            continue  # C46 — frukost räknas aldrig
         name = "meal in ticket" if meal == "ticket" else meal
         if name and name not in out:
             out.append(name)

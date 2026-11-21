@@ -28,6 +28,32 @@ def _d(value: str) -> date:
     return date.fromisoformat(value)
 
 
+def _flight_keys(flights) -> set[str]:
+    out = set()
+    for f in flights or []:
+        key = f.get("id") or "|".join(
+            str(f.get(k) or "") for k in ("flight_number", "start", "origin", "destination")
+        )
+        if key.strip("|"):
+            out.add(str(key))
+    return out
+
+
+def same_trip(existing: CalendarTrip, detected: dict) -> bool:
+    """C46 — samma datum + samma flyg/händelser = samma resa."""
+    if existing.start_date != _d(detected["start_date"]) or existing.end_date != _d(detected["end_date"]):
+        return False
+    old_f, new_f = _flight_keys(existing.flights), _flight_keys(detected.get("flights"))
+    if old_f or new_f:
+        if old_f & new_f:
+            return True
+    old_e = set(existing.source_event_ids or [])
+    new_e = set(detected.get("source_event_ids") or [])
+    if old_e or new_e:
+        return bool(old_e & new_e)
+    return not (old_f or new_f)
+
+
 def persist_detected(db: Session, detected: dict) -> dict:
     """Ersätt alla 'suggested'-resor med nya förslag.
 
@@ -58,8 +84,14 @@ def persist_detected(db: Session, detected: dict) -> dict:
         .all()
     )
 
+    # C46 — avvisade resor rörs aldrig och samma resa återskapas aldrig.
+    rejected = (
+        db.query(CalendarTrip).filter(CalendarTrip.status == "rejected").all()
+    )
+
     created = 0
     skipped_locked = 0
+    skipped_rejected = 0
     new_rows: list[CalendarTrip] = []
     for lt in locked:
         # C44 — förslag räknas om varje refresh (skrivs aldrig in i resan).
@@ -69,6 +101,9 @@ def persist_detected(db: Session, detected: dict) -> dict:
         lt.suggestions = sugg or None
     for t in detected.get("trips", []):
         start, end = _d(t["start_date"]), _d(t["end_date"])
+        if any(same_trip(rt, t) for rt in rejected):
+            skipped_rejected += 1
+            continue
         hit = [lt for lt in locked if lt.start_date <= end and lt.end_date >= start]
         if hit:
             skipped_locked += 1
@@ -127,6 +162,7 @@ def persist_detected(db: Session, detected: dict) -> dict:
         "replaced": len(old_ids),
         "created": created,
         "skipped_locked": skipped_locked,
+        "skipped_rejected": skipped_rejected,
         "restored_marks": restored,
     }
 
