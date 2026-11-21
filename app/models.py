@@ -613,3 +613,71 @@ class McpOAuthToken(Base):
     revoked_at = Column(DateTime, nullable=True)
     last_used_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+# --- C42 — fullständighetskontroll ------------------------------------------
+
+
+class TripExpectation(Base):
+    """En förväntad utläggspost för en kalenderresa (flyg, hotellnatt,
+    parkering HEL, lokaltransport).
+
+    status: 'found' | 'missing' | 'not_applicable' | 'optional'.
+    set_by: 'auto' (räknas om varje gång) | 'user' (Mikko via MCP —
+    skrivs aldrig över av omräkningen).
+    slot: skiljer flera poster av samma slag åt, t.ex. hotellnattens datum
+    ('2026-11-18') eller ankomstflygplatsen för lokaltransport ('CPH').
+    """
+
+    __tablename__ = "trip_expectations"
+    __table_args__ = (
+        UniqueConstraint("trip_id", "kind", "slot", name="uq_trip_expectation"),
+    )
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(
+        Integer,
+        ForeignKey("calendar_trips.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    kind = Column(String(20), nullable=False)
+    slot = Column(String(40), nullable=False, default="")
+    status = Column(String(20), nullable=False, default="missing")
+    set_by = Column(String(10), nullable=False, default="auto")
+    message_id = Column(String(255), nullable=True)
+    bill_line_id = Column(String(64), nullable=True)
+    note = Column(Text, nullable=True)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
+class CardLine(Base):
+    """C42 — Bezala-kortrad (bill_line) som saknar kvitto.
+
+    Speglar Bezala GET /missing_receipts (endast läsning). En rad som
+    försvinner ur Bezalas lista har fått kvitto → status 'resolved'.
+    status: 'missing' | 'receipt_not_available' (Mikko/C43 — larmar inte)
+    | 'resolved'.
+    """
+
+    __tablename__ = "card_lines"
+    __table_args__ = (UniqueConstraint("bill_line_id", name="uq_card_line_bill_line"),)
+
+    id = Column(Integer, primary_key=True)
+    bill_line_id = Column(String(64), nullable=False, index=True)
+    txn_date = Column(Date, nullable=True, index=True)
+    description = Column(Text, nullable=True)
+    vendor = Column(String(255), nullable=True)
+    amount = Column(Float, nullable=True)
+    currency = Column(String(16), nullable=True)
+    status = Column(String(32), nullable=False, default="missing")
+    set_by = Column(String(10), nullable=True)
+    note = Column(Text, nullable=True)
+    first_seen_at = Column(DateTime, server_default=func.now(), nullable=False)
+    last_seen_at = Column(DateTime, nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )

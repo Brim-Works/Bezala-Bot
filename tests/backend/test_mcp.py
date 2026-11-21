@@ -268,6 +268,9 @@ def test_valid_token_works(env):
     assert names == {
         "list_trips", "get_trip", "update_trip", "update_trip_day", "add_trip_day",
         "remove_trip_day", "approve_trip", "unapprove_trip", "refresh_calendar",
+        # C42
+        "get_trip_checklist", "set_expectation_status", "list_missing",
+        "set_card_line_status",
     }
 
 

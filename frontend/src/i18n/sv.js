@@ -940,6 +940,18 @@ export default {
       hotel: 'Hotell',
       meetings: 'Möten',
       noMeetings: 'Inga möten',
+      check: {
+        title: 'Checklista',
+        complete: 'Komplett',
+        incomplete: '{count} saknas',
+        byMikko: 'markerad av dig',
+        cardLine: 'Kortbetalning utan kvitto',
+        kind: { flight: 'Flyg', hotel: 'Hotell', parking: 'Parkering HEL', local: 'Lokaltransport' },
+        status: {
+          found: 'Hittat', missing: 'Saknas', not_applicable: 'Ej aktuellt',
+          optional: 'Valfritt', receipt_not_available: 'Kvitto finns ej',
+        },
+      },
       receiptsTitle: 'Kopplade kvitton',
       noReceipts: 'Inga kvitton kopplade ännu',
       unknownDestination: 'Okänd destination',

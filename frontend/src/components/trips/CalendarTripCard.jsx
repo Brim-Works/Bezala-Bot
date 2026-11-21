@@ -6,6 +6,8 @@ import { fmtAmount } from '../../lib/format.js';
  * redan är kopplade till överlappande kvittoresor. Ingen redigering här —
  * C40: resor granskas/redigeras/godkänns i Claude-chatten (MCP). Kortet
  * visar status, flaggor, land och syfte så ändringarna syns.
+ * C42: checklista (flyg/hotell per natt/parkering/lokal + kortrader utan
+ * kvitto) — read-only, Mikko markerar i chatten.
  */
 
 function fill(template, params) {
@@ -30,6 +32,87 @@ function countryLabel(c, code) {
     .split(',')
     .map((cc) => (c.countries && c.countries[cc.trim()]) || cc.trim())
     .join(', ');
+}
+
+/* C42 — checklista: färg per status. */
+const CHECK_PILL = {
+  found: 'pill pill--ok mono',
+  missing: 'pill pill--err mono',
+  not_applicable: 'pill pill--muted mono',
+  optional: 'pill pill--muted mono',
+  receipt_not_available: 'pill pill--muted mono',
+};
+
+function CompletenessPill({ c, trip }) {
+  const comp = trip.completeness;
+  if (!comp) return null;
+  const ok = comp.status === 'complete';
+  return (
+    <span
+      className={ok ? 'pill pill--ok mono' : 'pill pill--err mono'}
+      data-testid={`calendar-trip-completeness-${trip.id}`}
+    >
+      {ok ? c.check.complete : fill(c.check.incomplete, { count: comp.missing })}
+    </span>
+  );
+}
+
+function Checklist({ c, trip, lang }) {
+  const cl = trip.checklist;
+  if (!cl) return null;
+  const k = c.check;
+  return (
+    <section className="cal-trip__receipts" data-testid={`calendar-trip-checklist-${trip.id}`}>
+      <div className="cal-trip__label muted mono">{k.title}</div>
+      <ul className="cal-trip__checklist">
+        {(cl.items || []).map((item) => (
+          <li
+            key={`${item.kind}-${item.slot || ''}`}
+            className={`cal-trip__check cal-trip__check--${item.status}`}
+            data-testid={`check-${trip.id}-${item.kind}-${item.slot || 'x'}`}
+          >
+            <span className={CHECK_PILL[item.status] || 'pill pill--muted mono'}>
+              {k.status[item.status] || item.status}
+            </span>
+            <span className="cal-trip__strong">{k.kind[item.kind] || item.kind}</span>
+            {item.kind === 'hotel' && item.slot ? (
+              <span className="mono muted">{item.slot}</span>
+            ) : null}
+            {item.kind === 'local' && item.slot ? (
+              <span className="mono muted">{item.slot}</span>
+            ) : null}
+            {item.receipt && item.receipt.vendor ? (
+              item.receipt.drive_link ? (
+                <a href={item.receipt.drive_link} target="_blank" rel="noreferrer" className="muted">
+                  {item.receipt.vendor}
+                </a>
+              ) : (
+                <span className="muted">{item.receipt.vendor}</span>
+              )
+            ) : null}
+            {item.set_by === 'user' ? (
+              <span className="mono muted cal-trip__small">{k.byMikko}{item.note ? `: ${item.note}` : ''}</span>
+            ) : null}
+          </li>
+        ))}
+        {(cl.card_lines || []).map((line) => (
+          <li
+            key={`card-${line.bill_line_id}`}
+            className={`cal-trip__check cal-trip__check--${line.status}`}
+            data-testid={`check-${trip.id}-card-${line.bill_line_id}`}
+          >
+            <span className={CHECK_PILL[line.status] || 'pill pill--err mono'}>
+              {k.status[line.status] || line.status}
+            </span>
+            <span className="cal-trip__strong">{k.cardLine}</span>
+            <span className="mono muted">{line.date || '—'}</span>
+            <span>{line.vendor || line.description || '—'}</span>
+            <span className="mono">{fmtAmount(line.amount, line.currency, lang)}</span>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
 }
 
 function statusPill(status) {
@@ -73,6 +156,7 @@ export default function CalendarTripCard({ trip }) {
                 {c.needsReview}
               </span>
             ) : null}
+            <CompletenessPill c={c} trip={trip} />
           </div>
           <h4 className="trip-card__title">
             {cityLabel(c, trip.destination) || c.unknownDestination}
@@ -146,6 +230,8 @@ export default function CalendarTripCard({ trip }) {
           </li>
         ))}
       </ol>
+
+      <Checklist c={c} trip={trip} lang={lang} />
 
       <section className="cal-trip__receipts">
         <div className="cal-trip__label muted mono">{c.receiptsTitle}</div>
