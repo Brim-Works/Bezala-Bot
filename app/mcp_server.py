@@ -23,6 +23,7 @@ from starlette.responses import JSONResponse
 from app.db import SessionLocal
 from app.mcp_oauth import resource_metadata_url, resource_url, validate_access_token
 from app.services import calendar_trip_edit as edit
+from app.services import trip_completeness as completeness
 from app.services.calendar_trip_edit import TripEditError
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,11 @@ INSTRUCTIONS = (
     "'Gothenburg', 'Malmö') and country (ISO code). Trip times are travel times "
     "(leaving home → back home: 100 min before a HEL departure, 60 min after a HEL "
     "landing); flight times are shown separately. A flight to CPH usually means "
-    "work in Sweden (Malmö, Helsingborg, Växjö, Ljungby). Ask Mikko before approving."
+    "work in Sweden (Malmö, Helsingborg, Växjö, Ljungby). Ask Mikko before approving. "
+    "Completeness: get_trip_checklist shows which receipts a trip should have "
+    "(flight, one hotel per night, HEL parking, optional local transport) and "
+    "whether each is found; list_missing lists everything missing, including "
+    "Bezala card payments without a receipt (read-only — nothing is created in Bezala)."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -75,7 +80,8 @@ async def list_trips(
     flagged_only: bool = False,
 ) -> dict:
     """List calendar trips: id, dates, destination (work city, English), country,
-    purpose (English), status, flags, travel times and flight times (Helsinki).
+    purpose (English), status, flags, travel times and flight times (Helsinki),
+    and completeness ('complete' | 'incomplete' + number of missing receipts).
 
     status: 'suggested' | 'edited' | 'approved'. date_from/date_to: YYYY-MM-DD
     (trips overlapping the range). flagged_only: only trips with flags
@@ -197,6 +203,62 @@ async def refresh_calendar() -> dict:
         return result
 
     return await _run(work)
+
+
+# ---------- C42: fullständighetskontroll ----------
+
+
+@mcp.tool()
+async def get_trip_checklist(trip_id: int) -> dict:
+    """Expected receipts for a trip and their status. Items: 'flight' (Finnair/
+    Amadeus ticket covering the trip), 'hotel' (one per night, slot = night date;
+    a day trip gets 'not_applicable'), 'parking' (HEL parking, company car),
+    'local' (optional: train/bus/taxi when the arrival airport is not the work
+    city). Status: 'found' (with receipt link), 'missing', 'not_applicable',
+    'optional'. set_by 'user' = Mikko's own mark (never overwritten).
+    card_lines = Bezala card payments during the trip that have no receipt."""
+    return await _run(completeness.get_trip_checklist, trip_id)
+
+
+@mcp.tool()
+async def set_expectation_status(
+    trip_id: int,
+    kind: str,
+    status: str,
+    note: str | None = None,
+    date: str | None = None,
+) -> dict:
+    """Mark a checklist item. kind: 'flight' | 'hotel' | 'parking' | 'local'.
+    status: 'not_applicable' (e.g. stayed with friends, no parking), 'found'
+    (Mikko confirms it is handled), or 'auto' (remove Mikko's mark).
+    date: YYYY-MM-DD, only for one hotel night (omit = all nights).
+    Mikko's marks survive recalculation and calendar refresh. Ask Mikko first.
+    Returns the updated checklist."""
+    return await _run(completeness.set_expectation_status, trip_id, kind, status,
+                      note=note, date_=date)
+
+
+@mcp.tool()
+async def list_missing(older_than_days: int = 5) -> dict:
+    """Everything missing: checklist items with status 'missing' on trips that
+    ended at least `older_than_days` days ago, plus Bezala card payments
+    (bill_lines) without a receipt that are at least that old — with age in days,
+    the trip they fall in (trip_id) and a suggested receipt source
+    ('gmail_filter' / 'link_fetch' sender, or 'unknown'). Reads Bezala
+    (read-only) first; nothing is created or sent."""
+    return await _run(completeness.list_missing, older_than_days)
+
+
+@mcp.tool()
+async def set_card_line_status(
+    bill_line_id: str,
+    status: str,
+    note: str | None = None,
+) -> dict:
+    """Mark a Bezala card payment without receipt. status:
+    'receipt_not_available' (no receipt exists — stop listing it as missing) or
+    'missing' (undo). Only changes Bezala Bot's own list; nothing goes to Bezala."""
+    return await _run(completeness.set_card_line_status, bill_line_id, status, note=note)
 
 
 # ---------- ASGI: auth + Streamable HTTP ----------
