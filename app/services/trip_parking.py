@@ -46,8 +46,18 @@ def hel_flight_window(trip: CalendarTrip) -> tuple[datetime | None, datetime | N
 
     homes = set(home_iatas())
     flights = trip.flights or []
-    dep = next((_dt(f.get("start")) for f in flights
-                if (f.get("origin") or "").upper() in homes), None)
+    # Låsta resor: ombokade flyg (förslag) gäller före kalenderns gamla.
+    sugg_flights = (trip.suggestions or {}).get("flights")
+    if trip.status != "suggested" and sugg_flights:
+        flights = sugg_flights
+    dep = None
+    if flights:
+        # Resans första flyg utgår hemifrån när avreseorten saknas (äldre
+        # kalenderevent utan IATA i platsen) — samma regel som travel_times.
+        first = flights[0]
+        origin = (first.get("origin") or "").upper()
+        if not origin or origin in homes:
+            dep = _dt(first.get("start"))
     arr = None
     for f in flights:
         if (f.get("destination_iata") or "").upper() in homes:
