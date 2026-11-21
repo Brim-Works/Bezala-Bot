@@ -286,10 +286,10 @@ def test_get_card_line_yalla_go(db):
 
 
 AMADEUS_25AUG = """| YOUR ETICKET RECEIPT: KEINONEN/MIKKO MR DEP: 25AUG2026 |
-| Booking Reference: 8HZCXX | | Office |
+| Booking Reference: XYZ789 | | Office |
 | HELSINKI HELSINKI VANTAA | COPENHAGEN KASTRUP | AY0953 | Y | 25Aug | 07:25 | 08:05 | Ok |
 | COPENHAGEN KASTRUP | HELSINKI HELSINKI VANTAA | AY0962 | B | 26Aug | 19:25 | 22:00 | Ok |
-| Ticket number | : 105-2494949204 |"""
+| Ticket number | : 105-9999990002 |"""
 
 
 def test_trip_107_does_not_take_the_25_aug_flight_receipt(db):
@@ -366,11 +366,11 @@ def test_duplicate_finnair_receipts_25_aug(db):
                      subject="YOUR ETICKET RECEIPT: KEINONEN/MIKKO MR DEP: 25AUG2026",
                      ticket_number=ticket, bezala_transaction_id=coupled)
         return m
-    a1 = _fin(674.48, "1052494949204", coupled="5334818")
-    a2 = _fin(674.48, "1052494949204")
-    b1 = _fin(514.48, "1052494949999")
-    b2 = _fin(514.48, "1052494949999")
-    _fin(514.48, "1052490000000")  # annan biljett, samma belopp → inte dubblett
+    a1 = _fin(674.48, "1059999990002", coupled="5334818")
+    a2 = _fin(674.48, "1059999990002")
+    b1 = _fin(514.48, "1059999990003")
+    b2 = _fin(514.48, "1059999990003")
+    _fin(514.48, "1059999990004")  # annan biljett, samma belopp → inte dubblett
     assert rd.mark_duplicates(db) == {"groups": 2, "newly_marked": 2}
     db.refresh(a2), db.refresh(b2), db.refresh(a1)
     assert a2.duplicate_of == a1.message_id  # det kopplade behålls
@@ -452,8 +452,8 @@ def test_parse_amadeus_receipt_segments_pnr_ticket():
     d = rd.extract_details("", AMADEUS_25AUG, "")
     assert [(s["flight_no"], s["date"], s["origin"], s["dest"]) for s in d["flight_segments"]] == [
         ("AY 953", "2026-08-25", "HEL", "CPH"), ("AY 962", "2026-08-26", "CPH", "HEL")]
-    assert d["booking_ref"] == "8HZCXX"
-    assert d["ticket_number"] == "1052494949204"
+    assert d["booking_ref"] == "XYZ789"
+    assert d["ticket_number"] == "1059999990002"
 
 
 def test_enrich_receipts_reads_gmail_once(db):
