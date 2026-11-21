@@ -62,10 +62,11 @@ export function ToastProvider({ children }) {
     [],
   );
 
-  const value = useMemo(
-    () => ({ show, dismiss, toasts }),
-    [show, dismiss, toasts],
-  );
+  // C44: `toasts` hålls utanför context-värdet. Annars byter `toast`
+  // identitet vid varje show(), och komponenter som har `toast` i en
+  // useCallback-dep (reload → useEffect) hamnar i en oändlig fel-loop
+  // när en hämtning misslyckas.
+  const value = useMemo(() => ({ show, dismiss }), [show, dismiss]);
 
   return (
     <ToastContext.Provider value={value}>

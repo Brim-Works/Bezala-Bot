@@ -45,10 +45,11 @@ test('Gate 5 — klick "Visa kvittomail" laddar preview + länk-lista', async ({
   await page.locator(`tr[data-row-id="${pending.id}"]`).click();
   await page.getByTestId('show-mail-preview').click();
 
-  // Iframe renderas med sandbox=""
+  // Iframe renderas sandboxad utan scripts (FAS 8: allow-same-origin,
+  // aldrig allow-scripts).
   const frame = page.getByTestId('mail-preview-frame');
   await expect(frame).toBeVisible();
-  await expect(frame).toHaveAttribute('sandbox', '');
+  await expect(frame).toHaveAttribute('sandbox', 'allow-same-origin');
   // Länk-listan visar den detekterade länken
   await expect(page.getByTestId('mail-preview-links')).toBeVisible();
   await expect(

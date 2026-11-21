@@ -54,7 +54,11 @@ test('Drawer — pil-höger/vänster byter flik', async ({ page }) => {
   await page.goto('/');
   await page.locator('tr[data-row-id]').first().click();
 
-  // Fokus måste ligga på aktiv tab för att key-handlern ska fyra.
+  // Fokus måste ligga i fliklistan för att key-handlern ska fyra.
+  // C44: drawern flyttar fokus till stäng-knappen efter 50 ms och
+  // flikinnehåll kan ta fokus när det laddas — fokusera därför aktiv
+  // flik inför varje tangenttryck (annars flaky).
+  await page.waitForTimeout(100);
   await page.getByTestId('drawer-tab-gmail').focus();
 
   await page.keyboard.press('ArrowRight');
@@ -62,11 +66,13 @@ test('Drawer — pil-höger/vänster byter flik', async ({ page }) => {
     'aria-selected',
     'true',
   );
+  await page.getByTestId('drawer-tab-ai').focus();
   await page.keyboard.press('ArrowRight');
   await expect(page.getByTestId('drawer-tab-drive')).toHaveAttribute(
     'aria-selected',
     'true',
   );
+  await page.getByTestId('drawer-tab-drive').focus();
   await page.keyboard.press('ArrowLeft');
   await expect(page.getByTestId('drawer-tab-ai')).toHaveAttribute(
     'aria-selected',

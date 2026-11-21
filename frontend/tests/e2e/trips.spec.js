@@ -202,8 +202,8 @@ test('Kalenderresor visas som kort med tider, hotell, möten och kvitton', async
   const card = page.getByTestId('calendar-trip-7');
   await expect(card).toBeVisible();
   await expect(card).toContainText('Stockholm');
-  await expect(card).toContainText('Avresa 16:00');
-  await expect(card).toContainText('Hemkomst 20:05');
+  await expect(card).toContainText('Avresa hemifrån 16:00');
+  await expect(card).toContainText('Hemma 20:05');
   await expect(card).toContainText('Scandic Klara');
   await expect(card).toContainText('Workshop Visma');
   await expect(card).toContainText('Finnair');
@@ -223,7 +223,8 @@ test('C40: kalenderkortet visar status, flaggor, land och syfte från chatten', 
   const card = page.getByTestId('calendar-trip-8');
   await expect(card).toContainText('Redigerad');
   await expect(page.getByTestId('calendar-trip-review-8')).toHaveText('Välj flyg');
-  await expect(card).toContainText('SE');
+  // C41: landskoden visas som namn (SE → Sverige)
+  await expect(card).toContainText('Sverige');
   await expect(page.getByTestId('calendar-trip-purpose-8')).toContainText('Customer workshop');
 });
 

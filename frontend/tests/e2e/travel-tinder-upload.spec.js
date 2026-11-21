@@ -108,6 +108,9 @@ test('upload skickar payment_method=company_card och bill_line_id', async ({ pag
 
   await page.goto('/travel-tinder');
   await expect(page.getByTestId('tt-upload-card')).toBeVisible();
+  // C44: vänta tills korttransen är vald (kameraknappen syns bara då).
+  // Annars monteras kortet om efter att filen valts och filvalet tappas.
+  await expect(page.getByTestId('tt-upload-camera')).toBeVisible();
 
   // Sätt en fil på input
   const input = page.getByTestId('tt-upload-file-input');

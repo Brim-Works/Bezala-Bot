@@ -92,28 +92,36 @@ function buildRow({
   };
 }
 
+// C44: datum relativt idag — vyn filtrerar default på "30 dagar", så fasta
+// datum (april 2026) gjorde testet till en tidsinställd bomb.
+function daysAgo(n) {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  return d.toISOString().slice(0, 10);
+}
+
 const SAMPLE_ROWS = [
   buildRow({
     id: 1, merchant: 'MIKKO: ANTHROPIC 112.95 EUR',
-    vendor: 'Anthropic', amount: 112.95, date: '2026-04-14',
+    vendor: 'Anthropic', amount: 112.95, date: daysAgo(7),
     verdict: 'matched_correctly', bestScore: 105,
     bestVendor: 'Anthropic', gmailCategory: 'found',
   }),
   buildRow({
     id: 2, merchant: 'MIKKO: SKANETRAFIKEN 50 SEK',
     vendor: 'Skanetrafiken', amount: 50, currency: 'SEK',
-    date: '2026-04-20', verdict: 'gmail_miss', bestScore: null,
+    date: daysAgo(3), verdict: 'gmail_miss', bestScore: null,
     gmailCategory: 'filtered', wouldMatchHidden: 3,
   }),
   buildRow({
     id: 3, merchant: 'MIKKO: LOVABLE 100 EUR',
-    vendor: 'Lovable', amount: 100, date: '2026-05-05',
+    vendor: 'Lovable', amount: 100, date: daysAgo(1),
     verdict: 'no_receipt_exists', bestScore: null,
     gmailCategory: 'no_hits',
   }),
   buildRow({
     id: 4, merchant: 'MIKKO: VENDORX 300 EUR',
-    vendor: 'Vendorx', amount: 300, date: '2026-04-01',
+    vendor: 'Vendorx', amount: 300, date: daysAgo(12),
     verdict: 'match_algorithm_failed', bestScore: 65,
     bestVendor: 'OtherVendor', gmailCategory: 'found',
   }),

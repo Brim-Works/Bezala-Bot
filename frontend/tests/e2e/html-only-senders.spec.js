@@ -129,8 +129,11 @@ test('Settings — Toggle aktiv → PATCH kallas', async ({ page }) => {
       req.url().endsWith('/api/settings/html-only-senders/2') &&
       req.method() === 'PATCH',
   );
-  await page.getByTestId('html-only-sender-toggle-2').check();
+  // Kontrollerad checkbox — den slår om först när PATCH svarat, så
+  // .check() (som kräver omedelbar ändring) är fel verktyg här.
+  await page.getByTestId('html-only-sender-toggle-2').click();
   await reqPromise;
+  await expect(page.getByTestId('html-only-sender-toggle-2')).toBeChecked();
 });
 
 test('Settings — Radera sender → DELETE kallas + raden försvinner',
