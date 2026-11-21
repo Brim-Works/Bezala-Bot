@@ -442,6 +442,16 @@ export default {
       bannerGmailTitle: 'Gmail connection lost',
       bannerGmail:
         'The token has expired or been revoked. Click Reconnect Gmail to keep scanning new receipts.',
+      privateGmailLabel: 'Private Gmail (receipts only)',
+      connectPrivateGmail: 'Connect private Gmail (receipts only)',
+      reconnectPrivateGmail: 'Reconnect private Gmail',
+      disconnectPrivateGmail: 'Disconnect',
+      privateNotConnected: 'Not connected',
+      privateConnectedAs: 'Connected: {email} (read-only)',
+      privateSendersLabel: 'The bot only reads mail from:',
+      privateNoSenders: 'No sender allowed — nothing is read.',
+      privateHint:
+        'Pick your private account at Google. No other mail is fetched, stored or analysed.',
       bannerDriveTitle: 'Drive connection lost',
       bannerDrive:
         'The token has expired or been revoked. Click Reconnect Drive to keep saving files.',

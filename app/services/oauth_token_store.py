@@ -22,12 +22,15 @@ from app.services.settings_service import load_settings
 
 logger = logging.getLogger(__name__)
 
-Service = Literal["gmail", "drive"]
-SERVICES: tuple[Service, ...] = ("gmail", "drive")
+# C45 — 'gmail_private' = Mikkos privata Gmail (bara gmail.readonly,
+# bara allowlistade kvittoavsändare). Ingen env-fallback.
+Service = Literal["gmail", "drive", "gmail_private"]
+SERVICES: tuple[Service, ...] = ("gmail", "drive", "gmail_private")
 
 _FLAG_FIELD = {
     "gmail": "gmail_auth_required",
     "drive": "drive_auth_required",
+    "gmail_private": "gmail_private_auth_required",
 }
 
 
@@ -35,7 +38,9 @@ def _env_refresh_token(service: Service) -> str:
     settings = get_settings()
     if service == "gmail":
         return settings.gmail_refresh_token or ""
-    return settings.drive_refresh_token or ""
+    if service == "drive":
+        return settings.drive_refresh_token or ""
+    return ""
 
 
 def get_refresh_token(service: Service) -> str:
@@ -57,6 +62,37 @@ def get_refresh_token(service: Service) -> str:
     except Exception:  # noqa: BLE001
         logger.exception("Kunde inte läsa oauth_tokens-rad för %s", service)
     return _env_refresh_token(service)
+
+
+def get_token_data(service: Service) -> dict:
+    """Hela token_data-objektet UTOM själva refresh-tokenen (för UI:
+    ansluten adress, scopes). Tom dict om raden saknas."""
+    if service not in SERVICES:
+        raise ValueError(f"okänd service: {service!r}")
+    try:
+        with session_scope() as db:
+            row = db.query(OAuthToken).filter(OAuthToken.service == service).first()
+            if row and isinstance(row.token_data, dict):
+                return {
+                    k: v for k, v in row.token_data.items()
+                    if k not in ("refresh_token", "access_token", "token")
+                }
+    except Exception:  # noqa: BLE001
+        logger.exception("Kunde inte läsa oauth_tokens-rad för %s", service)
+    return {}
+
+
+def delete_token(service: Service) -> bool:
+    """Ta bort tokenen (koppla från). True om en rad fanns."""
+    if service not in SERVICES:
+        raise ValueError(f"okänd service: {service!r}")
+    with session_scope() as db:
+        row = db.query(OAuthToken).filter(OAuthToken.service == service).first()
+        if row is None:
+            return False
+        db.delete(row)
+    logger.info("Tog bort OAuth-token för %s", service)
+    return True
 
 
 def save_refresh_token(

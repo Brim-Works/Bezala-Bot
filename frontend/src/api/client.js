@@ -88,6 +88,7 @@ export const api = {
   messages: (limit = 50) => request(`/api/messages?limit=${limit}`),
   runs: (limit = 20) => request(`/api/runs?limit=${limit}`),
   settings: () => request('/api/settings'),
+  disconnectPrivateGmail: () => request('/api/auth/gmail_private', { method: 'DELETE' }),
   updateSettings: (payload) => request('/api/settings', { method: 'PUT', body: payload }),
   scan: () => request('/api/scan', { method: 'POST' }),
   uploadToBezala: (id, overrides) =>

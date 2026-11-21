@@ -443,6 +443,16 @@ export default {
       bannerGmailTitle: 'Gmail-anslutning förlorad',
       bannerGmail:
         'Tokenen har gått ut eller återkallats. Klicka Återanslut Gmail för att fortsätta scanna nya kvitton.',
+      privateGmailLabel: 'Privat Gmail (bara kvitton)',
+      connectPrivateGmail: 'Anslut privat Gmail (bara kvitton)',
+      reconnectPrivateGmail: 'Återanslut privat Gmail',
+      disconnectPrivateGmail: 'Koppla från',
+      privateNotConnected: 'Inte ansluten',
+      privateConnectedAs: 'Ansluten: {email} (bara läsrätt)',
+      privateSendersLabel: 'Boten läser bara mail från:',
+      privateNoSenders: 'Ingen avsändare tillåten — inget läses.',
+      privateHint:
+        'Välj ditt privata konto hos Google. Inga andra mail hämtas, lagras eller analyseras.',
       bannerDriveTitle: 'Drive-anslutning förlorad',
       bannerDrive:
         'Tokenen har gått ut eller återkallats. Klicka Återanslut Drive för att fortsätta spara filer.',

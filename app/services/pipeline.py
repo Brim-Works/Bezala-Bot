@@ -46,6 +46,16 @@ from app.services.receipt_kind import (
     is_airline_sender,
     pdf_text,
 )
+from app.services.apple_receipt import is_apple_sender, parse_apple_receipt
+from app.services.private_gmail import (
+    ACCOUNT_PRIVATE,
+    ACCOUNT_VISMA,
+    PrivateSenderNotAllowed,
+    build_private_query,
+    get_private_allowlist,
+    sender_address,
+)
+from app.services.reply_receipts import match_reply_receipt
 from app.services.settings_service import (
     build_gmail_query,
     build_gmail_query_html_only,
@@ -68,12 +78,25 @@ class ScanResult:
     # kvitton som filtrerades av AI eller var duplicates). Serialiseras
     # till scan_runs.filtered_messages.
     filtered: list[dict] = None
+    # C45 — tråd-id → avsändaradress för meddelanden som hämtats i denna
+    # körning. Används för att bedöma övriga meddelanden i samma tråd.
+    threads: dict = None
+    # C45 — message_id:n som redan bedömts i denna körning.
+    seen_ids: set = None
+    # C45 — antal meddelanden från privata kontot (bara räknare, inga id:n
+    # eller avsändare för avvisade mail).
+    private_found: int = 0
+    private_rejected: int = 0
 
     def __post_init__(self):
         if self.notes is None:
             self.notes = []
         if self.filtered is None:
             self.filtered = []
+        if self.threads is None:
+            self.threads = {}
+        if self.seen_ids is None:
+            self.seen_ids = set()
 
 
 # Låst reason-enum (speglas i frontend-i18n)
@@ -88,6 +111,55 @@ FILTERED_REASON_ALREADY_PROCESSED = "already_processed"
 FILTERED_REASON_FILENAME_ALREADY_SAVED = "filename_already_saved"
 FILTERED_REASON_DRIVE_FILENAME_EXISTS = "drive_filename_exists"
 FILTERED_REASON_INTEGRITY_RACE = "integrity_race"
+FILTERED_REASON_DUPLICATE_OTHER_ACCOUNT = "duplicate_other_account"
+
+
+def _acct(msg) -> str:
+    return getattr(msg, "source_account", None) or ACCOUNT_VISMA
+
+
+def _sender_domain(sender: str | None) -> str:
+    addr = sender_address(sender)
+    dom = addr.split("@", 1)[1] if "@" in addr else ""
+    # email.apple.com → apple.com (sista två leden räcker för jämförelsen)
+    return ".".join(dom.split(".")[-2:]) if dom else ""
+
+
+def find_cross_account_duplicate(
+    db, *, msg, amount: float | None, currency: str | None,
+    receipt_date: str | None,
+) -> "ProcessedMessage | None":
+    """C45 — samma kvitto i båda brevlådorna (t.ex. ett Apple-kvitto som
+    Mikko någon gång vidarebefordrat till jobbet). Matchar en sparad rad
+    från ANDRA kontot med samma belopp, valuta, kvittodatum och samma
+    avsändardomän (vidarebefordrat mail: domänen finns i ämne/summary/vendor).
+    """
+    if amount is None or not receipt_date:
+        return None
+    this_acct = _acct(msg)
+    dom = _sender_domain(msg.sender)
+    token = dom.split(".")[0] if dom else ""
+    q = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.status == "saved")
+        .filter(ProcessedMessage.receipt_date == receipt_date)
+        .filter(ProcessedMessage.message_id != msg.message_id)
+    )
+    for row in q.all():
+        row_acct = row.source_account or ACCOUNT_VISMA
+        if row_acct == this_acct:
+            continue
+        if row.amount is None or abs(float(row.amount) - float(amount)) > 0.01:
+            continue
+        if currency and row.currency and row.currency.upper() != currency.upper():
+            continue
+        hay = " ".join(
+            x or "" for x in (row.sender, row.vendor, row.subject, row.summary)
+        ).lower()
+        if token and token in hay:
+            return row
+    return None
 
 
 def _record_filtered(
@@ -343,11 +415,163 @@ def run_scan(max_results: int = 50) -> ScanResult:
             result.notes.append(f"{mid}: {exc}")
             _log_error(mid, str(exc))
 
+    # C45 — bedöm ALLA meddelanden i trådarna, inte bara sökträffen.
+    _process_thread_siblings(
+        gmail, drive, namer, analyzer, bezala, result,
+        excluded_subjects=excluded_subjects, use_ai=use_ai,
+        auto_upload=auto_upload, confidence_threshold=confidence_threshold,
+        ai_min_confidence=ai_min_confidence,
+        link_fetch_senders=link_fetch_senders,
+        html_to_pdf_enabled=html_to_pdf_enabled,
+        bezala_metadata=bezala_metadata,
+    )
+
+    # C45 — privat Gmail (bara allowlistade kvittoavsändare).
+    run_private_pass(
+        drive, namer, analyzer, bezala, result,
+        # Redan bearbetade id:n stoppas mot DB innan något hämtas, så ett
+        # större fönster kostar bara list-anropet.
+        max_results=max(max_results, 200),
+        excluded_subjects=excluded_subjects, use_ai=use_ai,
+        auto_upload=auto_upload, confidence_threshold=confidence_threshold,
+        ai_min_confidence=ai_min_confidence,
+        html_to_pdf_enabled=html_to_pdf_enabled,
+        bezala_metadata=bezala_metadata,
+    )
+
     if bezala is not None:
         bezala.close()
 
     _finalize_run(run_id, result, status="ok")
     return result
+
+
+DONE_LABEL_NAMES = {DONE_LABEL}
+
+
+def thread_sibling_candidates(
+    thread_messages: list[dict], *, sender: str, done_label_id: str | None,
+    known_ids: set[str],
+) -> list[str]:
+    """Välj meddelanden i en tråd som ska bedömas: samma avsändaradress som
+    sökträffen (svar från leverantören), inte skickade av Mikko, inte redan
+    Bezala-Klar och inte redan kända i denna körning/DB."""
+    out: list[str] = []
+    for m in thread_messages:
+        mid = m.get("message_id") or ""
+        if not mid or mid in known_ids:
+            continue
+        labels = set(m.get("labels") or [])
+        if "SENT" in labels or "DRAFT" in labels:
+            continue
+        if done_label_id and done_label_id in labels:
+            continue
+        if sender_address(m.get("sender")) != sender:
+            continue
+        out.append(mid)
+    return out
+
+
+def _process_thread_siblings(
+    gmail: GmailClient, drive, namer, analyzer, bezala, result: ScanResult,
+    **kwargs,
+) -> None:
+    if getattr(gmail, "is_private", False) is True or not result.threads:
+        return
+    try:
+        done_label_id = gmail._ensure_done_label()
+    except Exception:  # noqa: BLE001
+        done_label_id = None
+    for thread_id, sender in list(result.threads.items()):
+        if not sender:
+            continue
+        try:
+            msgs = gmail.list_thread_reply_ids(thread_id)
+            if not isinstance(msgs, list) or len(msgs) < 2:
+                continue
+            ids = [m.get("message_id") for m in msgs if m.get("message_id")]
+            with session_scope() as db:
+                known = {
+                    r.message_id for r in db.query(ProcessedMessage.message_id)
+                    .filter(ProcessedMessage.message_id.in_(ids)).all()
+                }
+        except Exception:  # noqa: BLE001
+            logger.exception("C45: kunde inte läsa tråd %s", thread_id)
+            continue
+        for mid in thread_sibling_candidates(
+            msgs, sender=sender, done_label_id=done_label_id,
+            known_ids=known | result.seen_ids,
+        ):
+            logger.info(
+                "[c45-thread-reply] bedömer svar %s i tråd %s (avsändare %s)",
+                mid, thread_id, sender,
+            )
+            result.found += 1
+            try:
+                _process_one_message(
+                    mid, gmail, drive, namer, analyzer, bezala, result, **kwargs,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("Fel under bearbetning av trådsvar %s", mid)
+                result.errors += 1
+                _log_error(mid, str(exc))
+
+
+def run_private_pass(
+    drive, namer, analyzer, bezala, result: ScanResult, *,
+    max_results: int = 50, after: str | None = None, **kwargs,
+) -> None:
+    """C45 — skanna privat Gmail. Bara om kontot är anslutet. Frågan byggs
+    enbart av allowlisten; varje meddelande kontrolleras igen mot den
+    (PrivateSenderNotAllowed) innan något innehåll hämtas. Avvisade
+    meddelanden räknas bara — inget id, ingen avsändare loggas/lagras."""
+    from app.services.oauth_token_store import OAuthAuthError, get_refresh_token
+    from app.services.private_gmail import PRIVATE_SCAN_AFTER
+
+    if not get_refresh_token("gmail_private"):
+        logger.info("C45: privat Gmail ej anslutet — hoppar privat pass")
+        return
+    allowlist = get_private_allowlist()
+    query = build_private_query(allowlist, after=after or PRIVATE_SCAN_AFTER)
+    if not query:
+        logger.info("C45: PRIVATE_GMAIL_SENDER_ALLOWLIST tom — hoppar privat pass")
+        return
+    try:
+        gmail = GmailClient(account=ACCOUNT_PRIVATE)
+        ids = gmail.list_candidate_message_ids(query=query, max_results=max_results)
+    except OAuthAuthError:
+        logger.warning("C45: privat Gmail kräver återanslutning — hoppar")
+        return
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("C45: privat Gmail-sökning misslyckades: %s", exc)
+        result.errors += 1
+        return
+    result.private_found += len(ids)
+    result.found += len(ids)
+    logger.info(
+        "C45 privat pass: query=%s kandidater=%d", query, len(ids),
+    )
+    for mid in ids:
+        try:
+            _process_one_message(
+                mid, gmail, drive, namer, analyzer, bezala, result,
+                link_fetch_senders=[], **kwargs,
+            )
+        except PrivateSenderNotAllowed:
+            # Inget loggas om meddelandet utöver räknaren.
+            result.private_rejected += 1
+            result.skipped += 1
+        except Exception as exc:  # noqa: BLE001
+            # Felet kan ha uppstått FÖRE allowlist-kontrollen — logga varken
+            # id eller innehåll. (Fel efter kontrollen, t.ex. AI-analys,
+            # loggas redan inne i _process_one_message med msg-kontext.)
+            logger.error("C45: fel i privat pass: %s", type(exc).__name__)
+            result.errors += 1
+    if result.private_rejected:
+        logger.info(
+            "C45 privat pass: %d meddelanden avvisades (ej i allowlist) — "
+            "inget innehåll hämtat", result.private_rejected,
+        )
 
 
 def fetch_bezala_metadata(bezala: BezalaClient) -> dict:
@@ -517,6 +741,9 @@ def _process_one_message(
             return
 
     msg = gmail.fetch_message(message_id)
+    result.seen_ids.add(message_id)
+    if msg.thread_id and _acct(msg) == ACCOUNT_VISMA:
+        result.threads.setdefault(msg.thread_id, sender_address(msg.sender))
 
     # Vendor-specifik kvitto-länk (C37): vissa avsändare (Arlanda Express)
     # skickar BÅDE bilaga (biljett/boarding pass) OCH en länk till det
@@ -566,6 +793,7 @@ def _process_one_message(
                             received_at=msg.received_at,
                             status="needs_manual_download",
                             pending_link=link,
+                            source_account=_acct(msg),
                             vendor=prelim.get("vendor"),
                             amount=prelim.get("amount"),
                             currency=prelim.get("currency"),
@@ -696,8 +924,19 @@ def _process_one_message(
     )
     # FAS 8.1 — och negativa exempel (mail användaren tidigare markerat
     # som icke-kvitto). Skickas till analyzer så Claude kan filtrera.
+    # C45 — kvitto som svar i en tråd (Airport Recovery m.fl.): deterministisk
+    # regel. Negativa exempel från samma avsändare (tidigare icke-kvitton i
+    # samma tråd) skickas INTE med — det var de som fick AI:n att avfärda.
+    reply_match = match_reply_receipt(msg.sender, msg.body_text, msg.body_html)
     not_receipt_examples = (
-        _fetch_not_receipt_for_sender(msg.sender) if use_ai else []
+        _fetch_not_receipt_for_sender(msg.sender)
+        if use_ai and reply_match is None else []
+    )
+    apple = (
+        parse_apple_receipt(
+            text=msg.body_text, html=msg.body_html, received_at=msg.received_at,
+        )
+        if is_apple_sender(msg.sender) else None
     )
 
     for att in pdf_attachments:
@@ -727,6 +966,8 @@ def _process_one_message(
                 message_id, analysis.is_receipt, analysis.confidence,
                 analysis.category, analysis.vendor,
             )
+            if reply_match is not None:
+                _apply_reply_receipt(analysis, reply_match, msg)
 
             if not analysis.is_receipt:
                 any_non_receipt = True
@@ -760,6 +1001,31 @@ def _process_one_message(
                     msg.sender,
                     msg.subject,
                 )
+                continue
+
+        if apple is not None and analysis is not None:
+            _apply_apple_receipt(analysis, apple, msg)
+
+        # C45 — samma kvitto redan sparat från det andra Gmail-kontot?
+        if analysis is not None and not force:
+            with session_scope() as db:
+                dup = find_cross_account_duplicate(
+                    db, msg=msg, amount=analysis.amount,
+                    currency=analysis.currency, receipt_date=analysis.date,
+                )
+                dup_id = dup.id if dup is not None else None
+            if dup_id is not None:
+                any_non_receipt = True  # mark_done (no-op för privat)
+                _record_filtered(
+                    result, msg, FILTERED_REASON_DUPLICATE_OTHER_ACCOUNT,
+                    detail=f"processed_messages.id={dup_id}",
+                )
+                logger.info(
+                    "C45 dedupe: %s (%s) är samma kvitto som rad %s från "
+                    "andra kontot — sparas inte igen",
+                    message_id, _acct(msg), dup_id,
+                )
+                _log_skip(msg, reason=FILTERED_REASON_DUPLICATE_OTHER_ACCOUNT)
                 continue
 
         # C43 — Finnair/Amadeus-ombokning ("change fee") ska inte se ut som
@@ -868,6 +1134,7 @@ def _process_one_message(
                         bezala_upload_status=bezala_status,
                         bezala_error_message=bezala_err,
                         kind=receipt_kind,
+                        source_account=_acct(msg),
                     )
                 )
                 db.add(
@@ -896,6 +1163,42 @@ def _process_one_message(
         result.skipped += 1
 
 
+def _apply_reply_receipt(analysis: ReceiptAnalysis, match, msg) -> None:
+    """Trådsvar-kvitto: avsändare + nyckelfras vinner över AI:ns bedömning."""
+    if not analysis.is_receipt or analysis.confidence < 90:
+        logger.info(
+            "[c45-thread-reply] %s: regel %s överstyr AI (is_receipt=%s "
+            "confidence=%d)", msg.message_id, match.rule.sender,
+            analysis.is_receipt, analysis.confidence,
+        )
+    analysis.is_receipt = True
+    analysis.confidence = max(int(analysis.confidence or 0), 90)
+    if analysis.amount is None and match.amount is not None:
+        analysis.amount = match.amount
+    if not analysis.currency and match.currency:
+        analysis.currency = match.currency
+    analysis.vendor = analysis.vendor or match.rule.vendor
+    analysis.description_en = match.description_en()
+
+
+def _apply_apple_receipt(analysis: ReceiptAnalysis, apple, msg) -> None:
+    """Apple-kvitto: deterministisk engelsk beskrivning; fyll belopp/valuta
+    om AI:n missade. Hårdvara/okänt → flagga i loggen, gissa inte konto."""
+    analysis.description_en = apple.description_en()
+    analysis.vendor = analysis.vendor or "Apple"
+    if analysis.amount is None and apple.amount is not None:
+        analysis.amount = apple.amount
+    if not analysis.currency and apple.currency:
+        analysis.currency = apple.currency
+    logger.info(
+        "[c45-apple] %s account=%s service=%s subscription=%s amount=%s %s "
+        "order=%s needs_review=%s description=%r",
+        msg.message_id, _acct(msg), apple.service, apple.is_subscription,
+        analysis.amount, analysis.currency, apple.order_id,
+        apple.needs_review, analysis.description_en,
+    )
+
+
 def _log_skip(msg: GmailMessage, reason: str) -> None:
     try:
         with session_scope() as db:
@@ -907,6 +1210,7 @@ def _log_skip(msg: GmailMessage, reason: str) -> None:
                     subject=msg.subject,
                     received_at=msg.received_at,
                     status=f"skipped:{reason}",
+                    source_account=_acct(msg),
                 )
             )
     except IntegrityError:
@@ -1013,6 +1317,7 @@ def _log_error(
                         thread_id=(msg.thread_id if msg else None),
                         status="error",
                         error_message=error[:2000],
+                        source_account=(_acct(msg) if msg else ACCOUNT_VISMA),
                     )
                 )
     except Exception:
