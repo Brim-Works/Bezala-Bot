@@ -2121,6 +2121,13 @@ html[data-theme='B'] .settings-section__title {
   min-width: 0;
 }
 
+.settings-auth-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .settings-auth-row__status {
   font-size: 12px;
 }
