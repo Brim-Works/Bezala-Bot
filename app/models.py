@@ -77,6 +77,10 @@ class ProcessedMessage(Base):
     upload_source = Column(String(20), nullable=True, default="gmail")
     manual_uploaded_at = Column(DateTime, nullable=True)
     manual_comment = Column(Text, nullable=True)
+    # C43 — dokumenttyp. NULL = vanligt kvitto. 'change_fee' = Finnair/
+    # Amadeus-ombokning (prisskillnad/ändringsavgift) — räknas inte som
+    # resans flygbiljett.
+    kind = Column(String(32), nullable=True)
 
 
 class SavedFile(Base):
@@ -659,6 +663,7 @@ class CardLine(Base):
     Speglar Bezala GET /missing_receipts (endast läsning). En rad som
     försvinner ur Bezalas lista har fått kvitto → status 'resolved'.
     status: 'missing' | 'receipt_not_available' (Mikko/C43 — larmar inte)
+    | 'private_expense' (C43 — privat köp, dras från lönen; larmar inte)
     | 'resolved'.
     """
 
@@ -675,6 +680,8 @@ class CardLine(Base):
     status = Column(String(32), nullable=False, default="missing")
     set_by = Column(String(10), nullable=True)
     note = Column(Text, nullable=True)
+    # C43 — Bezala-utkast skapat för en private_expense-rad (på begäran).
+    bezala_transaction_id = Column(String(255), nullable=True)
     first_seen_at = Column(DateTime, server_default=func.now(), nullable=False)
     last_seen_at = Column(DateTime, nullable=True)
     resolved_at = Column(DateTime, nullable=True)

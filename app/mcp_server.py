@@ -1,7 +1,9 @@
 """C40 — MCP-server (Streamable HTTP) på /mcp för Claude-chatten.
 
-Verktygen läser och ändrar BARA `calendar_trips` / `calendar_trip_days`.
-Inget skickas till Bezala eller Netvisor.
+Reseverktygen läser och ändrar BARA `calendar_trips` / `calendar_trip_days`
+(C42: även trip_expectations/card_lines). C43 mark_private_expense ändrar
+card_lines och skapar — bara med create_draft=True — ett Bezala-UTKAST.
+Inget skickas för attest och inget går till Netvisor.
 
 Varje anrop kräver en giltig OAuth-access-token (se app/mcp_oauth.py).
 Utan token svarar /mcp 401 med `WWW-Authenticate: Bearer
@@ -41,7 +43,10 @@ INSTRUCTIONS = (
     "Completeness: get_trip_checklist shows which receipts a trip should have "
     "(flight, one hotel per night, HEL parking, optional local transport) and "
     "whether each is found; list_missing lists everything missing, including "
-    "Bezala card payments without a receipt (read-only — nothing is created in Bezala)."
+    "Bezala card payments without a receipt (read-only — nothing is created in Bezala). "
+    "Card lines flagged 'possible_private' are parking outside any trip — ask Mikko "
+    "whether it was private; if so use mark_private_expense (Bezala comment 'Private "
+    "expense – to be deducted from salary.'). Nothing is ever submitted for approval."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -256,9 +261,46 @@ async def set_card_line_status(
     note: str | None = None,
 ) -> dict:
     """Mark a Bezala card payment without receipt. status:
-    'receipt_not_available' (no receipt exists — stop listing it as missing) or
-    'missing' (undo). Only changes Bezala Bot's own list; nothing goes to Bezala."""
+    'receipt_not_available' (no receipt exists — stop listing it as missing),
+    'private_expense' (private purchase on the company card, deducted from salary —
+    prefer mark_private_expense) or 'missing' (undo). Only changes Bezala Bot's own
+    list; nothing goes to Bezala."""
     return await _run(completeness.set_card_line_status, bill_line_id, status, note=note)
+
+
+# ---------- C43: privat utlägg ----------
+
+
+@mcp.tool()
+async def mark_private_expense(
+    bill_line_id: str, note: str | None = None, create_draft: bool = False,
+) -> dict:
+    """Mark a Bezala card payment as a PRIVATE expense (paid by mistake with the
+    company card). It stops counting as missing, and the Bezala comment becomes
+    'Private expense – to be deducted from salary.' so payroll deducts it.
+    note: optional English note. create_draft=True also creates a Bezala DRAFT for
+    the row with that comment — it is never submitted for approval.
+    Only on Mikko's word. Undo: set_card_line_status(bill_line_id, 'missing')."""
+    from app.services import bill_line_status as bls
+    from app.services.trip_completeness import _today, card_line_dict
+
+    def work(db):
+        try:
+            row = bls.mark_private_expense(db, bill_line_id, note)
+        except bls.BillLineStatusError as exc:
+            raise TripEditError(str(exc)) from exc
+        if create_draft:
+            from app.services.bezala_client import BezalaClient
+
+            bezala = BezalaClient()
+            try:
+                bls.create_private_expense_draft(db, bezala, bill_line_id)
+            finally:
+                bezala.close()
+            db.refresh(row)
+        return card_line_dict(row, _today())
+
+    return await _run(work)
 
 
 # ---------- ASGI: auth + Streamable HTTP ----------

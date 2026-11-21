@@ -271,6 +271,8 @@ def test_valid_token_works(env):
         # C42
         "get_trip_checklist", "set_expectation_status", "list_missing",
         "set_card_line_status",
+        # C43
+        "mark_private_expense",
     }
 
 

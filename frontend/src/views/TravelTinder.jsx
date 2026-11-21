@@ -703,6 +703,7 @@ export default function TravelTinder() {
             uploadCard={
               <UploadCard
                 payment={selected?.missing_receipt}
+                onStatusChanged={() => refresh({ silent: true })}
                 onUploaded={(result) => {
                   const coupled = result?.coupling?.ok === true;
                   const vendor =

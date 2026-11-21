@@ -40,6 +40,12 @@ from app.services.receipt_analyzer import (
 )
 from app.services.link_extractor import extract_receipt_link
 from app.services.vendor_handlers import fetch_link_receipt_for_message
+from app.services.receipt_kind import (
+    KIND_CHANGE_FEE,
+    detect_change_fee,
+    is_airline_sender,
+    pdf_text,
+)
 from app.services.settings_service import (
     build_gmail_query,
     build_gmail_query_html_only,
@@ -756,6 +762,32 @@ def _process_one_message(
                 )
                 continue
 
+        # C43 — Finnair/Amadeus-ombokning ("change fee") ska inte se ut som
+        # resans flygbiljett. Engelsk Bezala-beskrivning skrivs om.
+        receipt_kind: str | None = None
+        if is_airline_sender(msg.sender):
+            change = detect_change_fee(
+                sender=msg.sender,
+                subject=msg.subject,
+                text=f"{msg.body_text or ''}\n{pdf_text(att.data)}",
+                amount=analysis.amount if analysis else None,
+                currency=analysis.currency if analysis else None,
+            )
+            if change is not None:
+                receipt_kind = KIND_CHANGE_FEE
+                logger.info(
+                    "C43 change_fee: %s reason=%s route=%s-%s date=%s amount=%s %s",
+                    message_id, change.reason, change.origin,
+                    change.destination, change.flight_date,
+                    change.amount, change.currency,
+                )
+                if analysis is not None:
+                    analysis.description_en = change.description_en()
+                    if change.amount is not None:
+                        analysis.amount = change.amount
+                    if change.currency:
+                        analysis.currency = change.currency
+
         if analysis is not None:
             new_name = analysis.filename
         else:
@@ -835,6 +867,7 @@ def _process_one_message(
                         bezala_transaction_id=bezala_txn_id,
                         bezala_upload_status=bezala_status,
                         bezala_error_message=bezala_err,
+                        kind=receipt_kind,
                     )
                 )
                 db.add(

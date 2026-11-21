@@ -85,6 +85,23 @@ AMOUNT_BONUS = 50
 AMOUNT_TOLERANCE_CONVERTED = 0.02
 AMOUNT_BONUS_CONVERTED = 40
 
+# C43 — kortavgift. Kortbolaget räknar om med egen kurs + valutapåslag, så
+# kortraden blir systematiskt 1–3 % DYRARE än ECB-konverteringen av
+# kvittot. Bekräftat i prod: Yalla Go 750 SEK 2026-08-31 → ECB 67,51 EUR,
+# kortraden 69,22 EUR (+2,5 %) → gamla symmetriska ±2 % gav 0 beloppspoäng
+# och ett annat kvitto vann. Fönstret är därför asymmetriskt:
+#   kortrad får vara upp till 3 % ÖVER konverterat belopp (avgift)
+#   men bara 1 % UNDER (kursbrus mellan ECB och kortnätverket).
+# Utanför fönstret → 0 beloppspoäng (oförändrat).
+CARD_FEE_TOLERANCE_ABOVE = 0.03
+CARD_FEE_TOLERANCE_BELOW = 0.01
+
+# C43 — plats-signal. Kvitto från samma land/ort som kortraden (kortradens
+# landskod "…, SE 69.22 EUR") eller som kalenderresans arbetsort/land får
+# en liten bonus. Totalen klampas till MAX_TOTAL_SCORE så procentvisningen
+# i UI:t inte går över 100 %; bonusen avgör dessutom i sorteringen.
+LOCATION_BONUS = 10
+
 # Vendor-fuzzy: SequenceMatcher → 0..30
 VENDOR_BONUS_MAX = 30
 
@@ -127,7 +144,11 @@ VENDOR_OVERRIDES: tuple[tuple[str, str], ...] = (
 # triggar false positives mellan orelaterade vendors.
 VENDOR_ALIASES: dict[str, list[str]] = {
     "LOVABLE": ["lovable", "lovable.dev"],
-    "MJS.LIFE": ["mjs.life", "mjslife"],
+    # C43 — MJ'S hotell (Malmö) bokas via bookvisit; kvittot kommer från
+    # noreply@bookvisit.com med "MJ'S" som visningsnamn.
+    "MJS.LIFE": ["mjs.life", "mjslife", "mj's", "mj’s", "bookvisit"],
+    # C43 — taxi Göteborg via SumUp-terminal ("SUMUP  *YALLA GO AB").
+    "YALLA GO": ["yalla go", "yallago", "yalla"],
     "CIRCLE K OERKELLJUNGA": ["circle k", "circlek"],
     "APPLE.COM/BILL": ["apple", "itunes", "apple.com"],
     # AIRPORT LRS borttagen — generisk "AIRPORT"-nyckel + aliaser
@@ -372,8 +393,21 @@ def _amount_matches_via_conversion(
     if rate is None:
         return False, None, None
     converted = candidate_amount * rate
-    diff_pct = abs(missing_amount - converted) / abs(missing_amount)
-    return diff_pct <= AMOUNT_TOLERANCE_CONVERTED, converted, rate
+    return _within_card_fee_window(missing_amount, converted), converted, rate
+
+
+def _within_card_fee_window(card_amount: float, converted: float) -> bool:
+    """C43 — True om kortbeloppet ligger inom kortavgiftsfönstret relativt
+    det ECB-konverterade kvittobeloppet (se CARD_FEE_TOLERANCE_*).
+
+    Tecken hanteras via absolutbelopp så återbetalningar (negativa rader)
+    jämförs på samma sätt."""
+    if not converted:
+        return False
+    card = abs(card_amount)
+    conv = abs(converted)
+    rel = (card - conv) / conv
+    return -CARD_FEE_TOLERANCE_BELOW <= rel <= CARD_FEE_TOLERANCE_ABOVE
 
 
 def _date_diff_days(a_str: str | None, b_str: str | None) -> int | None:
@@ -440,6 +474,104 @@ def _date_score(missing_date: str | None, candidate_date: str | None) -> int:
     return score
 
 
+# C43 — plats-signal -------------------------------------------------------
+
+# Valuta → land där valutan entydigt pekar ut ett land. EUR saknas medvetet
+# (delas av många länder) — där krävs ort i kvittotexten.
+CURRENCY_COUNTRY: dict[str, str] = {
+    "SEK": "SE", "NOK": "NO", "DKK": "DK", "GBP": "GB", "USD": "US",
+    "CHF": "CH", "PLN": "PL", "ISK": "IS", "CZK": "CZ", "HUF": "HU",
+}
+
+# Ortnamn i olika stavningar (engelska Netvisor-namn ↔ svenska/lokala).
+CITY_ALIASES: dict[str, tuple[str, ...]] = {
+    "gothenburg": ("gothenburg", "goteborg", "göteborg", "landvetter"),
+    "malmo": ("malmo", "malmö"),
+    "copenhagen": ("copenhagen", "kobenhavn", "københavn", "köpenhamn", "kastrup"),
+    "stockholm": ("stockholm", "arlanda"),
+    "helsingborg": ("helsingborg",),
+    "vaxjo": ("vaxjo", "växjö"),
+    "ljungby": ("ljungby",),
+    "oslo": ("oslo", "gardermoen"),
+    "kristianstad": ("kristianstad",),
+}
+
+_CARD_COUNTRY_RE = re.compile(
+    r",\s*([A-Z]{2})\s+-?\d+(?:[.,]\d+)?\s+[A-Z]{3}\s*$"
+)
+
+
+def card_country(description: str | None) -> str | None:
+    """Landskoden i Bezalas kortradstext:
+    'MIKKO KEINONEN: SUMUP *YALLA GO AB, ANGERWD, SE 69.22 EUR' → 'SE'."""
+    if not description:
+        return None
+    m = _CARD_COUNTRY_RE.search(description.strip())
+    return m.group(1) if m else None
+
+
+def _norm_city(text: str) -> str:
+    return (text or "").strip().lower()
+
+
+def _city_variants(city: str) -> tuple[str, ...]:
+    c = _norm_city(city)
+    if not c:
+        return ()
+    for key, variants in CITY_ALIASES.items():
+        if c == key or c in variants:
+            return variants
+    return (c,)
+
+
+def _candidate_text(candidate: dict) -> str:
+    parts = [
+        candidate.get(k) for k in (
+            "vendor", "summary", "ai_description_en", "subject", "file_name",
+        )
+    ]
+    return " ".join(str(p) for p in parts if p).lower()
+
+
+def location_signal(missing: dict, candidate: dict) -> str | None:
+    """Returnera skäl (str) om kvittot ser ut att komma från samma plats som
+    kortraden, annars None.
+
+    Källor för kortradens plats:
+      - landskoden i kortradstexten ('…, SE 69.22 EUR')
+      - missing['trip'] = {'countries': [...], 'cities': [...]} när
+        kortraden ligger inom en kalenderresa (sätts av endpointen)
+    Källor för kvittots plats:
+      - valutan (SEK → SE osv., EUR ger inget)
+      - ortnamn i vendor/summary/beskrivning/ämne
+    """
+    countries: set[str] = set()
+    cc = card_country(missing.get("description"))
+    if cc:
+        countries.add(cc)
+    trip = missing.get("trip") or {}
+    for c in trip.get("countries") or []:
+        for part in str(c).split(","):
+            if part.strip():
+                countries.add(part.strip().upper())
+
+    cand_cur = (candidate.get("currency") or "").upper().strip()
+    cand_country = CURRENCY_COUNTRY.get(cand_cur)
+    if cand_country and cand_country in countries:
+        if cc == cand_country:
+            return f"country:{cand_country}"
+        return f"trip_country:{cand_country}"
+
+    cities = [c for c in (trip.get("cities") or []) if c]
+    if cities:
+        text = _candidate_text(candidate)
+        for city in cities:
+            for variant in _city_variants(city):
+                if variant and re.search(rf"\b{re.escape(variant)}\b", text):
+                    return f"trip_city:{_norm_city(city)}"
+    return None
+
+
 def score_match(
     missing: dict,
     candidate: dict,
@@ -484,7 +616,17 @@ def score_match(
     same_or_unknown_currency = (
         not m_cur or not c_cur or m_cur == c_cur
     )
-    if same_or_unknown_currency:
+    # C43 — kortraden kan bära BÅDE originalvaluta (750 SEK) och debiterat
+    # EUR-belopp (69.22 EUR, sist i beskrivningen). Ett EUR-kvitto jämförs
+    # då direkt mot EUR-beloppet istället för via konvertering.
+    m_eur = missing.get("amount_eur")
+    if (
+        not same_or_unknown_currency
+        and c_cur == "EUR"
+        and m_eur is not None
+    ):
+        breakdown["amount"] = _amount_score(m_eur, candidate.get("amount"))
+    elif same_or_unknown_currency:
         breakdown["amount"] = _amount_score(
             missing.get("amount"), candidate.get("amount"),
         )
@@ -529,6 +671,15 @@ def score_match(
     # override returnerar sim 0.95-1.0 så de är immuna.
     if sim < VENDOR_FLOOR_SIMILARITY and total > VENDOR_FLOOR_MAX_TOTAL:
         total = VENDOR_FLOOR_MAX_TOTAL
+    else:
+        # C43 — plats-bonus (kortradens land / kalenderresans ort+land).
+        # Ges inte till kandidater som redan kapats av vendor-floor:en —
+        # rätt land räcker inte för att göra ett okänt kvitto till en match.
+        loc = location_signal(missing, candidate)
+        breakdown["location"] = LOCATION_BONUS if loc else 0
+        breakdown["location_reason"] = loc
+        if loc:
+            total = min(total + LOCATION_BONUS, MAX_TOTAL_SCORE)
 
     result: dict = {"total": total, "breakdown": breakdown}
     if conversion is not None:
@@ -536,7 +687,7 @@ def score_match(
     return result
 
 
-def _rank_key(entry: dict) -> tuple[int, int]:
+def _rank_key(entry: dict) -> tuple[int, int, int]:
     """Sorteringsnyckel för kandidater (lägre = bättre).
 
     C26 tie-breaker: primärt högsta score, sekundärt minst datumskillnad.
@@ -549,7 +700,12 @@ def _rank_key(entry: dict) -> tuple[int, int]:
     de sorteras sist bland kandidater med samma score.
     """
     days_off = entry["score_breakdown"].get("date_days_off")
-    return (-entry["score"], days_off if days_off is not None else 10**9)
+    location = entry["score_breakdown"].get("location") or 0
+    return (
+        -entry["score"],
+        -location,
+        days_off if days_off is not None else 10**9,
+    )
 
 
 def find_matches(

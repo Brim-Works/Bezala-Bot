@@ -58,6 +58,8 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "upload_source": "VARCHAR(20) DEFAULT 'gmail'",
     "manual_uploaded_at": "TIMESTAMP",
     "manual_comment": "TEXT",
+    # C43 — dokumenttyp ('change_fee' för Finnair-ombokningar)
+    "kind": "VARCHAR(32)",
 }
 
 _APP_SETTINGS_ADDITIONS = {
@@ -117,6 +119,11 @@ _CALENDAR_TRIP_DAYS_ADDITIONS = {
     # C41 — flygplats skild från arbetsort
     "airport": "VARCHAR(8)",
     "destination_source": "VARCHAR(32)",
+}
+
+_CARD_LINES_ADDITIONS = {
+    # C43 — Bezala-utkast för private_expense-rad
+    "bezala_transaction_id": "VARCHAR(255)",
 }
 
 _INDEXES = [
@@ -181,6 +188,20 @@ def _apply_schema_migrations() -> None:
                         text(f"ALTER TABLE app_settings ADD COLUMN {name} {col_type}")
                     )
                     logger.info("Lade till kolumn app_settings.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
+    if "card_lines" in tables:
+        existing = {col["name"] for col in insp.get_columns("card_lines")}
+        with engine.begin() as conn:
+            for name, col_type in _CARD_LINES_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE card_lines ADD COLUMN {name} {col_type}")
+                    )
+                    logger.info("Lade till kolumn card_lines.%s", name)
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 

@@ -38,7 +38,9 @@ STATUSES = ("found", "missing", "not_applicable", "optional")
 # Det Mikko kan sätta via set_expectation_status. 'auto' tar bort hans
 # markering så att omräkningen bestämmer igen.
 USER_STATUSES = ("not_applicable", "found", "auto")
-CARD_LINE_STATUSES = ("missing", "receipt_not_available")
+CARD_LINE_STATUSES = ("missing", "receipt_not_available", "private_expense")
+# C43 — statusar Mikko satt som betyder "hanterad, larma inte".
+HANDLED_CARD_LINE_STATUSES = ("receipt_not_available", "private_expense")
 
 # Flygplatser långt från stan — lokaltransport är rimlig även när
 # arbetsorten är samma stad (Arlanda Express, Flytoget).
@@ -127,7 +129,7 @@ class Receipt:
     """Lättviktsvy av en ProcessedMessage för matchningen."""
 
     __slots__ = ("message_id", "vendor", "amount", "currency", "day", "text",
-                 "kinds", "drive_link", "bill_line_id")
+                 "kinds", "drive_link", "bill_line_id", "kind")
 
     def __init__(self, m: ProcessedMessage):
         self.message_id = m.message_id
@@ -136,6 +138,8 @@ class Receipt:
         self.currency = m.currency
         self.drive_link = m.drive_link
         self.bill_line_id = m.bezala_transaction_id
+        # C43 — 'change_fee' (Finnair-ombokning) räknas inte som flygbiljett.
+        self.kind = getattr(m, "kind", None)
         self.day = (
             _parse_day(m.receipt_date)
             or _parse_day(m.bezala_payment_date)
@@ -231,7 +235,7 @@ def _match_flight(trip: CalendarTrip, receipts: list[Receipt]) -> Receipt | None
     tokens = _date_tokens(start)
     best: tuple[int, Receipt] | None = None
     for r in receipts:
-        if "flight" not in r.kinds:
+        if "flight" not in r.kinds or r.kind == "change_fee":
             continue
         if not (start - timedelta(days=FLIGHT_LOOKBACK_DAYS) <= r.day <= end + timedelta(days=30)):
             continue
@@ -810,6 +814,11 @@ def card_line_dict(c: CardLine, today: date, trip: CalendarTrip | None = None) -
         "status": c.status,
         "note": c.note,
     }
+    if c.status == "private_expense":
+        from app.services.bill_line_status import private_expense_description
+
+        out["bezala_comment"] = private_expense_description(c.note)
+        out["bezala_transaction_id"] = c.bezala_transaction_id
     if trip is not None:
         out["trip_id"] = trip.id
     return out
@@ -832,6 +841,15 @@ def list_card_lines(db: Session, *, include_not_available: bool = False) -> list
         d = card_line_dict(c, today)
         d["trip_id"] = trip.id if trip else None
         d["suggested_source"] = suggest_source(db, c.vendor, _cache=cache)
+        # C43 — parkering (HEL/Moovy …) utanför kalenderresa: privat?
+        from app.services.bill_line_status import possible_private_flags
+
+        d["flags"] = possible_private_flags(db, c)
+        if d["flags"]:
+            d["question"] = (
+                "Parking outside any calendar trip — private expense? "
+                "Use mark_private_expense if Mikko says so."
+            )
         out.append(d)
     return out
 
@@ -842,7 +860,8 @@ def set_card_line_status(db: Session, bill_line_id: str, status: str,
 
     if status not in CARD_LINE_STATUSES:
         raise TripEditError(
-            "Unknown status. Use 'receipt_not_available' (stop alerting) or "
+            "Unknown status. Use 'receipt_not_available' (stop alerting), "
+            "'private_expense' (private purchase, deducted from salary) or "
             "'missing' (undo)."
         )
     row = db.query(CardLine).filter(CardLine.bill_line_id == str(bill_line_id)).first()
@@ -903,4 +922,6 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
         "trip_items_missing": trip_items,
         "card_lines_without_receipt": cards,
         "counts": {"trip_items": len(trip_items), "card_lines": len(cards)},
+        # C43 — parkering utanför resa → fråga Mikko om privat.
+        "possible_private_count": sum(1 for c in cards if c.get("flags")),
     }

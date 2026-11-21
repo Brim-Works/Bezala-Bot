@@ -22,10 +22,15 @@ function formatSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export default function UploadCard({ payment, onUploaded }) {
+export default function UploadCard({ payment, onUploaded, onStatusChanged }) {
   const { t } = useI18n();
   const tu = t.travelTinder.upload;
   const inputRef = useRef(null);
+  // C43 — mobil: kamera direkt. Ett tryck → kameran → kvittot laddas upp och
+  // kopplas till vald kortrad utan fler steg.
+  const cameraRef = useRef(null);
+  const [statusBusy, setStatusBusy] = useState(false);
+  const [statusMsg, setStatusMsg] = useState(null);
 
   const [file, setFile] = useState(null);
   const [paymentMethod, setPaymentMethod] = useState('company_card');
@@ -96,13 +101,13 @@ export default function UploadCard({ payment, onUploaded }) {
     onPickFile(f);
   };
 
-  const onUpload = async () => {
-    if (!file || uploading) return;
+  const doUpload = async (f) => {
+    if (!f || uploading) return;
     setUploading(true);
     setError(null);
     try {
       const result = await api.uploadManualReceipt({
-        file,
+        file: f,
         paymentMethod,
         comment,
         billLineId,
@@ -118,6 +123,47 @@ export default function UploadCard({ payment, onUploaded }) {
       setError(`${tu.errorGeneric}: ${detail}`);
     } finally {
       setUploading(false);
+    }
+  };
+
+  const onUpload = () => doUpload(file);
+
+  // C43 — kameraknappen laddar upp direkt (inget extra "Ladda upp"-klick).
+  const onCameraChange = (e) => {
+    const f = e.target.files?.[0];
+    e.target.value = '';
+    if (!f) return;
+    if (f.size > MAX_BYTES) {
+      setError(tu.errorTooLarge);
+      return;
+    }
+    doUpload(f);
+  };
+
+  const billStatus = payment?.bill_line_status || null;
+  const possiblePrivate = (payment?.flags || []).includes('possible_private');
+
+  const changeStatus = async (action) => {
+    if (billLineId == null || statusBusy) return;
+    setStatusBusy(true);
+    setError(null);
+    setStatusMsg(null);
+    try {
+      if (action === 'undo') {
+        await api.unmarkPrivateExpense(billLineId);
+      } else {
+        await api.markPrivateExpense(billLineId, {
+          note: comment || null,
+          createDraft: action === 'draft',
+        });
+        setStatusMsg(action === 'draft' ? tu.draftCreated : tu.markedPrivate);
+      }
+      if (typeof onStatusChanged === 'function') onStatusChanged();
+    } catch (err) {
+      const detail = err instanceof ApiError ? err.message : String(err);
+      setError(`${tu.statusFailed}: ${detail}`);
+    } finally {
+      setStatusBusy(false);
     }
   };
 
@@ -143,6 +189,29 @@ export default function UploadCard({ payment, onUploaded }) {
         data-testid="tt-upload-file-input"
         aria-label={tu.chooseFile}
       />
+
+      <input
+        ref={cameraRef}
+        type="file"
+        accept="image/*"
+        capture="environment"
+        onChange={onCameraChange}
+        className="tt-upload-card-v2__input"
+        data-testid="tt-upload-camera-input"
+        aria-label={tu.takePhoto}
+      />
+      {billLineId != null ? (
+        <button
+          type="button"
+          className="btn primary tt-upload-card-v2__camera"
+          onClick={() => !uploading && cameraRef.current?.click()}
+          disabled={uploading}
+          title={tu.takePhotoHint}
+          data-testid="tt-upload-camera"
+        >
+          {uploading ? tu.uploading : tu.takePhoto}
+        </button>
+      ) : null}
 
       {file ? (
         <div
@@ -232,6 +301,52 @@ export default function UploadCard({ payment, onUploaded }) {
       >
         {uploading ? tu.uploading : uploadLabel}
       </button>
+
+      {billLineId != null ? (
+        <div
+          className={`tt-upload-card-v2__private ${possiblePrivate ? 'is-flagged' : ''}`}
+          data-testid="tt-private-expense"
+        >
+          <strong>
+            {possiblePrivate ? tu.possiblePrivate : tu.privateTitle}
+          </strong>
+          <span className="muted">{tu.privateHint}</span>
+          {billStatus === 'private_expense' ? (
+            <div className="tt-upload-card-v2__private-actions">
+              <span data-testid="tt-private-marked">{tu.markedPrivate}</span>
+              <button
+                type="button"
+                className="btn sm"
+                onClick={() => changeStatus('draft')}
+                disabled={statusBusy}
+                data-testid="tt-private-draft"
+              >
+                {tu.createDraft}
+              </button>
+              <button
+                type="button"
+                className="btn ghost sm"
+                onClick={() => changeStatus('undo')}
+                disabled={statusBusy}
+                data-testid="tt-private-undo"
+              >
+                {tu.undoPrivate}
+              </button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="btn sm"
+              onClick={() => changeStatus('mark')}
+              disabled={statusBusy}
+              data-testid="tt-private-mark"
+            >
+              {tu.markPrivate}
+            </button>
+          )}
+          {statusMsg ? <span className="muted">{statusMsg}</span> : null}
+        </div>
+      ) : null}
 
       {error ? (
         <p className="tt-upload-card-v2__error" data-testid="tt-upload-error">

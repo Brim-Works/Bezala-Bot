@@ -169,6 +169,18 @@ def _run_c41_migrations() -> None:
         db.close()
 
 
+def _run_c43_migrations() -> None:
+    """C43 — bookvisit som html-only-avsändare + change_fee-backfill."""
+    from app.db import SessionLocal
+    from app.services.c43_migrations import run_c43_migrations
+
+    db = SessionLocal()
+    try:
+        run_c43_migrations(db)
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -184,6 +196,7 @@ async def lifespan(app: FastAPI):
     _run_once_seed_html_only_senders()
     _run_once_seed_bezala_vendor_mappings()
     _run_c41_migrations()
+    _run_c43_migrations()
     start_scheduler()
     async with mcp_lifespan():
         yield
@@ -2118,6 +2131,8 @@ def _serialize_message(r: ProcessedMessage) -> dict:
             r.manual_uploaded_at.isoformat() if r.manual_uploaded_at else None
         ),
         "manual_comment": r.manual_comment,
+        # C43 — 'change_fee' för Finnair-ombokningar, annars None.
+        "kind": getattr(r, "kind", None),
     }
 
 
@@ -2520,62 +2535,12 @@ def debug_bezala_mapping_trace(
 # === SLUT DELETE-MIG-EFTER-VERIFIERING ======================================
 
 
-_MISSING_AMOUNT_RE = __import__("re").compile(
-    r"(\d+(?:[.,]\d{1,2})?)\s+([A-Z]{3})\s*$"
+# C43 — normaliseringen flyttad till app/services/bill_line_status.py (delas
+# med MCP-verktyget list_missing). Namnen behålls för bakåtkompatibilitet.
+from app.services.bill_line_status import (  # noqa: E402
+    normalize_missing_receipt as _normalize_missing_receipt,
+    parse_amount_from_description as _parse_amount_from_description,
 )
-
-
-def _parse_amount_from_description(desc: str | None) -> tuple[float | None, str | None]:
-    """Bezala bill_lines returnerar description som fri text i formatet
-    "NAMN: VENDOR, PLATS, LAND 28.54 EUR". Plocka belopp + valuta från
-    slutet av strängen när det strukturerade amount-fältet saknas."""
-    if not desc:
-        return None, None
-    match = _MISSING_AMOUNT_RE.search(desc)
-    if not match:
-        return None, None
-    amount_str = match.group(1).replace(",", ".")
-    try:
-        return float(amount_str), match.group(2)
-    except ValueError:
-        return None, None
-
-
-def _normalize_missing_receipt(raw: dict) -> dict:
-    """Normalisera Bezalas missing_receipt-format till vår UI-shape.
-
-    `id` är det vi skickar tillbaka som `missing_receipt_id` i match-
-    requesten. Bezala UI använder bill_line_id i sin POST /attachments,
-    så vi prefererar bill_line_id och faller tillbaka till id.
-
-    amount/currency: Bezala returnerar null för bill_lines — plocka från
-    description-strängen ("... 28.54 EUR") om strukturerat fält saknas."""
-    bill_line_id = raw.get("bill_line_id") or raw.get("id")
-    description = (
-        raw.get("description")
-        or raw.get("merchant")
-        or raw.get("name")
-        or ""
-    )
-    amount = raw.get("amount") or raw.get("sum")
-    currency = raw.get("currency")
-    if amount is None or not currency:
-        parsed_amount, parsed_currency = _parse_amount_from_description(description)
-        if amount is None:
-            amount = parsed_amount
-        if not currency:
-            currency = parsed_currency
-    return {
-        "id": bill_line_id,
-        "description": description,
-        "amount": amount,
-        "currency": currency or "EUR",
-        "date": (
-            raw.get("date")
-            or raw.get("transaction_date")
-            or raw.get("purchase_date")
-        ),
-    }
 
 
 @app.get("/api/bezala/missing-receipts")
@@ -2596,6 +2561,58 @@ def get_bezala_missing_receipts(_: None = Depends(require_auth)):
     finally:
         bezala.close()
     return [_normalize_missing_receipt(r) for r in rows]
+
+
+class PrivateExpensePayload(BaseModel):
+    note: str | None = None
+    # Skapa även ett Bezala-UTKAST (unapproved) med engelsk kommentar.
+    # Skickas aldrig för attest.
+    create_draft: bool = False
+
+
+@app.post("/api/bezala/bill-lines/{bill_line_id}/private-expense")
+def mark_bill_line_private_expense(
+    bill_line_id: str,
+    payload: PrivateExpensePayload,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """C43 — markera kortrad som privat utlägg (C42 card_lines.status)."""
+    from app.services import bill_line_status as bls
+    from app.services.trip_completeness import card_line_dict, _today
+
+    try:
+        row = bls.mark_private_expense(db, bill_line_id, payload.note)
+    except bls.BillLineStatusError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if payload.create_draft:
+        try:
+            bezala = BezalaClient()
+        except BezalaError as exc:
+            raise HTTPException(status_code=500, detail=f"Bezala-init: {exc}") from exc
+        try:
+            bls.create_private_expense_draft(db, bezala, bill_line_id)
+        except BezalaError as exc:
+            raise HTTPException(status_code=502, detail=f"Bezala: {exc}") from exc
+        finally:
+            bezala.close()
+    return card_line_dict(row, _today())
+
+
+@app.delete("/api/bezala/bill-lines/{bill_line_id}/private-expense")
+def unmark_bill_line_private_expense(
+    bill_line_id: str,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """C43 — ångra privat utlägg (status tillbaka till 'missing')."""
+    from app.services.calendar_trip_edit import TripEditError
+    from app.services.trip_completeness import set_card_line_status
+
+    try:
+        return set_card_line_status(db, bill_line_id, "missing")
+    except TripEditError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/api/bezala/match-suggestions")
@@ -2671,8 +2688,23 @@ def get_match_suggestions(
     rate_provider = make_db_rate_provider(db)
 
     missing_out: list[dict] = []
+    from app.services import bill_line_status as bls
+
+    statuses = bls.status_map(db)
     for raw in missing_rows:
         missing = _normalize_missing_receipt(raw)
+        # C43 — kalenderresa runt kortraden → plats-signal i matchningen.
+        trip = bls.trip_context(db, missing.get("date"))
+        if trip:
+            missing["trip"] = trip
+        st = statuses.get(str(missing.get("id")))
+        missing["bill_line_status"] = st
+        missing["flags"] = (
+            [bls.FLAG_POSSIBLE_PRIVATE]
+            if st is None and trip is None
+            and bls.is_parking_line(missing.get("description"))
+            else []
+        )
         suggestions = find_matches(
             missing, candidate_dicts, rate_provider=rate_provider,
         )
@@ -3093,6 +3125,14 @@ def _do_match_to_bezala(
         vendor_mappings = []
 
     description_override = row.ai_description_en or row.summary
+
+    # C43 — privat utlägg: kommentaren i Bezala ska säga det (engelska).
+    from app.services import bill_line_status as _bls
+    _st = _bls.get_card_line(db, bill_line_id)
+    if _st is not None and _st.status == _bls.STATUS_PRIVATE_EXPENSE:
+        description_override = _bls.private_expense_description(
+            _st.note, base=description_override,
+        )
 
     params = build_receipt_params(
         file_name=row.file_name,
