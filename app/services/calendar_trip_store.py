@@ -68,6 +68,9 @@ def persist_detected(db: Session, detected: dict) -> dict:
             source_event_ids=t.get("source_event_ids") or [],
             flights=t.get("flights") or [],
             hotels=t.get("hotels") or [],
+            flags=t.get("flags") or [],
+            flight_options=t.get("flight_options") or [],
+            country=t.get("country"),
         )
         db.add(row)
         db.flush()
@@ -146,6 +149,9 @@ def serialize_trip(db: Session, trip: CalendarTrip) -> dict:
         "end_at": trip.end_at,
         "destination": trip.destination,
         "open_return": bool(trip.open_return),
+        "country": trip.country,
+        "flags": trip.flags or [],
+        "flight_options": trip.flight_options or [],
         "status": trip.status,
         "flights": trip.flights or [],
         "hotels": trip.hotels or [],

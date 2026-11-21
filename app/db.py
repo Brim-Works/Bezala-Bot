@@ -96,6 +96,13 @@ _TRIPS_ADDITIONS = {
     "per_diem_currency": "VARCHAR(3)",
 }
 
+_CALENDAR_TRIPS_ADDITIONS = {
+    # C39 — detektorflaggor, flygalternativ och land
+    "flags": "JSON",
+    "flight_options": "JSON",
+    "country": "VARCHAR(20)",
+}
+
 _INDEXES = [
     (
         "ix_processed_messages_deleted_at",
@@ -186,6 +193,20 @@ def _apply_schema_migrations() -> None:
                         text(f"ALTER TABLE trips ADD COLUMN {name} {col_type}")
                     )
                     logger.info("Lade till kolumn trips.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
+    if "calendar_trips" in tables:
+        existing = {col["name"] for col in insp.get_columns("calendar_trips")}
+        with engine.begin() as conn:
+            for name, col_type in _CALENDAR_TRIPS_ADDITIONS.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(
+                        text(f"ALTER TABLE calendar_trips ADD COLUMN {name} {col_type}")
+                    )
+                    logger.info("Lade till kolumn calendar_trips.%s", name)
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 

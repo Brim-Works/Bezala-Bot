@@ -92,6 +92,32 @@ def normalize_event(raw: dict) -> dict | None:
     if end is None:
         end = start
     organizer = (raw.get("organizer") or {}).get("email") or ""
+
+    # C39 — deltagardata för mötesfiltret.
+    self_response = None
+    others = 0
+    others_accepted = 0
+    has_room = False
+    for a in raw.get("attendees") or []:
+        if a.get("self"):
+            self_response = a.get("responseStatus")
+            continue
+        if a.get("resource") or str(a.get("email", "")).endswith(
+            "resource.calendar.google.com"
+        ):
+            has_room = True
+            continue
+        status = a.get("responseStatus")
+        if status == "declined":
+            continue
+        others += 1
+        if status in ("accepted", "tentative") or a.get("organizer"):
+            others_accepted += 1
+    video = ((raw.get("conferenceData") or {}).get("videoEntryPoint") or {}).get("uri") or ""
+    entry_points = (raw.get("conferenceData") or {}).get("entryPoints") or []
+    uris = [video] + [str(e.get("uri") or "") for e in entry_points]
+    is_stream = any("stream.meet.google.com" in u for u in uris)
+
     return {
         "id": raw.get("id") or "",
         "summary": raw.get("summary") or "",
@@ -103,6 +129,12 @@ def normalize_event(raw: dict) -> dict | None:
         "event_type": raw.get("eventType") or "default",
         "organizer": organizer,
         "transparency": raw.get("transparency") or "opaque",
+        "visibility": raw.get("visibility") or "default",
+        "self_response": self_response,
+        "attendees_other": others,
+        "attendees_other_accepted": others_accepted,
+        "has_room": has_room,
+        "is_stream": is_stream,
     }
 
 

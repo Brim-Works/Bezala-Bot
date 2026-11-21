@@ -480,6 +480,12 @@ class CalendarTrip(Base):
     source_event_ids = Column(JSON, nullable=False, default=list)
     flights = Column(JSON, nullable=False, default=list)
     hotels = Column(JSON, nullable=False, default=list)
+    # C39 — 'missing_return' | 'needs_review'
+    flags = Column(JSON, nullable=True, default=list)
+    # C39 — alternativa utresor vid needs_review (t.ex. AY 951 + AY 953)
+    flight_options = Column(JSON, nullable=True, default=list)
+    # C39 — landskod(er) för destinationen, t.ex. "DK" eller "DK,NO"
+    country = Column(String(20), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
