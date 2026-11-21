@@ -1,3 +1,5 @@
+import { useState } from 'react';
+import { api } from '../../api/client.js';
 import { useI18n } from '../../i18n/useI18n.jsx';
 
 /* OAuth-anslutningar för Gmail och Drive. Visar varningsbanner när
@@ -11,6 +13,21 @@ export default function AuthSection({ form }) {
 
   const gmailNeedsReauth = !!form?.gmail_auth_required;
   const driveNeedsReauth = !!form?.drive_auth_required;
+
+  const priv = form?.gmail_private || {};
+  const [privDisconnected, setPrivDisconnected] = useState(false);
+  const privConnected = !!priv.connected && !privDisconnected;
+  const privNeedsReauth = !!priv.auth_required && privConnected;
+  const allowlist = Array.isArray(priv.allowlist) ? priv.allowlist : [];
+
+  const disconnectPrivate = async () => {
+    try {
+      await api.disconnectPrivateGmail();
+      setPrivDisconnected(true);
+    } catch (e) {
+      /* felet visas av global felhantering */
+    }
+  };
 
   const startReauth = (service) => {
     // Full page navigation — vi måste skicka session-cookien till backend
@@ -82,6 +99,50 @@ export default function AuthSection({ form }) {
         >
           {auth.reconnectDrive}
         </button>
+      </div>
+
+      <div className="settings-auth-row" data-testid="private-gmail-row">
+        <div className="settings-auth-row__label">
+          <span className="settings-field__label">{auth.privateGmailLabel}</span>
+          <span
+            className={
+              privNeedsReauth
+                ? 'settings-auth-row__status settings-auth-row__status--err'
+                : 'settings-auth-row__status muted'
+            }
+            data-testid="private-gmail-status"
+          >
+            {privConnected
+              ? auth.privateConnectedAs.replace('{email}', priv.email || '—')
+              : auth.privateNotConnected}
+          </span>
+          <span className="muted" data-testid="private-gmail-senders">
+            {allowlist.length
+              ? `${auth.privateSendersLabel} ${allowlist.join(', ')}`
+              : auth.privateNoSenders}
+          </span>
+          {!privConnected && <span className="muted">{auth.privateHint}</span>}
+        </div>
+        <div className="settings-auth-row__actions">
+          <button
+            type="button"
+            className={privConnected && !privNeedsReauth ? 'btn ghost' : 'btn primary'}
+            onClick={() => startReauth('gmail_private')}
+            data-testid="connect-private-gmail"
+          >
+            {privConnected ? auth.reconnectPrivateGmail : auth.connectPrivateGmail}
+          </button>
+          {privConnected && (
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={disconnectPrivate}
+              data-testid="disconnect-private-gmail"
+            >
+              {auth.disconnectPrivateGmail}
+            </button>
+          )}
+        </div>
       </div>
     </section>
   );

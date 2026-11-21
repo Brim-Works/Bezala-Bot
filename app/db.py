@@ -60,9 +60,13 @@ _PROCESSED_MESSAGES_ADDITIONS = {
     "manual_comment": "TEXT",
     # C43 — dokumenttyp ('change_fee' för Finnair-ombokningar)
     "kind": "VARCHAR(32)",
+    # C45 — källkonto: 'visma' (default) eller 'private'
+    "source_account": "VARCHAR(16) DEFAULT 'visma'",
 }
 
 _APP_SETTINGS_ADDITIONS = {
+    # C45 — privat Gmail-konto (bara kvitton) behöver återanslutning
+    "gmail_private_auth_required": "BOOLEAN NOT NULL DEFAULT FALSE",
     # FAS 5.1 — auto-purge för papperskorg. 0 = aldrig (default).
     "trash_auto_purge_days": "INTEGER NOT NULL DEFAULT 0",
     # FAS 5.1+ — AI-konfidens + länk-fetch

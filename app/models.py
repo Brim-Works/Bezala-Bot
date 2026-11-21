@@ -95,6 +95,10 @@ class ProcessedMessage(Base):
     # C44 — dubblett av ett annat kvitto (message_id). Räknas inte i
     # checklistor eller kopplingsförslag. Bezala rörs aldrig.
     duplicate_of = Column(String(255), nullable=True)
+    # C45 — vilket Gmail-konto mailet kom från: 'visma' (jobbkontot,
+    # default) eller 'private' (Mikkos privata Gmail, bara allowlistade
+    # kvittoavsändare som Apple).
+    source_account = Column(String(16), nullable=True, default="visma")
 
 
 class SavedFile(Base):
@@ -171,6 +175,8 @@ class AppSettings(Base):
     # (invalid_grant). UI visar varningsbanner + Återanslut-knapp.
     gmail_auth_required = Column(Boolean, nullable=False, default=False)
     drive_auth_required = Column(Boolean, nullable=False, default=False)
+    # C45 — privat Gmail (bara gmail.readonly) behöver återanslutas.
+    gmail_private_auth_required = Column(Boolean, nullable=False, default=False)
 
     updated_at = Column(
         DateTime,

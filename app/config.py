@@ -18,6 +18,14 @@ class Settings(BaseSettings):
     gmail_refresh_token: str = Field(default="", alias="GMAIL_REFRESH_TOKEN")
     drive_refresh_token: str = Field(default="", alias="DRIVE_REFRESH_TOKEN")
 
+    # C45 — privat Gmail (bara gmail.readonly). Boten läser BARA mail från
+    # dessa avsändare (kommaseparerad lista, exakta adresser). Allt annat
+    # i den privata brevlådan hämtas, lagras, loggas eller analyseras aldrig.
+    private_gmail_sender_allowlist: str = Field(
+        default="no_reply@email.apple.com",
+        alias="PRIVATE_GMAIL_SENDER_ALLOWLIST",
+    )
+
     google_drive_folder_id: str = Field(
         default="1FoK-nmaDLgIUnMUImECjxXBO9XqLgFZb",
         alias="GOOGLE_DRIVE_FOLDER_ID",

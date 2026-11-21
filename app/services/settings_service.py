@@ -119,8 +119,33 @@ def settings_to_dict(row: AppSettings) -> dict:
         ),
         "gmail_auth_required": bool(getattr(row, "gmail_auth_required", False)),
         "drive_auth_required": bool(getattr(row, "drive_auth_required", False)),
+        # C45 — privat Gmail (bara kvitton från allowlistade avsändare)
+        "gmail_private": private_gmail_status(row),
         "builtin_senders": list(BUILTIN_INCLUDES),  # read-only i UI
         "updated_at": row.updated_at.isoformat() if row.updated_at else None,
+    }
+
+
+def private_gmail_status(row: AppSettings | None = None) -> dict:
+    """Anslutningsstatus för privat Gmail — aldrig token-värden."""
+    from app.services.oauth_token_store import get_refresh_token, get_token_data
+    from app.services.private_gmail import get_private_allowlist
+
+    connected = False
+    data: dict = {}
+    try:
+        connected = bool(get_refresh_token("gmail_private"))
+        data = get_token_data("gmail_private") if connected else {}
+    except Exception:  # noqa: BLE001
+        logger.exception("Kunde inte läsa status för privat Gmail")
+    return {
+        "connected": connected,
+        "email": data.get("email") if connected else None,
+        "scopes": list(data.get("scopes") or []) if connected else [],
+        "allowlist": get_private_allowlist(),
+        "auth_required": bool(
+            getattr(row, "gmail_private_auth_required", False) if row else False
+        ),
     }
 
 

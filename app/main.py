@@ -182,6 +182,24 @@ def _run_c43_migrations() -> None:
         db.close()
 
 
+def _run_c45_migrations() -> None:
+    """C45 — Airport Recovery som html-only-avsändare + engångsskanning av
+    2026-trådsvar (bakgrund, loggas [c45-thread-scan])."""
+    from app.db import SessionLocal
+    from app.services.c45_migrations import (
+        run_c45_migrations,
+        start_thread_scan_in_background,
+    )
+
+    db = SessionLocal()
+    try:
+        run_c45_migrations(db)
+    finally:
+        db.close()
+    if settings.scan_enabled:
+        start_thread_scan_in_background()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -198,6 +216,7 @@ async def lifespan(app: FastAPI):
     _run_once_seed_bezala_vendor_mappings()
     _run_c41_migrations()
     _run_c43_migrations()
+    _run_c45_migrations()
     # C44 — kvittodetaljer (Gmail, read-only), dubbletter, parkeringstider,
     # omräknade checklistor. I bakgrunden så att uppstarten inte väntar.
     if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":
@@ -356,7 +375,16 @@ OAUTH_SCOPES = {
         "https://www.googleapis.com/auth/drive.file",
         "https://www.googleapis.com/auth/drive.readonly",
     ],
+    # C45 — privat Gmail: BARA läsrätt. Inga etiketter, ingen kalender.
+    "gmail_private": [
+        "https://www.googleapis.com/auth/gmail.readonly",
+    ],
 }
+
+# C45 — det privata kontot återanvänder Gmail-callbackens redirect-URI så
+# att OAuth-klienten i GCP inte behöver en ny "Authorized redirect URI".
+# Vilket konto som avses avgörs av state-parametern i sessionen.
+_OAUTH_REDIRECT_SERVICE = {"gmail_private": "gmail"}
 
 
 def _build_oauth_redirect_uri(request: Request, service: str) -> str:
@@ -437,11 +465,14 @@ def oauth_start(
     if service not in OAUTH_SERVICES:
         raise HTTPException(status_code=404, detail=f"Okänd service: {service}")
 
-    redirect_uri = _build_oauth_redirect_uri(request, service)
+    redirect_uri = _build_oauth_redirect_uri(
+        request, _OAUTH_REDIRECT_SERVICE.get(service, service),
+    )
     flow = _build_oauth_flow(service, redirect_uri)
     auth_url, state = flow.authorization_url(
         access_type="offline",
-        prompt="consent",  # tvinga ny refresh_token
+        # tvinga ny refresh_token; privat konto: låt Mikko välja kontot
+        prompt="consent select_account" if service == "gmail_private" else "consent",
         include_granted_scopes="false",
     )
     request.session[f"oauth_state_{service}"] = state
@@ -587,11 +618,17 @@ _AUTO_REDIRECT_SCRIPT = """
 """
 
 
+_OAUTH_DISPLAY_NAME = {"gmail_private": "Privat Gmail"}
+
+
 def _oauth_result_html(*, ok: bool, service: str, message: str) -> HTMLResponse:
+    name = _OAUTH_DISPLAY_NAME.get(service, service.capitalize())
     title = (
-        f"{service.capitalize()} återansluten"
+        f"{name} ansluten"
+        if ok and service == "gmail_private"
+        else f"{name} återansluten"
         if ok
-        else f"{service.capitalize()}-anslutning misslyckades"
+        else f"{name}-anslutning misslyckades"
     )
     return HTMLResponse(
         _OAUTH_RESULT_PAGE.format(
@@ -627,6 +664,13 @@ def oauth_callback(
     if service not in OAUTH_SERVICES:
         raise HTTPException(status_code=404, detail=f"Okänd service: {service}")
 
+    # C45 — privat Gmail delar redirect-URI med Visma-Gmail. Om state
+    # matchar ett pågående privat flöde är det det privata kontot.
+    if service == "gmail" and state and state == request.session.get(
+        "oauth_state_gmail_private"
+    ):
+        service = "gmail_private"
+
     if error:
         return _oauth_result_html(
             ok=False, service=service, message=f"Google avvisade flödet: {error}",
@@ -646,7 +690,9 @@ def oauth_callback(
 
     redirect_uri = request.session.pop(
         f"oauth_redirect_{service}", None,
-    ) or _build_oauth_redirect_uri(request, service)
+    ) or _build_oauth_redirect_uri(
+        request, _OAUTH_REDIRECT_SERVICE.get(service, service),
+    )
 
     try:
         flow = _build_oauth_flow(service, redirect_uri)
@@ -673,13 +719,20 @@ def oauth_callback(
             ),
         )
 
+    extra: dict = {"scopes": list(getattr(creds, "scopes", []) or [])}
+    if service == "gmail_private":
+        check = _check_private_gmail_grant(creds)
+        if check.get("error"):
+            return _oauth_result_html(
+                ok=False, service=service, message=check["error"],
+            )
+        extra["email"] = check["email"]
+
     try:
         save_refresh_token(
             service,  # type: ignore[arg-type]
             refresh_token,
-            extra={
-                "scopes": list(getattr(creds, "scopes", []) or []),
-            },
+            extra=extra,
         )
     except Exception as exc:  # noqa: BLE001
         logger.exception("Kunde inte spara refresh-token för %s", service)
@@ -688,6 +741,14 @@ def oauth_callback(
         )
 
     logger.info("OAuth callback OK — refresh-token sparad för %s", service)
+    if service == "gmail_private":
+        return _oauth_result_html(
+            ok=True, service=service,
+            message=(
+                f"{extra.get('email')} är anslutet med bara läsrätt. Boten "
+                "läser enbart kvitton från de tillåtna avsändarna."
+            ),
+        )
     return _oauth_result_html(
         ok=True,
         service=service,
@@ -696,6 +757,54 @@ def oauth_callback(
             "Nästa scanning körs automatiskt."
         ),
     )
+
+
+def _check_private_gmail_grant(creds) -> dict:
+    """C45 — kontrollera ett nytt privat Gmail-medgivande: bara läsrätt till
+    Gmail och inte Visma-kontot. Läser bara kontots adress (getProfile)."""
+    readonly = "https://www.googleapis.com/auth/gmail.readonly"
+    scopes = set(getattr(creds, "scopes", None) or [])
+    extra_scopes = {
+        sc for sc in scopes
+        if sc not in (readonly, "openid")
+        and not sc.endswith("userinfo.email")
+    }
+    if extra_scopes:
+        return {"error": (
+            "Det privata kontot fick fler behörigheter än läsrätt till Gmail. "
+            "Ta bort Bezala Bot under myaccount.google.com → Säkerhet → "
+            "Tredjepartsappar och anslut igen."
+        )}
+    try:
+        from googleapiclient.discovery import build as _gbuild
+        svc = _gbuild("gmail", "v1", credentials=creds, cache_discovery=False)
+        email = (
+            svc.users().getProfile(userId="me").execute().get("emailAddress")
+            or ""
+        ).strip().lower()
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("C45: getProfile för privat Gmail misslyckades")
+        return {"error": f"Kunde inte läsa kontots adress: {type(exc).__name__}"}
+    if not email or email.endswith("@visma.com"):
+        return {"error": (
+            "Välj ditt privata Gmail-konto (inte Visma-kontot) när Google "
+            "frågar vilket konto som ska användas."
+        )}
+    return {"email": email}
+
+
+@app.delete("/api/auth/gmail_private")
+def disconnect_private_gmail(_: None = Depends(require_auth)):
+    """C45 — koppla från privat Gmail (tar bort token ur DB)."""
+    from app.services.oauth_token_store import delete_token
+    removed = delete_token("gmail_private")
+    return {"disconnected": removed}
+
+
+@app.get("/api/auth/gmail_private/status")
+def private_gmail_status_endpoint(_: None = Depends(require_auth)):
+    from app.services.settings_service import private_gmail_status
+    return private_gmail_status()
 
 
 # Global exception-hanterare: konvertera OAuth-fel från Gmail/Drive till
@@ -2107,6 +2216,7 @@ def backfill_descriptions(
 def _serialize_message(r: ProcessedMessage) -> dict:
     return {
         "id": r.id,
+        "source_account": getattr(r, "source_account", None) or "visma",
         "message_id": r.message_id,
         "sender": r.sender,
         "subject": r.subject,

@@ -25,6 +25,15 @@ from app.services.oauth_token_store import (
     is_invalid_grant,
     set_auth_required,
 )
+from app.services.private_gmail import (
+    ACCOUNT_PRIVATE,
+    ACCOUNT_VISMA,
+    PRIVATE_SCOPES,
+    TOKEN_SERVICE,
+    PrivateSenderNotAllowed,
+    get_private_allowlist,
+    sender_allowed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -83,17 +92,37 @@ class GmailMessage:
     attachments: list[Attachment] = field(default_factory=list)
     body_text: str = ""
     body_html: str = ""
+    # C45 — 'visma' (jobbkontot) eller 'private' (privat Gmail)
+    source_account: str = ACCOUNT_VISMA
 
 
 class GmailClient:
-    def __init__(self) -> None:
+    """Gmail-klient per konto.
+
+    account='visma'   — jobbkontot, token 'gmail', modify-scopes (etiketter).
+    account='private' — privat Gmail, token 'gmail_private', bara
+                        gmail.readonly. Endast allowlistade avsändare läses
+                        (se app.services.private_gmail).
+    """
+
+    def __init__(self, account: str = ACCOUNT_VISMA) -> None:
+        if account not in TOKEN_SERVICE:
+            raise ValueError(f"okänt Gmail-konto: {account!r}")
+        self.account = account
+        self._token_service = TOKEN_SERVICE[account]
         settings = get_settings()
-        refresh_token = get_refresh_token("gmail")
+        refresh_token = get_refresh_token(self._token_service)
         if not (
             settings.gmail_client_id
             and settings.gmail_client_secret
             and refresh_token
         ):
+            if account == ACCOUNT_PRIVATE:
+                # Privat konto är valfritt — saknad token är inte ett fel
+                # som ska trigga varningsbanner.
+                raise OAuthAuthError(
+                    "gmail_private", "Privat Gmail är inte anslutet.",
+                )
             # Saknar token helt → samma effekt som invalid_grant ur UI:s
             # synvinkel: användaren måste klicka Återanslut.
             set_auth_required("gmail", True)
@@ -109,18 +138,56 @@ class GmailClient:
             client_id=settings.gmail_client_id,
             client_secret=settings.gmail_client_secret,
             token_uri="https://oauth2.googleapis.com/token",
-            scopes=SCOPES,
+            scopes=PRIVATE_SCOPES if account == ACCOUNT_PRIVATE else SCOPES,
         )
         try:
             self._creds.refresh(Request())
         except RefreshError as exc:
             if is_invalid_grant(exc):
-                set_auth_required("gmail", True)
-                logger.warning("Gmail invalid_grant — kräver återanslutning: %s", exc)
-                raise OAuthAuthError("gmail", str(exc)) from exc
+                set_auth_required(self._token_service, True)
+                logger.warning(
+                    "Gmail (%s) invalid_grant — kräver återanslutning", account,
+                )
+                raise OAuthAuthError(self._token_service, str(exc)) from exc
             raise
         self._service = build("gmail", "v1", credentials=self._creds, cache_discovery=False)
         self._done_label_id: str | None = None
+        self._allowlist: list[str] = (
+            get_private_allowlist() if account == ACCOUNT_PRIVATE else []
+        )
+
+    @property
+    def is_private(self) -> bool:
+        return getattr(self, "account", ACCOUNT_VISMA) == ACCOUNT_PRIVATE
+
+    def get_profile_email(self) -> str:
+        """Adressen för det anslutna kontot (users.getProfile — tillåtet
+        med gmail.readonly; läser inga meddelanden)."""
+        prof = self._service.users().getProfile(userId="me").execute()
+        return (prof.get("emailAddress") or "").strip().lower()
+
+    def _assert_private_sender_allowed(self, message_id: str) -> None:
+        """Privat konto: hämta BARA From-headern och stoppa om avsändaren
+        inte står i allowlisten. Ingen body/bilaga/ämnesrad hämtas."""
+        if not self.is_private:
+            return
+        raw = (
+            self._service.users()
+            .messages()
+            .get(
+                userId="me", id=message_id, format="metadata",
+                metadataHeaders=["From"],
+            )
+            .execute()
+        )
+        frm = ""
+        for h in raw.get("payload", {}).get("headers", []) or []:
+            if (h.get("name") or "").lower() == "from":
+                frm = h.get("value") or ""
+                break
+        if not sender_allowed(frm, self._allowlist):
+            # Logga inte avsändare/ämne — bara att något avvisades.
+            raise PrivateSenderNotAllowed("avsändare ej i allowlist")
 
     # ---------- Labels ----------
 
@@ -150,6 +217,9 @@ class GmailClient:
         return self._done_label_id
 
     def mark_done(self, message_id: str) -> None:
+        if self.is_private:
+            # gmail.readonly — vi rör aldrig den privata brevlådan.
+            return
         label_id = self._ensure_done_label()
         self._service.users().messages().modify(
             userId="me",
@@ -159,6 +229,8 @@ class GmailClient:
 
     def remove_done(self, message_id: str) -> None:
         """Ta bort Bezala-Klar-etiketten. Används vid soft-delete/restore."""
+        if self.is_private:
+            return
         label_id = self._ensure_done_label()
         self._service.users().messages().modify(
             userId="me",
@@ -190,9 +262,61 @@ class GmailClient:
             if not page_token:
                 return ids
 
+    def list_thread_reply_ids(self, thread_id: str) -> list[dict]:
+        """C45 — alla meddelanden i en tråd (äldst först) med id, labels och
+        From. Används för att bedöma VARJE meddelande i en tråd, inte bara
+        det som sökningen träffade. Endast Visma-kontot."""
+        if self.is_private:
+            return []
+        raw = (
+            self._service.users()
+            .threads()
+            .get(
+                userId="me", id=thread_id, format="metadata",
+                metadataHeaders=["From"],
+            )
+            .execute()
+        )
+        out: list[dict] = []
+        for m in raw.get("messages", []) or []:
+            frm = ""
+            for h in m.get("payload", {}).get("headers", []) or []:
+                if (h.get("name") or "").lower() == "from":
+                    frm = h.get("value") or ""
+                    break
+            out.append({
+                "message_id": m.get("id", ""),
+                "labels": list(m.get("labelIds") or []),
+                "sender": frm,
+            })
+        return out
+
+    def list_candidates_with_threads(
+        self, query: str, max_results: int = 50,
+    ) -> list[tuple[str, str]]:
+        """Som list_candidate_message_ids men returnerar (message_id,
+        thread_id)-par."""
+        query = _apply_max_age(query)
+        out: list[tuple[str, str]] = []
+        page_token: str | None = None
+        while True:
+            resp = self._service.users().messages().list(
+                userId="me", q=query,
+                maxResults=min(100, max_results - len(out)),
+                pageToken=page_token,
+            ).execute()
+            for m in resp.get("messages", []):
+                out.append((m["id"], m.get("threadId", "")))
+                if len(out) >= max_results:
+                    return out
+            page_token = resp.get("nextPageToken")
+            if not page_token:
+                return out
+
     def fetch_message_metadata(self, message_id: str) -> dict:
         """Billig metadata-hämtning: bara headers + labels + snippet.
         Används av debug-endpoints där vi inte vill ladda ner bilagor."""
+        self._assert_private_sender_allowed(message_id)
         raw = (
             self._service.users()
             .messages()
@@ -241,6 +365,8 @@ class GmailClient:
         return headers.get("subject", ""), body_text, body_html
 
     def fetch_message(self, message_id: str) -> GmailMessage:
+        # Privat konto: allowlist-kontroll FÖRE innehållet hämtas.
+        self._assert_private_sender_allowed(message_id)
         raw = (
             self._service.users()
             .messages()
@@ -271,6 +397,7 @@ class GmailClient:
             attachments=attachments,
             body_text=body_text,
             body_html=body_html,
+            source_account=getattr(self, "account", ACCOUNT_VISMA),
         )
 
 

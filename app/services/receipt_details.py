@@ -282,6 +282,9 @@ def enrich_receipts(db: Session, gmail=None, limit: int = 150,
             continue
         if m.message_id.startswith("manual:"):
             continue
+        # C45 — privata Gmail-kontot (bara Apple m.fl.) läses inte här.
+        if (getattr(m, "source_account", None) or "visma") != "visma":
+            continue
         when = m.received_at.date() if m.received_at else None
         if when is not None and when < since:
             continue
