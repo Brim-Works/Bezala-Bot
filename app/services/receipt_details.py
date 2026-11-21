@@ -334,10 +334,9 @@ def find_duplicates(rows: list[ProcessedMessage]) -> list[dict]:
     numren saknas). Returnerar [{'keep': m, 'dupes': [m, …]}]."""
     groups: dict[tuple, list[ProcessedMessage]] = {}
     for m in rows:
-        if m.amount is None or not _day_key(m):
+        base = _base_key(m)
+        if base is None:
             continue
-        base = (round(float(m.amount), 2), (m.currency or "").upper(), _day_key(m),
-                _norm_vendor(m.vendor))
         groups.setdefault(base, []).append(m)
     out: list[dict] = []
     for members in groups.values():
@@ -361,6 +360,72 @@ def find_duplicates(rows: list[ProcessedMessage]) -> list[dict]:
             keep = next((m for m in c if m.bezala_transaction_id), c[0])
             out.append({"keep": keep, "dupes": [m for m in c if m is not keep]})
     return out
+
+
+def _base_key(m) -> tuple | None:
+    if m.amount is None or not _day_key(m):
+        return None
+    return (round(float(m.amount), 2), (m.currency or "").upper(), _day_key(m),
+            _norm_vendor(m.vendor))
+
+
+def identity_from_message(subject: str | None, body_text: str | None,
+                          body_html: str | None, *, order_id: str | None = None) -> dict:
+    """booking_ref/ticket_number ur ett mail (för dubblettkontrollen vid
+    sparning). Apples order-id räknas som bokningsnummer."""
+    text = message_text(subject, body_text, body_html)
+    out: dict = {}
+    if not order_id:
+        # Vidarebefordrat Apple-kvitto (avsändaren är inte Apple):
+        # order-id:t står ändå i texten.
+        from app.services.apple_receipt import _ORDER_RE, html_to_text as _apple_text
+
+        om = _ORDER_RE.search(text) or _ORDER_RE.search(_apple_text(body_html))
+        if om and any(ch.isdigit() for ch in om.group("id")):
+            order_id = om.group("id").upper()
+    ref = parse_booking_ref(text) or (order_id or None)
+    if ref:
+        out["booking_ref"] = ref[:16]
+    tkt = parse_ticket_number(text)
+    if tkt:
+        out["ticket_number"] = tkt
+    return out
+
+
+def find_saved_duplicate(db: Session, *, message_id: str, amount, currency,
+                         receipt_date, vendor, booking_ref=None,
+                         ticket_number=None, other_account_than: str | None = None):
+    """Den enda dubblettkontrollen (C44-regeln) mot redan sparade kvitton:
+    samma belopp + valuta + datum + leverantör OCH samma biljett-/
+    bokningsnummer (eller samma Gmail-meddelande). Används före sparning
+    (t.ex. samma kvitto i jobb- och privat Gmail) och av mark_duplicates.
+    other_account_than: jämför bara mot rader från ett annat Gmail-konto."""
+    from types import SimpleNamespace
+
+    cand = SimpleNamespace(
+        message_id=message_id, amount=amount, currency=currency,
+        receipt_date=receipt_date, bezala_payment_date=None, vendor=vendor,
+        booking_ref=booking_ref, ticket_number=ticket_number,
+    )
+    key = _base_key(cand)
+    if key is None:
+        return None
+    rows = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.status == "saved")
+        .filter(ProcessedMessage.message_id != message_id)
+        .order_by(ProcessedMessage.id)
+        .all()
+    )
+    for r in rows:
+        if other_account_than is not None and (
+            (getattr(r, "source_account", None) or "visma") == other_account_than
+        ):
+            continue
+        if _base_key(r) == key and _same_purchase(r, cand):
+            return r
+    return None
 
 
 def _same_purchase(a: ProcessedMessage, b: ProcessedMessage) -> bool:

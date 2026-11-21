@@ -360,6 +360,7 @@ def test_cross_account_duplicate_is_not_saved_twice(SessionLocal):
             subject="Fwd: Your receipt from Apple.", vendor="Apple",
             status="saved", amount=9.99, currency="EUR",
             receipt_date="2026-11-21", source_account="visma",
+            booking_ref="MT7QX2K9LP",
         ))
         db.commit()
     msg = _msg(
@@ -386,6 +387,61 @@ def test_cross_account_duplicate_is_not_saved_twice(SessionLocal):
         row = db.query(ProcessedMessage).filter_by(message_id="apple-2").one()
         assert row.status == "skipped:duplicate_other_account"
         assert row.source_account == "private"
+
+
+def test_same_receipt_in_both_mailboxes_gives_one_receipt(SessionLocal):
+    """C46 Del 0 — EN dubblettkontroll (C44:s). Samma Apple-kvitto i
+    jobbkontot (vidarebefordrat) och i privata Gmail → ett sparat kvitto."""
+    from app.models import ProcessedMessage
+    from app.services import pipeline as pl
+
+    analysis = lambda: ReceiptAnalysis(  # noqa: E731
+        is_receipt=True, confidence=95, filename="Apple.pdf", vendor="Apple",
+        amount=9.99, currency="EUR", date="2026-11-21", category="software",
+        summary="", description_en="",
+    )
+    work = _msg("work-1", sender=f"Me <{WORK_ADDR}>",
+                subject="Fwd: Your receipt from Apple.", html=APPLE_ICLOUD_HTML)
+    priv = _msg("priv-1", sender="no_reply@email.apple.com",
+                html=APPLE_ICLOUD_HTML, account="private")
+    for msg in (work, priv):
+        gmail = MagicMock()
+        gmail.fetch_message.return_value = msg
+        pl._process_one_message(
+            msg.message_id, gmail, _drive(), MagicMock(), _analyzer(analysis()),
+            None, pl.ScanResult(), use_ai=True, html_to_pdf_enabled=True,
+        )
+    with SessionLocal() as db:
+        saved = db.query(ProcessedMessage).filter_by(status="saved").all()
+        assert [r.message_id for r in saved] == ["work-1"]
+        assert saved[0].booking_ref == "MT7QX2K9LP"
+        skipped = db.query(ProcessedMessage).filter_by(message_id="priv-1").one()
+        assert skipped.status == "skipped:duplicate_other_account"
+
+
+def test_only_one_duplicate_check_exists():
+    from app.services import pipeline as pl
+
+    assert not hasattr(pl, "find_cross_account_duplicate")
+
+
+def test_cross_account_same_amount_without_number_is_not_duplicate(SessionLocal):
+    """C44-regeln: utan biljett-/bokningsnummer räcker inte belopp + datum."""
+    from app.models import ProcessedMessage
+    from app.services.receipt_details import find_saved_duplicate
+
+    with SessionLocal() as db:
+        db.add(ProcessedMessage(
+            message_id="v-1", vendor="Skanetrafiken", status="saved",
+            amount=150.0, currency="SEK", receipt_date="2026-03-10",
+            source_account="visma",
+        ))
+        db.commit()
+        assert find_saved_duplicate(
+            db, message_id="p-1", amount=150.0, currency="SEK",
+            receipt_date="2026-03-10", vendor="Skanetrafiken",
+            other_account_than="private",
+        ) is None
 
 
 # ---------------------------------------------------------------- trådsvar
