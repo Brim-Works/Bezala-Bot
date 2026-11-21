@@ -20,12 +20,18 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.models import CalendarTrip, CalendarTripDay
-from app.services.calendar_trip_store import _linked_receipts
+from app.services.calendar_trip_store import _flight_times_by_day, _linked_receipts
+from app.services.trip_english import (
+    country_name,
+    netvisor_line_description,
+    non_english_warnings,
+)
 
 HELSINKI = ZoneInfo("Europe/Helsinki")
 STATUSES = ("suggested", "edited", "approved")
 FLAG_NEEDS_REVIEW = "needs_review"
 FLAG_MISSING_RETURN = "missing_return"
+FLAG_DESTINATION_UNCONFIRMED = "destination_unconfirmed"
 MAX_TEXT = 500
 
 # ISO 3166-1 alpha-2
@@ -175,16 +181,28 @@ def _days(db: Session, trip: CalendarTrip) -> list[CalendarTripDay]:
     )
 
 
+def _hel(value: str | None) -> str | None:
+    t = _times(value)
+    return t["helsinki"] if t else None
+
+
 def summary(trip: CalendarTrip) -> dict:
+    """Kort rad för list_trips. travel_* = resetider (hemifrån → hem, det
+    som går till Netvisor); flight_* = flygtiderna (oförändrade)."""
     return {
         "id": trip.id,
         "start_date": trip.start_date.isoformat(),
         "end_date": trip.end_date.isoformat(),
         "destination": trip.destination,
         "country": trip.country,
+        "country_name": country_name(trip.country),
         "purpose": trip.purpose,
         "status": trip.status,
         "flags": list(trip.flags or []),
+        "travel_start_helsinki": _hel(trip.travel_start_at),
+        "travel_end_helsinki": _hel(trip.travel_end_at),
+        "flight_departure_helsinki": _hel(trip.start_at),
+        "flight_arrival_helsinki": _hel(trip.end_at),
     }
 
 
@@ -215,16 +233,24 @@ def list_trips(
 
 def trip_detail(db: Session, trip: CalendarTrip) -> dict:
     trip_country = trip.country if trip.country and "," not in trip.country else None
+    flight_times = _flight_times_by_day(trip.flights or [])
     days = []
-    for d in _days(db, trip):
+    day_rows = _days(db, trip)
+    for d in day_rows:
+        ft = flight_times.get(d.day_date.isoformat(), {})
         days.append({
             "date": d.day_date.isoformat(),
             "start_time_helsinki": d.start_time,
             "start_time_utc": _hel_to_utc(d.day_date, d.start_time),
             "end_time_helsinki": d.end_time,
             "end_time_utc": _hel_to_utc(d.day_date, d.end_time),
+            "flight_departure_helsinki": ft.get("departure"),
+            "flight_arrival_helsinki": ft.get("arrival"),
+            "airport": d.airport,
             "destination": d.destination,
+            "destination_source": d.destination_source,
             "country": d.country or trip_country,
+            "country_name": country_name(d.country or trip_country),
             "purpose": d.purpose,
             "hotel": (d.hotel or {}).get("name") if d.hotel else None,
             "meetings": [
@@ -239,8 +265,15 @@ def trip_detail(db: Session, trip: CalendarTrip) -> dict:
         })
     return {
         **summary(trip),
-        "start": _times(trip.start_at),
-        "end": _times(trip.end_at),
+        # Resetider (det som går till Netvisor) och flygtider.
+        "travel_start": _times(trip.travel_start_at),
+        "travel_end": _times(trip.travel_end_at),
+        "flight_departure": _times(trip.start_at),
+        "flight_arrival": _times(trip.end_at),
+        "netvisor_line_description": netvisor_line_description(
+            [d.destination for d in day_rows] or [trip.destination],
+            trip.country, trip.purpose,
+        ),
         "open_return": bool(trip.open_return),
         "flights": [
             {
@@ -317,6 +350,20 @@ def _day(db: Session, trip: CalendarTrip, day_date: date) -> CalendarTripDay | N
     )
 
 
+def _warnings(**fields) -> list[str]:
+    out: list[str] = []
+    for name, value in fields.items():
+        if value:
+            out += non_english_warnings(name, value)
+    return out
+
+
+def _with_warnings(detail: dict, warnings: list[str]) -> dict:
+    if warnings:
+        detail["warnings"] = warnings
+    return detail
+
+
 def update_trip(
     db: Session,
     trip_id: int,
@@ -327,12 +374,17 @@ def update_trip(
     purpose: str | None = None,
     selected_flight_id: str | None = None,
 ) -> dict:
+    """start/end = resetiderna (när Mikko lämnar hemmet/kontoret och är
+    tillbaka). Flygtiderna (start_at/end_at) ändras bara via
+    selected_flight_id."""
+    from app.services.trip_detector import home_iatas, travel_times
+
     trip = _get(db, trip_id)
     if all(v is None for v in (start, end, destination, country, purpose, selected_flight_id)):
         raise TripEditError("Nothing to update — pass at least one field.")
 
-    start_dt = _aware(trip.start_at)
-    end_dt = _aware(trip.end_at)
+    travel_start = _aware(trip.travel_start_at) or _aware(trip.start_at)
+    travel_end = _aware(trip.travel_end_at) or _aware(trip.end_at)
     flags = list(trip.flags or [])
     flights = list(trip.flights or [])
 
@@ -349,21 +401,30 @@ def update_trip(
         flights = [f for f in flights if f.get("id") not in others]
         if not any(f.get("id") == selected_flight_id for f in flights):
             flights.insert(0, chosen)
-        start_dt = _aware(chosen.get("start")) or start_dt
+        chosen_start = _aware(chosen.get("start"))
+        if chosen_start is not None:
+            trip.start_at = chosen_start.isoformat()
+            # Resans start räknas om från det valda flyget (med marginal).
+            travel_start, _ = travel_times(
+                chosen_start, chosen.get("origin"), None, home_iatas(),
+            )
         flags = [f for f in flags if f != FLAG_NEEDS_REVIEW]
 
     if start is not None:
-        start_dt = parse_moment(start, "start")
+        travel_start = parse_moment(start, "start")
     if end is not None:
-        end_dt = parse_moment(end, "end")
-    if start_dt is not None and end_dt is not None and end_dt <= start_dt:
+        travel_end = parse_moment(end, "end")
+    if travel_start is not None and travel_end is not None and travel_end <= travel_start:
         raise TripEditError("end must be after start.")
 
-    new_start_date = start_dt.astimezone(HELSINKI).date() if start_dt else trip.start_date
-    new_end_date = end_dt.astimezone(HELSINKI).date() if end_dt else trip.end_date
+    new_start_date = (
+        travel_start.astimezone(HELSINKI).date() if travel_start else trip.start_date
+    )
+    new_end_date = travel_end.astimezone(HELSINKI).date() if travel_end else trip.end_date
     if new_end_date < new_start_date:
         raise TripEditError("end must be after start.")
 
+    warnings = _warnings(destination=destination, purpose=purpose)
     if destination is not None:
         trip.destination = clean_text(destination, "destination")
     if country is not None:
@@ -372,31 +433,33 @@ def update_trip(
         trip.purpose = clean_text(purpose, "purpose")
 
     old_start, old_end = trip.start_date, trip.end_date
-    trip.start_at = start_dt.isoformat() if start_dt else None
-    trip.end_at = end_dt.isoformat() if end_dt else None
+    trip.travel_start_at = travel_start.isoformat() if travel_start else None
+    trip.travel_end_at = travel_end.isoformat() if travel_end else None
     trip.start_date = new_start_date
     trip.end_date = new_end_date
     if end is not None:
         flags = [f for f in flags if f != FLAG_MISSING_RETURN]
         trip.open_return = False
+    if destination is not None and trip.destination:
+        flags = [f for f in flags if f != FLAG_DESTINATION_UNCONFIRMED]
     trip.flags = flags
     trip.flights = flights
     _mark_edited(trip)
     db.flush()
     _sync_days(db, trip, old_start, old_end)
 
-    # Avresa-/hemkomsttid på första/sista dagen följer resans start/slut.
-    if start_dt is not None:
+    # Första/sista dagens tider följer resans start/slut (resetider).
+    if travel_start is not None and (start is not None or selected_flight_id is not None):
         first = _day(db, trip, trip.start_date)
         if first is not None:
-            first.start_time = start_dt.astimezone(HELSINKI).strftime("%H:%M")
-    if end_dt is not None and (end is not None):
+            first.start_time = travel_start.astimezone(HELSINKI).strftime("%H:%M")
+    if travel_end is not None and end is not None:
         last = _day(db, trip, trip.end_date)
         if last is not None:
-            last.end_time = end_dt.astimezone(HELSINKI).strftime("%H:%M")
+            last.end_time = travel_end.astimezone(HELSINKI).strftime("%H:%M")
 
     db.commit()
-    return trip_detail(db, trip)
+    return _with_warnings(trip_detail(db, trip), warnings)
 
 
 def update_trip_day(
@@ -420,9 +483,31 @@ def update_trip_day(
     if all(v is None for v in (start_time, end_time, destination, country, hotel, purpose)):
         raise TripEditError("Nothing to update — pass at least one field.")
     _apply_day_fields(row, start_time, end_time, destination, country, hotel, purpose)
+    _after_day_edit(db, trip)
     _mark_edited(trip)
     db.commit()
-    return trip_detail(db, trip)
+    return _with_warnings(
+        trip_detail(db, trip), _warnings(destination=destination, purpose=purpose),
+    )
+
+
+def _after_day_edit(db: Session, trip: CalendarTrip) -> None:
+    """Flaggan destination_unconfirmed försvinner när varje dag har en ort.
+    Resans destination/land följer dagarnas orter."""
+    db.flush()
+    rows = _days(db, trip)
+    if rows and all(r.destination for r in rows):
+        trip.flags = [f for f in (trip.flags or []) if f != FLAG_DESTINATION_UNCONFIRMED]
+        cities: list[str] = []
+        countries: list[str] = []
+        for r in rows:
+            if r.destination not in cities:
+                cities.append(r.destination)
+            if r.country and r.country not in countries:
+                countries.append(r.country)
+        trip.destination = " → ".join(cities)
+        if countries:
+            trip.country = ",".join(countries)
 
 
 def _apply_day_fields(row, start_time, end_time, destination, country, hotel, purpose):
@@ -438,6 +523,8 @@ def _apply_day_fields(row, start_time, end_time, destination, country, hotel, pu
         name = clean_text(hotel, "hotel")
         new_hotel = {"id": None, "name": name} if name else None
     row.start_time, row.end_time = new_start, new_end
+    if destination is not None and new_dest != row.destination:
+        row.destination_source = "manual"
     row.country, row.destination, row.purpose = new_country, new_dest, new_purpose
     row.hotel = new_hotel
     row.status = "edited"
@@ -468,15 +555,19 @@ def add_trip_day(
     )
     _apply_day_fields(row, start_time, end_time, destination, country, hotel, purpose)
     db.add(row)
+    warnings = _warnings(destination=destination, purpose=purpose)
     if day_date < trip.start_date:
         trip.start_date = day_date
         trip.start_at = None
+        trip.travel_start_at = None
     if day_date > trip.end_date:
         trip.end_date = day_date
         trip.end_at = None
+        trip.travel_end_at = None
+    _after_day_edit(db, trip)
     _mark_edited(trip)
     db.commit()
-    return trip_detail(db, trip)
+    return _with_warnings(trip_detail(db, trip), warnings)
 
 
 def remove_trip_day(db: Session, trip_id: int, day: str) -> dict:
@@ -492,9 +583,11 @@ def remove_trip_day(db: Session, trip_id: int, day: str) -> dict:
     if day_date == trip.start_date:
         trip.start_date = min(remaining)
         trip.start_at = None
+        trip.travel_start_at = None
     if day_date == trip.end_date:
         trip.end_date = max(remaining)
         trip.end_at = None
+        trip.travel_end_at = None
     _mark_edited(trip)
     db.commit()
     return trip_detail(db, trip)

@@ -88,8 +88,8 @@ def test_flight_destination_variants():
     d = datetime(2026, 3, 2, 7, 0, tzinfo=HEL)
     g = lambda s: ev("a", s, d, d, event_type="fromGmail")  # noqa: E731
     assert flight_destination(g("Flight to Stockholm (AY 801)")) == "Stockholm"
-    assert flight_destination(g("Flight to CPH (AY 959)")) == "Köpenhamn"
-    assert flight_destination(g("Flight to HEL (AY 960)")) == "Helsingfors"
+    assert flight_destination(g("Flight to CPH (AY 959)")) == "Copenhagen"
+    assert flight_destination(g("Flight to HEL (AY 960)")) == "Helsinki"
 
 
 # ---------- C39: fel från första prod-körningen ----------
@@ -116,8 +116,9 @@ def test_c39_other_peoples_flights_are_not_flights():
                origin="Copenhagen CPH"),
     ]
     trips = detect_trips(events, HOMES)["trips"]
-    assert [(t["start_date"], t["destination"]) for t in trips] == [
-        ("2026-08-25", "Köpenhamn"),
+    # C41: CPH utan ledtråd → Sverige, orten obekräftad.
+    assert [(t["start_date"], t["destination"], t["country"]) for t in trips] == [
+        ("2026-08-25", None, "SE"),
     ]
 
 
@@ -136,8 +137,8 @@ def test_c39_manual_finnair_duplicate_is_merged():
     res = detect_trips(events, HOMES)
     assert len(res["trips"]) == 1
     t = res["trips"][0]
-    assert t["destination"] == "Köpenhamn"
-    assert t["country"] == "DK"
+    assert t["destination"] is None and t["country"] == "SE"
+    assert t["flags"] == ["destination_unconfirmed"]
     assert [f["id"] for f in t["flights"]] == ["g1", "g2"]
     assert t["flights"][0]["duplicate_ids"] == ["m1"]
     assert {"m1", "m2"} <= set(t["source_event_ids"])
@@ -169,7 +170,7 @@ def test_c39_outbound_from_home_closes_previous_trip():
     ]
     trips = detect_trips(events, HOMES)["trips"]
     assert [(t["start_date"], t["end_date"], t["destination"], t["flags"]) for t in trips] == [
-        ("2026-11-26", "2026-11-26", "Köpenhamn", ["missing_return"]),
+        ("2026-11-26", "2026-11-26", None, ["missing_return", "destination_unconfirmed"]),
         ("2026-11-27", "2026-11-28", "Oslo", []),
     ]
     assert trips[0]["open_return"] is True
@@ -188,8 +189,11 @@ def test_c39_connection_from_abroad_stays_one_trip():
     ]
     trips = detect_trips(events, HOMES)["trips"]
     assert len(trips) == 1
-    assert trips[0]["destination"] == "Köpenhamn → Oslo"
-    assert trips[0]["country"] == "DK,NO"
+    # C41: dag 1 i CPH utan ledtråd ärver ingen ort från Oslo-dagarna
+    # (annan flygplats) → obekräftad; Oslo-dagarna har Oslo.
+    assert trips[0]["destination"] == "Oslo"
+    assert trips[0]["country"] == "SE,NO"
+    assert [d["airport"] for d in trips[0]["days"]] == ["CPH", "OSL", "OSL"]
 
 
 def test_c39_two_outbounds_same_day_needs_review():
@@ -206,23 +210,25 @@ def test_c39_two_outbounds_same_day_needs_review():
     res = detect_trips(events, HOMES)
     assert len(res["trips"]) == 1
     t = res["trips"][0]
-    assert t["flags"] == ["needs_review"]
+    assert t["flags"] == ["needs_review", "destination_unconfirmed"]
     assert [o["flight_no"] for o in t["flight_options"]] == ["AY 951", "AY 953"]
-    assert (t["start_date"], t["end_date"]) == ("2026-08-25", "2026-08-26")
+    # Fixturen har +02:00 i augusti (sommartid +03:00): landning 22:00+02
+    # = 23:00 lokal + 60 min → resan slutar 00:00 den 27:e.
+    assert (t["start_date"], t["end_date"]) == ("2026-08-25", "2026-08-27")
     assert t["open_return"] is False
 
 
 def test_c39_city_names_normalized_via_iata():
-    """Fel 5: svenska namn, inga Tukholma/Goteborg/Copenhagen Kastrup."""
+    """Fel 5 (C41: engelska namn), inga Tukholma/Goteborg/Copenhagen Kastrup."""
     d = datetime(2026, 4, 30, 7, 15, tzinfo=HEL)
     g = lambda s: ev("a", s, d, d, event_type="fromGmail")  # noqa: E731
     assert flight_destination(g("Flight to Tukholma (AY 803)")) == "Stockholm"
-    assert flight_destination(g("Flight to Goteborg (AY 861)")) == "Göteborg"
-    assert flight_destination(g("Flight to Gothenburg (AY 861)")) == "Göteborg"
-    assert flight_destination(g("Flight to Copenhagen Kastrup (AY 957)")) == "Köpenhamn"
+    assert flight_destination(g("Flight to Goteborg (AY 861)")) == "Gothenburg"
+    assert flight_destination(g("Flight to Gothenburg (AY 861)")) == "Gothenburg"
+    assert flight_destination(g("Flight to Copenhagen Kastrup (AY 957)")) == "Copenhagen"
     assert flight_destination(g("Flight to OSL (AY 911)")) == "Oslo"
     assert flight_destination(
-        g("Flight to HELSINKI HELSINKI VANTAA (AY 864)")) == "Helsingfors"
+        g("Flight to HELSINKI HELSINKI VANTAA (AY 864)")) == "Helsinki"
     assert flight_destination(g("Flight to ARN (AY 801)")) == "Stockholm"
 
 
@@ -267,7 +273,7 @@ def test_c39_meeting_filter():
                origin="Gothenburg GOT"),
     ]
     t = detect_trips(events, HOMES)["trips"][0]
-    assert t["destination"] == "Göteborg"
+    assert t["destination"] == "Gothenburg"
     assert sorted(m["id"] for m in t["days"][0]["meetings"]) == sorted(e["id"] for e in keep)
 
 
@@ -315,8 +321,9 @@ def test_round_trip_same_day():
     assert trip["open_return"] is False
     assert len(trip["days"]) == 1
     day = trip["days"][0]
-    assert day["start_time"] == "07:30"
-    assert day["end_time"] == "20:00"
+    # C41: restid = 07:30 − 60 − 40 / 20:00 + 20 + 40.
+    assert day["start_time"] == "05:50"
+    assert day["end_time"] == "21:00"
     assert day["destination"] == "Stockholm"
     assert [m["id"] for m in day["meetings"]] == ["m1"]
     assert day["hotel"] is None
@@ -338,9 +345,11 @@ def test_round_trip_next_day_with_hotel():
     trip = detect_trips(events, HOMES)["trips"][0]
     assert (trip["start_date"], trip["end_date"]) == ("2026-04-14", "2026-04-15")
     d1, d2 = trip["days"]
-    assert d1["start_time"] == "16:00" and d1["end_time"] is None
+    # Fixturen har +02:00 men april är sommartid (+03:00) i Helsingfors:
+    # 16:00+02 = 17:00 lokal − 100 min = 15:20.
+    assert d1["start_time"] == "15:20" and d1["end_time"] is None
     assert d1["hotel"] == {"id": "hotel", "name": "Scandic Klara"}
-    assert d2["start_time"] is None and d2["end_time"] == "20:05"
+    assert d2["start_time"] is None and d2["end_time"] == "22:05"
     assert d2["hotel"] is None  # ingen hotellnatt efter hemresan
     assert [m["summary"] for m in d2["meetings"]] == ["Workshop"]
     assert trip["hotels"] == [{"id": "hotel", "name": "Scandic Klara"}]
@@ -422,7 +431,9 @@ def test_connection_keeps_single_trip():
     res = detect_trips(events, HOMES)
     assert len(res["trips"]) == 1
     trip = res["trips"][0]
-    assert trip["destination"] == "Stockholm → London"
+    # C41: arbetsort per dag. Byte i Stockholm samma dag → London hela dagen.
+    assert trip["destination"] == "London"
+    assert trip["days"][0]["airport"] == "LHR"
     assert trip["days"][1]["destination"] == "London"
 
 
@@ -621,6 +632,6 @@ def test_c39_refresh_persists_flags_and_options(client):
     by_status = {t["status"]: t for t in trips}
     assert by_status["edited"]["destination"] == "Oslo (manuell)"
     aug = by_status["suggested"]
-    assert aug["flags"] == ["needs_review"]
-    assert aug["country"] == "DK"
+    assert aug["flags"] == ["needs_review", "destination_unconfirmed"]
+    assert aug["country"] == "SE"
     assert [o["flight_no"] for o in aug["flight_options"]] == ["AY 951", "AY 953"]

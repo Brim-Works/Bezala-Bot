@@ -461,7 +461,8 @@ def test_tools_review_edit_approve(env):
     assert [t["destination"] for t in res["data"]["trips"]] == ["Stockholm"]
 
     detail = _call(c, at, "get_trip", trip_id=trip_id)["data"]
-    assert detail["start"] == {"utc": "2026-08-25T03:20Z", "helsinki": "2026-08-25 06:20"}
+    assert detail["flight_departure"] == {"utc": "2026-08-25T03:20Z",
+                                          "helsinki": "2026-08-25 06:20"}
     assert [d["date"] for d in detail["days"]] == ["2026-08-25", "2026-08-26", "2026-08-27"]
     assert detail["days"][0]["start_time_utc"] == "2026-08-25T03:20Z"
     assert detail["days"][1]["meetings"][0]["summary"] == "Customer workshop"
@@ -473,9 +474,12 @@ def test_tools_review_edit_approve(env):
                 purpose="Customer workshop with Visma Denmark")["data"]
     assert out["status"] == "edited"
     assert out["flags"] == []
-    assert out["start"]["helsinki"] == "2026-08-25 07:25"
+    # C41: flygtiden följer valet, resan börjar 100 min tidigare (hemifrån).
+    assert out["flight_departure"]["helsinki"] == "2026-08-25 07:25"
+    assert out["travel_start"]["helsinki"] == "2026-08-25 05:45"
     assert [f["flight_no"] for f in out["flights"]] == ["AY 953"]
-    assert out["days"][0]["start_time_helsinki"] == "07:25"
+    assert out["days"][0]["start_time_helsinki"] == "05:45"
+    assert "warnings" not in out
     assert out["purpose"] == "Customer workshop with Visma Denmark"
 
     out = _call(c, at, "update_trip_day", trip_id=trip_id, date="2026-08-26",
@@ -485,6 +489,8 @@ def test_tools_review_edit_approve(env):
     out = _call(c, at, "add_trip_day", trip_id=trip_id, date="2026-08-28",
                 destination="Köpenhamn")["data"]
     assert out["end_date"] == "2026-08-28"
+    # C41: inte på engelska → varning, men inget blockeras.
+    assert any("Copenhagen" in w for w in out["warnings"])
     out = _call(c, at, "remove_trip_day", trip_id=trip_id, date="2026-08-28")["data"]
     assert out["end_date"] == "2026-08-27"
 

@@ -151,6 +151,24 @@ def _run_once_fix_skipped_bezala() -> None:
         logger.exception("Engångsmigration skipped→pending misslyckades.")
 
 
+def _run_c41_migrations() -> None:
+    """C41 — engelska stadsnamn + resetider på kalenderresor, och bort med
+    testklienten 'deploy-check' som C40 skapade. Idempotent."""
+    from app.db import SessionLocal
+    from app.mcp_oauth import delete_clients_named
+    from app.services.calendar_trip_store import migrate_c41
+
+    db = SessionLocal()
+    try:
+        migrate_c41(db)
+        delete_clients_named(db, "deploy-check")
+    except Exception:
+        db.rollback()
+        logger.exception("C41-migrering misslyckades.")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -165,6 +183,7 @@ async def lifespan(app: FastAPI):
     _run_once_seed_excluded_vendors()
     _run_once_seed_html_only_senders()
     _run_once_seed_bezala_vendor_mappings()
+    _run_c41_migrations()
     start_scheduler()
     async with mcp_lifespan():
         yield
