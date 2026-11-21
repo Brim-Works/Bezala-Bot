@@ -371,7 +371,7 @@ def test_duplicate_finnair_receipts_25_aug(db):
     b1 = _fin(514.48, "1059999990003")
     b2 = _fin(514.48, "1059999990003")
     _fin(514.48, "1059999990004")  # annan biljett, samma belopp → inte dubblett
-    assert rd.mark_duplicates(db) == {"groups": 2, "newly_marked": 2}
+    assert rd.mark_duplicates(db) == {"groups": 2, "newly_marked": 2, "cleared": 0}
     db.refresh(a2), db.refresh(b2), db.refresh(a1)
     assert a2.duplicate_of == a1.message_id  # det kopplade behålls
     assert b2.duplicate_of == b1.message_id
@@ -476,3 +476,11 @@ def test_new_hotel_senders_in_gmail_filter():
 
     assert "bokning@riversidehotel.se" in BUILTIN_INCLUDES
     assert "info@storyhotel-studiomalmo.com" in BUILTIN_INCLUDES
+
+
+def test_same_amount_and_day_without_ticket_is_not_duplicate(db):
+    # Två Skånetrafiken-biljetter à 150 SEK samma dag (5 nov) = två resor.
+    for _ in range(2):
+        _receipt(db, date(2026, 11, 5), category="Kollektivtrafik", vendor="Skånetrafiken",
+                 amount=150.0, subject="Ditt kvitto")
+    assert rd.mark_duplicates(db)["groups"] == 0
