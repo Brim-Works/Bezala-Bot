@@ -210,6 +210,26 @@ def test_cph_receipt_and_danish_city():
     assert (t["days"][0]["destination"], t["days"][0]["country"]) == ("Aarhus", "DK")
 
 
+def test_flight_receipts_and_remote_meetings_ignored():
+    """Prod 7 maj / 26 nov: Finnair-kvittot nämner Copenhagen → inte DK.
+    Prod 22 apr: möten i Växjö-rum innan flyget 18:00 → räknas inte."""
+    rec = {"2026-11-26": ["Finnair Helsinki - Copenhagen AY 957", "Skånetrafiken"]}
+    t = detect_trips(_cph(26), HOMES, receipts_by_date=rec)["trips"][0]
+    assert (t["days"][0]["destination"], t["days"][0]["country"]) == (None, "SE")
+    assert t["flags"] == ["destination_unconfirmed"]
+
+    before = ev("v", "TSLG", datetime(2026, 4, 22, 9, 15, tzinfo=S),
+                datetime(2026, 4, 22, 10, 0, tzinfo=S), location="VXO-SAM-2-GPS (6)")
+    ws = ev("w", "Workshop Priser & BPO - Ljungby", datetime(2026, 4, 23, 11, 0, tzinfo=S),
+            datetime(2026, 4, 23, 15, 50, tzinfo=S), location="LBY-LHQ-1-Vindruvan (10)")
+    t = detect_trips(_cph(22, month=4, out=(18, 0), back=(22, 0), tz=S, nights=1,
+                          extra=[before, ws]), HOMES)["trips"][0]
+    assert [(d["destination"], d["destination_source"]) for d in t["days"]] == [
+        ("Ljungby", "carried"), ("Ljungby", "meeting_title"),
+    ]
+    assert t["purpose"] == "Workshop, Ljungby office"
+
+
 def test_multi_city_per_day_and_carry_forward():
     """Malmö dag 1, Växjö dag 2, dag 3 utan ledtråd ärver Växjö."""
     a = ev("a", "Halvdag LG Malmö", datetime(2026, 3, 10, 13, 0, tzinfo=CET),

@@ -187,6 +187,11 @@ _WORK_CITIES: dict[str, tuple[str, str]] = {
 }
 
 DEFAULT_AIRPORT_COUNTRY = {"CPH": "SE"}
+_TRAVEL_RECEIPT_RE = re.compile(
+    r"finnair|\bsas\b|norwegian|lufthansa|klm|finavia|moovy|airport|"
+    r"lufthavn|kastrup|flygplats|lentoasema|aimo park|europark",
+    re.IGNORECASE,
+)
 DEFAULT_CPH_KNOWN_CITIES = ("Malmö", "Helsingborg", "Växjö", "Ljungby")
 
 
@@ -333,6 +338,10 @@ def resolve_work_city(
         return hit, "hotel", False
     receipt_hits = []
     for text in receipt_texts:
+        # Flyg-, flygplats- och parkeringskvitton nämner flygplatsens stad
+        # (Finnair "Helsinki – Copenhagen") — inte arbetsorten.
+        if _TRAVEL_RECEIPT_RE.search(text or ""):
+            continue
         receipt_hits += _cities_in(text, cands)
     hit = _pick(receipt_hits)
     if hit:
@@ -781,6 +790,20 @@ def _build_trip(
     ]
     airport_cities = [name for _, name, _ in outbound if name]
     day_meetings_all = [m for m in meetings if is_relevant_meeting(m, airport_cities)]
+    # Möten före landning på utresan / efter avgång på hemresan hålls
+    # hemifrån (distans) — de räknas inte för arbetsort eller syfte.
+    landed = _aware_dt(raw["outbound"][0][0]["end"])
+    leaves = _aware_dt(ret["start"]) if ret else None
+
+    def _on_site(m: dict) -> bool:
+        ms, me = _aware_dt(m["start"]), _aware_dt(m["end"])
+        if ms is None or me is None:
+            return True  # heldagsevent
+        if landed is not None and me <= landed:
+            return False
+        if leaves is not None and ms >= leaves:
+            return False
+        return True
     inferred_airports = airport_default_country()
 
     days = []
@@ -795,10 +818,11 @@ def _build_trip(
         day_flights = [f for f in flights if _start_date(f) == d]
         day_hotel = next((h for h in trip_hotels if _covers(h, d)), None)
         day_meetings = [m for m in day_meetings_all if _meeting_on(m, d)]
+        on_site = [m for m in day_meetings if _on_site(m)]
 
         if airport in inferred_airports:
             hit, source, office = resolve_work_city(
-                d, airport, day_meetings, meetings, trip_hotels,
+                d, airport, on_site, meetings, trip_hotels,
                 (receipts_by_date or {}).get(d.isoformat(), []),
             )
             city, country = hit if hit else (None, None)
@@ -809,7 +833,7 @@ def _build_trip(
             if city:
                 office = any(
                     ROOM_OFFICES.get(code, ("",))[0] == city
-                    for m in day_meetings
+                    for m in on_site
                     for code in _ROOM_OFFICE_RE.findall(m.get("location") or "")
                 )
 
@@ -833,7 +857,7 @@ def _build_trip(
             "country": country,
             "destination_source": source,
             "_office": office,
-            "_meetings_raw": day_meetings,
+            "_meetings_raw": on_site,
             "meetings": [_meeting_dict(m) for m in day_meetings],
             "hotel": (
                 {"id": day_hotel["id"], "name": hotel_name(day_hotel)}
