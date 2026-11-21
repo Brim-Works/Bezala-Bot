@@ -273,6 +273,8 @@ def test_valid_token_works(env):
         "set_card_line_status",
         # C43
         "mark_private_expense",
+        # C44
+        "couple_receipt", "get_card_line", "search_receipts", "list_duplicate_receipts",
     }
 
 

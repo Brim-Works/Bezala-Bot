@@ -211,10 +211,41 @@ def combine_purposes(day_purposes: list[str | None]) -> str | None:
 # ---------- Netvisor ----------
 
 
+def meals_note(days: Iterable[tuple[str, int | None, list | None, str | None]]) -> str | None:
+    """C44 — '(1 free meal: dinner)' eller, för flera dagar med måltider,
+    '(3 free meals: 7 May dinner; 8 May breakfast, lunch)'.
+    days: (YYYY-MM-DD, free_meals, free_meal_sources, country)."""
+    from datetime import date as _date
+
+    from app.services.trip_meals import meal_names
+
+    rows = []
+    total = 0
+    for day, n, sources, cc in days:
+        if not n:
+            continue
+        names = meal_names(sources, cc)
+        total += n
+        rows.append((day, n, names))
+    if not total:
+        return None
+    word = "meal" if total == 1 else "meals"
+    if len(rows) == 1:
+        names = rows[0][2]
+        return f"({total} free {word}: {', '.join(names)})" if names else f"({total} free {word})"
+    parts = []
+    for day, n, names in rows:
+        d = _date.fromisoformat(day)
+        label = f"{d.day} {d.strftime('%b')}"
+        parts.append(f"{label} {', '.join(names)}" if names else f"{label} {n}")
+    return f"({total} free {word}: {'; '.join(parts)})"
+
+
 def netvisor_line_description(
     cities: Iterable[str | None],
     country: str | None,
     purpose: str | None,
+    meals: str | None = None,
 ) -> str:
     """'Business trip Malmö, Sweden – Customer day Agda PS'.
 
@@ -235,4 +266,6 @@ def netvisor_line_description(
         for c in uniq:
             p = re.sub(rf",\s*{re.escape(c)}( office)?\s*$", "", p)
         text += f" – {p}"
+    if meals:
+        text += f" {meals}"
     return text

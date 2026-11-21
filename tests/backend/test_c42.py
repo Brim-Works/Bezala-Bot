@@ -359,7 +359,8 @@ def test_list_missing(db):
         out = list_missing(db, older_than_days=5, sync=False)
     kinds = sorted((i["trip_id"], i["kind"], i["slot"]) for i in out["trip_items_missing"])
     assert kinds == [(old.id, "flight", None), (old.id, "hotel", "2026-03-02")]
-    assert out["counts"] == {"trip_items": 2, "card_lines": 3}
+    assert {k: out["counts"][k] for k in ("trip_items", "card_lines")} == {
+        "trip_items": 2, "card_lines": 3}
     assert out["card_lines_without_receipt"][0]["bill_line_id"] == "2000103"  # äldst först
 
 
@@ -399,7 +400,8 @@ def test_mcp_tools_and_completeness(env):
          patch("app.services.trip_completeness._today", return_value=date(2026, 3, 20)):
         out = _call(c, at, "list_missing", older_than_days=5)["data"]
     assert out["bezala_sync"]["status"] == "ok"
-    assert out["counts"] == {"trip_items": 1, "card_lines": 3}
+    assert {k: out["counts"][k] for k in ("trip_items", "card_lines")} == {
+        "trip_items": 1, "card_lines": 3}
 
     res = _call(c, at, "set_card_line_status", bill_line_id="2000103",
                 status="receipt_not_available")

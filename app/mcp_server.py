@@ -46,7 +46,16 @@ INSTRUCTIONS = (
     "Bezala card payments without a receipt (read-only — nothing is created in Bezala). "
     "Card lines flagged 'possible_private' are parking outside any trip — ask Mikko "
     "whether it was private; if so use mark_private_expense (Bezala comment 'Private "
-    "expense – to be deducted from salary.'). Nothing is ever submitted for approval."
+    "expense – to be deducted from salary.'). Nothing is ever submitted for approval. "
+    "Free meals per day (free_meals 0–3 + free_meal_sources) are prefilled from the "
+    "calendar (kick-off = dinner, customer day = lunch, dinner/lunch events, hotel "
+    "breakfast except Scandic Go) and can be corrected with update_trip_day. "
+    "time_source tells where travel times come from: 'parking' (Moovy entry/exit ± "
+    "drive), 'flight_default' (flights + margin) or 'manual'. Edited/approved trips "
+    "are never recalculated — get_trip shows 'suggestions' instead. list_missing gives "
+    "a suggested_receipt per card line; couple_receipt couples it (Bezala draft, never "
+    "submitted) ONLY when Mikko explicitly asks. 'domestic_unconfirmed' = hotel "
+    "without flight: ask Mikko whether it was a business trip."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -144,14 +153,23 @@ async def update_trip_day(
     country: str | None = None,
     hotel: str | None = None,
     purpose: str | None = None,
+    free_meals: int | None = None,
+    free_meal_sources: list[str] | None = None,
 ) -> dict:
     """Edit one day of a trip. date: YYYY-MM-DD. Times HH:MM Helsinki (travel times).
     destination = work city in English (e.g. 'Malmö', 'Copenhagen'); purpose in
     English. Pass an empty string to clear a field. Status → 'edited'.
+    free_meals: 0–3 free meals that day (reduces the per diem). free_meal_sources:
+    any of 'hotel_breakfast', 'lunch_customer_day', 'dinner_kickoff',
+    'dinner_calendar', 'lunch_calendar', 'ticket'. Sources only → the count is
+    calculated (hotel breakfast counts only abroad when the setting allows it).
+    Works on edited trips too. Free meals are added to the Netvisor line in
+    English, e.g. '(1 free meal: dinner)'.
     Returns the updated trip (with 'warnings' if a field is not in English)."""
     return await _run(edit.update_trip_day, trip_id, date, start_time=start_time,
                       end_time=end_time, destination=destination, country=country,
-                      hotel=hotel, purpose=purpose)
+                      hotel=hotel, purpose=purpose, free_meals=free_meals,
+                      free_meal_sources=free_meal_sources)
 
 
 @mcp.tool()
@@ -301,6 +319,58 @@ async def mark_private_expense(
         return card_line_dict(row, _today())
 
     return await _run(work)
+
+
+# ---------- C44: kopplingsförslag och läsverktyg ----------
+
+
+@mcp.tool()
+async def couple_receipt(bill_line_id: str, message_id: str) -> dict:
+    """Couple a receipt in Bezala Bot to a Bezala card line (bill_line) using the
+    normal match-to-Bezala flow: the receipt PDF is attached and the Bezala
+    expense stays a DRAFT (unapproved) — it is never submitted for approval.
+    Only when Mikko explicitly asks. Use list_missing (suggested_receipt) or
+    get_card_line to find the message_id first."""
+    from app.services.card_line_coupling import couple_receipt as _couple
+
+    return await _run(_couple, bill_line_id, message_id)
+
+
+@mcp.tool()
+async def get_card_line(bill_line_id: str) -> dict:
+    """Read-only: a Bezala card line (bill_line) with its status in Bezala Bot,
+    the receipt coupled to it (if any), the match score and when/how the coupling
+    was made, plus the best suggested receipt if it still has none. May read
+    Bezala transactions (GET only) to find the coupled receipt."""
+    from app.services.card_line_coupling import get_card_line as _get
+
+    return await _run(_get, bill_line_id)
+
+
+@mcp.tool()
+async def search_receipts(
+    query: str | None = None,
+    date_from: str | None = None,
+    date_to: str | None = None,
+    limit: int = 30,
+) -> dict:
+    """Read-only search among receipts in Bezala Bot (vendor, sender, subject,
+    file name, amount, booking reference). date_from/date_to: receipt date
+    YYYY-MM-DD. Shows coupling to Bezala, parking entry/exit, flight segments
+    and duplicate marks. Nothing is changed."""
+    from app.services.card_line_coupling import search_receipts as _search
+
+    return await _run(_search, query, date_from, date_to, limit)
+
+
+@mcp.tool()
+async def list_duplicate_receipts(year: int | None = None) -> dict:
+    """Read-only: receipts captured twice (same amount + date + e-ticket/booking
+    number). Duplicates are left out of checklists and coupling suggestions;
+    Bezala is never touched. Shows whether a duplicate became a Bezala draft."""
+    from app.services.receipt_details import duplicate_report
+
+    return await _run(duplicate_report, year)
 
 
 # ---------- ASGI: auth + Streamable HTTP ----------

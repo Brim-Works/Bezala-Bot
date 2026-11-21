@@ -129,7 +129,8 @@ class Receipt:
     """Lättviktsvy av en ProcessedMessage för matchningen."""
 
     __slots__ = ("message_id", "vendor", "amount", "currency", "day", "text",
-                 "kinds", "drive_link", "bill_line_id", "kind")
+                 "kinds", "drive_link", "bill_line_id", "kind", "segments",
+                 "parking_entry_at", "parking_exit_at", "duplicate_of")
 
     def __init__(self, m: ProcessedMessage):
         self.message_id = m.message_id
@@ -140,6 +141,11 @@ class Receipt:
         self.bill_line_id = m.bezala_transaction_id
         # C43 — 'change_fee' (Finnair-ombokning) räknas inte som flygbiljett.
         self.kind = getattr(m, "kind", None)
+        # C44 — detaljer ur mailtexten (flygsegment, parkeringstider).
+        self.segments = getattr(m, "flight_segments", None) or []
+        self.parking_entry_at = getattr(m, "parking_entry_at", None)
+        self.parking_exit_at = getattr(m, "parking_exit_at", None)
+        self.duplicate_of = getattr(m, "duplicate_of", None)
         self.day = (
             _parse_day(m.receipt_date)
             or _parse_day(m.bezala_payment_date)
@@ -190,7 +196,9 @@ def load_receipts(db: Session) -> list[Receipt]:
         .filter(ProcessedMessage.status == "saved")
         .all()
     )
-    return [r for r in (Receipt(m) for m in rows) if r.day is not None]
+    # C44 — dubbletter (samma köp fångat två gånger) räknas inte.
+    return [r for r in (Receipt(m) for m in rows)
+            if r.day is not None and not r.duplicate_of]
 
 
 def _days(db: Session, trip: CalendarTrip) -> list[CalendarTripDay]:
@@ -229,24 +237,99 @@ def _home_origin(trip: CalendarTrip) -> bool | None:
     return origin in home_iatas()
 
 
+_DEP_DATE_RE = re.compile(r"\bdep:\s*(\d{1,2})([a-z]{3})(\d{4})\b")
+_MON = {m: i for i, m in enumerate(
+    ("jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"), 1)}
+
+
+def _flight_local_date(f: dict) -> date | None:
+    from app.services.receipt_details import _tz
+
+    raw = f.get("start")
+    if not raw:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(_tz(f.get("origin")))
+    return dt.date()
+
+
+def _receipt_flight_dates(r: Receipt) -> set[date]:
+    """Resdatum som kvittot uttryckligen anger: segmentens datum eller
+    'DEP: 25AUG2026' i ämnet (Amadeus)."""
+    out = {d for d in (_parse_day(s.get("date")) for s in r.segments) if d}
+    for m in _DEP_DATE_RE.finditer(r.text):
+        mon = _MON.get(m.group(2))
+        if mon:
+            try:
+                out.add(date(int(m.group(3)), mon, int(m.group(1))))
+            except ValueError:
+                pass
+    return out
+
+
+def flight_match_score(trip: CalendarTrip, r: Receipt) -> int:
+    """Hur väl ett flygkvitto hör till resans flyg (C44 — inte bara
+    leverantör):
+
+      4  segment i kvittot = resans flightnummer + datum
+      3  flightnummer + resdatum i kvittotexten
+      2  resdatum (flygdatum) i kvittot
+      1  kvittot anger inget resdatum men är daterat på en flygdag, eller
+         har flightnumret och är köpt ≤ 60 dagar före
+      0  annars — även när kvittot anger andra resdatum (samma AY 962 en
+         annan dag är en annan resa: 25 aug-kvittot hör inte till 10 nov)."""
+    flights = trip.flights or []
+    trip_keys = {(_norm_flight_no(f.get("flight_no")), _flight_local_date(f)) for f in flights}
+    trip_keys = {k for k in trip_keys if k[0] and k[1]}
+    trip_dates = {d for d in (_flight_local_date(f) for f in flights) if d}
+    if not trip_dates:
+        trip_dates = {trip.start_date}
+    nos = {k[0] for k in trip_keys} | {
+        n for n in (_norm_flight_no(f.get("flight_no")) for f in flights) if n}
+
+    if r.segments:
+        seg_keys = {(_norm_flight_no(s.get("flight_no")), _parse_day(s.get("date")))
+                    for s in r.segments}
+        if seg_keys & trip_keys:
+            return 4
+        seg_dates = {k[1] for k in seg_keys if k[1]}
+        return 2 if seg_dates & trip_dates else 0
+
+    explicit = _receipt_flight_dates(r)
+    if explicit and not (explicit & trip_dates):
+        return 0
+    compact = re.sub(r"\s+", "", r.text)
+    no_hit = bool(nos) and any(
+        re.search(rf"{n[:2].lower()}0*{n[2:]}(?!\d)", compact) for n in nos
+    )
+    date_hit = bool(explicit & trip_dates) or any(
+        t in r.text for d in trip_dates for t in _date_tokens(d)
+    )
+    if no_hit and date_hit:
+        return 3
+    if date_hit:
+        return 2
+    if not explicit and (
+        r.day in trip_dates
+        or (no_hit and trip.start_date - timedelta(days=60) <= r.day <= trip.start_date)
+    ):
+        return 1  # köpt på flygdagen / flightnummer strax före resan
+    return 0
+
+
 def _match_flight(trip: CalendarTrip, receipts: list[Receipt]) -> Receipt | None:
-    nos = {n for n in (_norm_flight_no(f.get("flight_no")) for f in (trip.flights or [])) if n}
     start, end = trip.start_date, trip.end_date
-    tokens = _date_tokens(start)
     best: tuple[int, Receipt] | None = None
     for r in receipts:
         if "flight" not in r.kinds or r.kind == "change_fee":
             continue
         if not (start - timedelta(days=FLIGHT_LOOKBACK_DAYS) <= r.day <= end + timedelta(days=30)):
             continue
-        compact = re.sub(r"\s+", "", r.text)
-        score = 0
-        if nos and any(re.search(rf"{n[:2].lower()}0*{n[2:]}(?!\d)", compact) for n in nos):
-            score = 3
-        elif any(t in r.text for t in tokens):
-            score = 2
-        elif start - timedelta(days=1) <= r.day <= end:
-            score = 1  # köpt i anslutning till resan
+        score = flight_match_score(trip, r)
         if score and (best is None or score > best[0]):
             best = (score, r)
     return best[1] if best else None
@@ -351,10 +434,28 @@ def _hotel_slots(trip: CalendarTrip, days: list[CalendarTripDay],
 
 
 def _parking_slot(trip: CalendarTrip, receipts: list[Receipt]) -> dict:
+    from app.services.trip_parking import ParkingReceipt, parking_for_trip
+
     home = _home_origin(trip)
     if home is False:
         return {"kind": "parking", "slot": "", "status": "not_applicable",
                 "note": "Trip does not start at HEL"}
+    # C44 — Moovy/Finavia-kvitto vars infart/utfart täcker resans flygtider.
+    timed = [r for r in receipts if r.parking_entry_at and r.parking_exit_at]
+    if timed:
+        by_id = {r.message_id: r for r in timed}
+        proxies = []
+        for r in timed:
+            p = ParkingReceipt.__new__(ParkingReceipt)
+            from app.services.trip_parking import _dt
+            p.message_id, p.vendor, p.amount, p.currency = r.message_id, r.vendor, r.amount, r.currency
+            p.entry, p.exit = _dt(r.parking_entry_at), _dt(r.parking_exit_at)
+            proxies.append(p)
+        hit = parking_for_trip(trip, proxies)
+        if hit is not None:
+            return {"kind": "parking", "slot": "", "status": "found",
+                    "receipt": by_id[hit.message_id],
+                    "note": "HEL parking (company car) — covers the flights"}
     tokens = _date_tokens(trip.start_date)
     hits = [r for r in receipts if "parking" in r.kinds and _in_window(r, trip, tokens)]
     # Närmast hemkomsten först (Moovy kvittar när bilen hämtas).
@@ -398,6 +499,16 @@ def _local_slots(trip: CalendarTrip, days: list[CalendarTripDay],
 def expected_items(db: Session, trip: CalendarTrip,
                    receipts: list[Receipt]) -> list[dict]:
     days = _days(db, trip)
+    if not (trip.flights or []) and "domestic_unconfirmed" in (trip.flags or []):
+        # C44 — hotell utan flyg: bara hotellnätterna förväntas.
+        items = [
+            {"kind": "flight", "slot": "", "status": "not_applicable", "receipt": None,
+             "note": "Domestic trip without flight — confirm the trip"},
+        ]
+        items += _hotel_slots(trip, days, receipts)
+        items.append({"kind": "parking", "slot": "", "status": "not_applicable",
+                      "receipt": None, "note": "No flight from HEL"})
+        return items
     r = _match_flight(trip, receipts)
     flight_nos = ", ".join(f.get("flight_no") for f in (trip.flights or []) if f.get("flight_no"))
     items: list[dict] = [{
@@ -444,6 +555,12 @@ def recompute_trip(db: Session, trip: CalendarTrip,
             continue
         new = (item["status"], rec.message_id if rec else None,
                rec.bill_line_id if rec else None, item.get("note"))
+        if item["kind"] == "flight" and row.id is not None and (
+            (row.status, row.message_id) != new[:2]
+        ):
+            logger.info("[c44-flight] trip=%s %s flight: %s %s → %s %s",
+                        trip.id, trip.start_date, row.status, row.message_id,
+                        new[0], new[1])
         if (row.status, row.message_id, row.bill_line_id, row.note) != new:
             row.status, row.message_id, row.bill_line_id, row.note = new
     # Rensa: auto-poster som inte längre förväntas, och användarposter för
@@ -916,12 +1033,41 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
         c for c in list_card_lines(db)
         if c["age_days"] is None or c["age_days"] >= older_than_days
     ]
+    # C44 — bästa kandidatkvitto per kortrad (AI MATCH-scoring). Kopplas
+    # bara när Mikko ber om det (couple_receipt).
+    try:
+        from app.services.card_line_coupling import suggest_receipts
+
+        rows = db.query(CardLine).filter(
+            CardLine.bill_line_id.in_([c["bill_line_id"] for c in cards])
+        ).all()
+        sugg = suggest_receipts(db, rows) if rows else {}
+    except Exception:  # noqa: BLE001 — förslagen får aldrig fälla listan
+        db.rollback()
+        logger.exception("C44: kopplingsförslag misslyckades")
+        sugg = {}
+    for c in cards:
+        c["suggested_receipt"] = sugg.get(c["bill_line_id"])
+    # C44 — resor som Mikko måste bekräfta (hotell utan flyg).
+    unconfirmed = [
+        {"trip_id": t.id, "dates": f"{t.start_date} – {t.end_date}",
+         "destination": t.destination, "flags": list(t.flags or []),
+         "hotels": [h.get("name") for h in (t.hotels or [])],
+         "question": "Hotel without flight — was this a business trip?"}
+        for t in db.query(CalendarTrip).order_by(CalendarTrip.start_date).all()
+        if "domestic_unconfirmed" in (t.flags or [])
+    ]
+    with_sugg = sum(1 for c in cards if c.get("suggested_receipt"))
     return {
         "older_than_days": older_than_days,
         "bezala_sync": sync_result,
         "trip_items_missing": trip_items,
         "card_lines_without_receipt": cards,
-        "counts": {"trip_items": len(trip_items), "card_lines": len(cards)},
+        "unconfirmed_trips": unconfirmed,
+        "counts": {"trip_items": len(trip_items), "card_lines": len(cards),
+                   "card_lines_with_suggested_receipt": with_sugg,
+                   "card_lines_without_candidate": len(cards) - with_sugg,
+                   "unconfirmed_trips": len(unconfirmed)},
         # C43 — parkering utanför resa → fråga Mikko om privat.
         "possible_private_count": sum(1 for c in cards if c.get("flags")),
     }
