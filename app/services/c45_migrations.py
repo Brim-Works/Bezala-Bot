@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 SEED_SENDERS_TASK = "seed_html_only_senders_c45"
 THREAD_SCAN_TASK = "c45_thread_reply_scan_2026_v1"
+REPROCESS_REPLY_TASK = "c45b_reprocess_reply_receipts_v1"
 SCAN_AFTER = "2026/01/01"
 
 
@@ -154,6 +155,73 @@ def thread_scan_2026() -> dict:
     return {**summary, "receipts": found}
 
 
+def reprocess_known_reply_receipts() -> dict:
+    """C45b — meddelanden från trådsvar-avsändare som REDAN har en rad i
+    DB (t.ex. tidigare avfärdade som icke-kvitto) men inte är sparade som
+    kvitto. Om mailtexten matchar kvittoregeln körs de om via
+    force_process_message_ids. Varje kandidat loggas med sin gamla status."""
+    from app.db import session_scope
+    from app.services import pipeline as pl
+    from app.services.reply_receipts import REPLY_RECEIPT_SENDERS, match_reply_receipt
+
+    with session_scope() as db:
+        if _task_done(db, REPROCESS_REPLY_TASK):
+            return {"skipped": "already_done"}
+        q = db.query(ProcessedMessage)
+        cond = None
+        for s in REPLY_RECEIPT_SENDERS:
+            c = ProcessedMessage.sender.ilike(f"%{s}%")
+            cond = c if cond is None else (cond | c)
+        rows = [
+            {
+                "id": r.id, "message_id": r.message_id, "status": r.status,
+                "deleted_at": r.deleted_at, "delete_reason": r.delete_reason,
+                "coupled": bool(r.bezala_transaction_id),
+            }
+            for r in q.filter(cond).all()
+        ]
+    gmail = pl.GmailClient()
+    to_force: list[str] = []
+    for r in rows:
+        logger.info("[c45-thread-scan] känd rad: %s", r)
+        if r["coupled"] or (r["status"] == "saved" and r["deleted_at"] is None):
+            continue
+        try:
+            msg = gmail.fetch_message(r["message_id"])
+        except Exception:  # noqa: BLE001
+            logger.exception("[c45-thread-scan] kunde inte hämta %s", r["message_id"])
+            continue
+        if match_reply_receipt(msg.sender, msg.body_text, msg.body_html):
+            to_force.append(r["message_id"])
+    out: dict = {"candidates": len(rows), "forced": to_force}
+    if to_force:
+        res = pl.force_process_message_ids(to_force)
+        out["result"] = {
+            k: res.get(k) for k in ("found", "processed", "failed", "skipped")
+        }
+        for d in res.get("details") or []:
+            logger.info("[c45-thread-scan] omkörning: %s", {
+                k: d.get(k) for k in ("message_id", "outcome", "skip_reason")
+            })
+        with session_scope() as db:
+            for row in (
+                db.query(ProcessedMessage)
+                .filter(ProcessedMessage.message_id.in_(to_force)).all()
+            ):
+                logger.info(
+                    "[c45-thread-scan] NYTT KVITTO i trådsvar: %s", {
+                        "message_id": row.message_id, "status": row.status,
+                        "received_at": str(row.received_at),
+                        "amount": row.amount, "currency": row.currency,
+                        "description_en": row.ai_description_en,
+                    },
+                )
+    with session_scope() as db:
+        db.add(MaintenanceTask(name=REPROCESS_REPLY_TASK))
+    logger.info("[c45-thread-scan] C45b KLAR: %s", out)
+    return out
+
+
 def _scan_deps() -> dict:
     from app.db import session_scope
     from app.services import pipeline as pl
@@ -195,6 +263,10 @@ def start_thread_scan_in_background() -> None:
             thread_scan_2026()
         except Exception:  # noqa: BLE001
             logger.exception("[c45-thread-scan] avbröts — körs igen vid nästa start")
+        try:
+            reprocess_known_reply_receipts()
+        except Exception:  # noqa: BLE001
+            logger.exception("[c45-thread-scan] C45b avbröts — körs igen vid nästa start")
 
     threading.Thread(target=_run, name="c45-thread-scan", daemon=True).start()
 
