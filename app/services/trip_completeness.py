@@ -258,9 +258,41 @@ def _in_window(r: Receipt, trip: CalendarTrip, prepaid_tokens: list[str],
     return False
 
 
+LATE_RETURN_HOUR = 6  # hemma före 06:00 = ingen övernattning den natten
+
+
+def _local_dt(value: str | None) -> datetime | None:
+    from zoneinfo import ZoneInfo
+
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(ZoneInfo("Europe/Helsinki"))
+    return dt
+
+
+def last_night_end(trip: CalendarTrip) -> date:
+    """Dagen resan 'egentligen' slutar för hotellnätter. end_date kan vara
+    dagen efter när hemkomsten är efter midnatt (landar 23:35, hemma 00:35)
+    — det är ingen övernattning. Hemflygets landning går först; annars
+    räknas en hemkomst före 06:00 till dagen innan."""
+    landing = _local_dt(trip.end_at)
+    if landing is not None and trip.start_date <= landing.date() <= trip.end_date:
+        return landing.date()
+    home = _local_dt(trip.travel_end_at)
+    if (home is not None and home.date() == trip.end_date
+            and home.hour < LATE_RETURN_HOUR and trip.end_date > trip.start_date):
+        return trip.end_date - timedelta(days=1)
+    return trip.end_date
+
+
 def _hotel_slots(trip: CalendarTrip, days: list[CalendarTripDay],
                  receipts: list[Receipt]) -> list[dict]:
-    nights = (trip.end_date - trip.start_date).days
+    nights = (last_night_end(trip) - trip.start_date).days
     if nights <= 0:
         return [{
             "kind": "hotel", "slot": "", "status": "not_applicable",
@@ -663,7 +695,24 @@ def sync_card_lines(db: Session, raw_rows: list[dict]) -> dict:
             resolved += 1
     db.commit()
     logger.info("C42 card lines: %d i Bezala, %d nya, %d lösta", len(seen), added, resolved)
+    _log_card_line_summary(db)
     return {"in_bezala": len(seen), "added": added, "resolved": resolved}
+
+
+def _log_card_line_summary(db: Session) -> None:
+    from collections import Counter
+
+    rows = db.query(CardLine).filter(CardLine.status == "missing").all()
+    if not rows:
+        logger.info("C42 kortrader utan kvitto: 0")
+        return
+    dated = [r.txn_date for r in rows if r.txn_date]
+    oldest = min(dated) if dated else None
+    vendors = Counter((r.vendor or "?") for r in rows).most_common(15)
+    logger.info(
+        "C42 kortrader utan kvitto: %d, äldsta %s (%s dagar), vendors=%s",
+        len(rows), oldest, (_today() - oldest).days if oldest else "?", vendors,
+    )
 
 
 def sync_card_lines_from_bezala(db: Session) -> dict:

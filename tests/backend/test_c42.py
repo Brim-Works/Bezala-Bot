@@ -442,3 +442,26 @@ def test_ui_endpoint_has_checklist(env):
     assert trip["completeness"]["status"] == "incomplete"
     assert [i["kind"] for i in trip["checklist"]["items"]] == [
         "flight", "hotel", "parking", "local"]
+
+
+def test_return_after_midnight_is_day_trip(db):
+    """Landar 23:35, hemma 00:35 dagen efter — ingen hotellnatt."""
+    t = _trip(db, date(2026, 5, 26), date(2026, 5, 27))
+    t.end_at = "2026-05-26T23:35:00+03:00"
+    t.travel_end_at = "2026-05-27T00:35:00+03:00"
+    db.commit()
+    hotels = _items(_cl(db, t), "hotel")
+    assert [(h["slot"], h["status"]) for h in hotels] == [(None, "not_applicable")]
+
+    # Utan landningstid: hemkomst 00:17 räknas till dagen innan.
+    t2 = _trip(db, date(2026, 10, 13), date(2026, 10, 14))
+    t2.travel_end_at = "2026-10-14T00:17:00+03:00"
+    db.commit()
+    assert _items(_cl(db, t2), "hotel")[0]["status"] == "not_applicable"
+
+    # Riktig övernattning påverkas inte.
+    t3 = _trip(db, date(2026, 3, 10), date(2026, 3, 11))
+    t3.end_at = "2026-03-11T19:35:00+02:00"
+    t3.travel_end_at = "2026-03-11T20:35:00+02:00"
+    db.commit()
+    assert [h["slot"] for h in _items(_cl(db, t3), "hotel")] == ["2026-03-10"]
