@@ -81,6 +81,20 @@ class ProcessedMessage(Base):
     # Amadeus-ombokning (prisskillnad/ändringsavgift) — räknas inte som
     # resans flygbiljett.
     kind = Column(String(32), nullable=True)
+    # C44 — detaljer ur mailtexten (läses från Gmail, read-only):
+    # Moovy/Finavia-parkering: infart/utfart (ISO, Helsingfors-tid).
+    parking_entry_at = Column(String(40), nullable=True)
+    parking_exit_at = Column(String(40), nullable=True)
+    # Finnair/Amadeus: flygsegment [{flight_no, date, origin, dest, dep, arr}],
+    # bokningsnummer (PNR) och e-biljettnummer.
+    flight_segments = Column(JSON, nullable=True)
+    booking_ref = Column(String(16), nullable=True)
+    ticket_number = Column(String(32), nullable=True)
+    # 'ok' | 'no_details' | 'error' — när detaljerna lästs (en gång per rad).
+    details_status = Column(String(16), nullable=True)
+    # C44 — dubblett av ett annat kvitto (message_id). Räknas inte i
+    # checklistor eller kopplingsförslag. Bezala rörs aldrig.
+    duplicate_of = Column(String(255), nullable=True)
 
 
 class SavedFile(Base):
@@ -498,6 +512,13 @@ class CalendarTrip(Base):
     # end_at ovan är flygtiderna (oförändrade). Netvisor använder resetiderna.
     travel_start_at = Column(String(40), nullable=True)
     travel_end_at = Column(String(40), nullable=True)
+    # C44 — varifrån resetiderna kommer: 'parking' (Moovy infart/utfart ±
+    # bilresa) | 'flight_default' (flygtider + marginal) | 'manual'.
+    time_source = Column(String(20), nullable=True)
+    # C44 — förslag för låsta resor (edited/approved) som aldrig skrivs in
+    # automatiskt: {'travel_times': {...}, 'free_meals': {...},
+    # 'flights': [...ombokade flyg...]}
+    suggestions = Column(JSON, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
@@ -538,6 +559,16 @@ class CalendarTripDay(Base):
     # hotel | receipt | carried | airport | unconfirmed | manual
     airport = Column(String(8), nullable=True)
     destination_source = Column(String(32), nullable=True)
+    # C44 — fria måltider (0–3) och källor: hotel_breakfast,
+    # lunch_customer_day, dinner_kickoff, dinner_calendar, lunch_calendar,
+    # ticket. Frukost loggas alltid i källorna men räknas bara utrikes när
+    # TRIP_BREAKFAST_COUNTS_AS_MEAL_ABROAD=true.
+    free_meals = Column(Integer, nullable=True)
+    free_meal_sources = Column(JSON, nullable=True)
+    # 'calendar' (förifyllt) | 'manual' (Mikko via update_trip_day)
+    meals_source = Column(String(16), nullable=True)
+    # C44 — 'manual' när syftet satts via update_trip_day.
+    purpose_source = Column(String(16), nullable=True)
 
 
 # --- C40 — OAuth för MCP-connectorn (claude.ai) ----------------------------

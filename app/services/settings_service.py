@@ -42,6 +42,12 @@ BUILTIN_INCLUDES: tuple[str, ...] = (
     "flytoget@flytoget.no",
     "reservations_no_reply@scandichotels.com",
     "noreply@arlandaexpress.se",
+    # C44 — hotell vars kvitton saknades (Gmail-utredning 2026):
+    # Riverside Ängelholm (kvitto-PDF), Story Hotel Studio Malmö (Hyatt-
+    # drivet, folio-PDF). MJ's via noreply@bookvisit.com finns som
+    # html-only-avsändare sedan C43.
+    "bokning@riversidehotel.se",
+    "info@storyhotel-studiomalmo.com",
 )
 
 # Alltid exkluderade avsändare/domäner — får inte överstyras av användaren.

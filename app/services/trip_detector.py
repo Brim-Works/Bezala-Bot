@@ -69,6 +69,8 @@ MAX_TRIP_DAYS = 21
 FLAG_MISSING_RETURN = "missing_return"
 FLAG_NEEDS_REVIEW = "needs_review"
 FLAG_DESTINATION_UNCONFIRMED = "destination_unconfirmed"
+# C44 — hotell-event utan flyg (inrikesresa?) — Mikko bekräftar.
+FLAG_DOMESTIC_UNCONFIRMED = "domestic_unconfirmed"
 
 # Event-typer från Google som aldrig är möten (normaliserade: gemener,
 # utan "_", så både API:ts "workingLocation" och "WORKING_LOCATION" matchar).
@@ -193,6 +195,8 @@ _TRAVEL_RECEIPT_RE = re.compile(
     re.IGNORECASE,
 )
 DEFAULT_CPH_KNOWN_CITIES = ("Malmö", "Helsingborg", "Växjö", "Ljungby")
+# C44 — hemresa som går före 18:00 → ingen middag på plats den dagen.
+EVENING_HOUR = 18
 
 
 def _env_int(name: str, default: int) -> int:
@@ -709,6 +713,7 @@ def _flight_dict(f: dict) -> dict:
         "destination": flight_destination(f),
         "flight_no": info.get("flight_no"),
         "duplicate_ids": list(f.get("_duplicate_ids") or []),
+        **({"rebooked_from": f["_rebooked_from"]} if f.get("_rebooked_from") else {}),
     }
 
 
@@ -756,6 +761,7 @@ def _build_trip(
     receipts_by_date: dict[str, list[str]] | None = None,
 ) -> dict:
     from app.services.trip_english import combine_purposes, generate_purpose
+    from app.services.trip_meals import meals_for_day
 
     flights = raw["flights"]
     first = flights[0]
@@ -817,6 +823,7 @@ def _build_trip(
             airport, airport_city = outbound[0][2], outbound[0][1]
         day_flights = [f for f in flights if _start_date(f) == d]
         day_hotel = next((h for h in trip_hotels if _covers(h, d)), None)
+        prev_hotel = next((h for h in trip_hotels if _covers(h, d - timedelta(days=1))), None)
         day_meetings = [m for m in day_meetings_all if _meeting_on(m, d)]
         on_site = [m for m in day_meetings if _on_site(m)]
 
@@ -858,7 +865,10 @@ def _build_trip(
             "destination_source": source,
             "_office": office,
             "_meetings_raw": on_site,
-            "meetings": [_meeting_dict(m) for m in day_meetings],
+            "_prev_hotel": hotel_name(prev_hotel) if prev_hotel else None,
+            # C44 — möten före avgång / efter hemkomst (hålls hemifrån)
+            # listas inte på resdagen.
+            "meetings": [_meeting_dict(m) for m in on_site],
             "hotel": (
                 {"id": day_hotel["id"], "name": hotel_name(day_hotel)}
                 if day_hotel else None
@@ -885,6 +895,25 @@ def _build_trip(
             day["country"] = inferred_airports.get(day["airport"]) or iata_country(day["airport"])
             if FLAG_DESTINATION_UNCONFIRMED not in flags:
                 flags.append(FLAG_DESTINATION_UNCONFIRMED)
+
+    # C44 — fria måltider. Alla event på plats (inte bara "relevanta"
+    # möten: en kick-off kan vara ett heldagsevent utan deltagare).
+    on_site_all = [
+        m for m in meetings
+        if m.get("self_response") != "declined" and _on_site(m)
+    ]
+    ret_leaves_hel = leaves.astimezone(_helsinki()) if leaves is not None else None
+    for day in days:
+        dd = date.fromisoformat(day["date"])
+        summaries = [m.get("summary") or "" for m in on_site_all if _meeting_on(m, dd)]
+        evening_away = not (
+            ret_leaves_hel is not None and ret_leaves_hel.date() == dd
+            and ret_leaves_hel.hour < EVENING_HOUR
+        )
+        day["free_meals"], day["free_meal_sources"] = meals_for_day(
+            summaries, day.pop("_prev_hotel"), day["country"], evening_away,
+        )
+        day["meals_source"] = "calendar"
 
     for day in days:
         day["purpose"] = generate_purpose(
@@ -940,11 +969,14 @@ def detect_trips(
     events: Iterable[dict],
     homes: Iterable[str] | None = None,
     receipts_by_date: dict[str, list[str]] | None = None,
+    rebookings: list[dict] | None = None,
 ) -> dict:
     """Huvudfunktion. Returnerar {'trips', 'ungrouped', 'stats'}.
 
     receipts_by_date: {'YYYY-MM-DD': [kvittotext, …]} — kvitton i boten,
-    sista ledtråden för arbetsort (C41)."""
+    sista ledtråden för arbetsort (C41).
+    rebookings: flygsegment ur Finnairs "Bekräftelse på din bokningsändring"
+    (C44) — ersätter kalenderns gamla flyg."""
     home_codes = _homes_to_iata(homes)
     evs = sorted((e for e in events if e and e.get("start") is not None), key=_sort_key)
 
@@ -962,6 +994,8 @@ def detect_trips(
             meetings.append(ev)
 
     flights = _dedupe_flights(flights)
+    rebooked = apply_rebookings(flights, rebookings or [])
+    flights.sort(key=lambda fi: _sort_key(fi[0]))
     raw_trips, ungrouped_raw = _group_flights(flights, home_codes)
     trips = []
     for i, r in enumerate(raw_trips):
@@ -970,8 +1004,14 @@ def detect_trips(
 
     used_hotels = {h["id"] for t in trips for h in t["hotels"]}
     for h in hotels:
-        if h["id"] not in used_hotels:
+        if h["id"] in used_hotels:
+            continue
+        dom = _domestic_trip(h, meetings, trips)
+        if dom is not None:
+            trips.append(dom)
+        else:
             ungrouped_raw.append({"event": h, "reason": "hotel_without_flight"})
+    trips.sort(key=lambda t: t["start_date"])
 
     ungrouped = [
         {
@@ -999,6 +1039,150 @@ def detect_trips(
             "destination_unconfirmed": sum(
                 1 for t in trips if FLAG_DESTINATION_UNCONFIRMED in t["flags"]
             ),
+            "domestic_unconfirmed": sum(
+                1 for t in trips if FLAG_DOMESTIC_UNCONFIRMED in t["flags"]
+            ),
+            "rebooked_flights": rebooked,
             "ungrouped": len(ungrouped),
         },
+    }
+
+
+# ---------- C44: ombokade flyg ----------
+
+
+def _parse_iso(value) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    try:
+        return datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+
+
+def _norm_no(value: str | None) -> str | None:
+    m = re.match(r"^\s*([A-Z0-9]{2})\s*0*(\d{1,4})\s*$", (value or "").upper())
+    return f"{m.group(1)} {m.group(2)}" if m else None
+
+
+REBOOK_WINDOW_DAYS = 3
+
+
+def apply_rebookings(flights: list[tuple[dict, dict]], segments: list[dict]) -> int:
+    """Ersätt kalenderns flyg med flygen ur Finnairs ombokningsmail.
+
+    Ett segment ersätter ett kalenderflyg med samma avrese- och
+    ankomstflygplats inom ±3 dygn när flightnummer eller avgång skiljer
+    sig (13 okt: kalendern AY 864 14 okt → AY 868 13 okt 20:55). Segment
+    som redan finns i kalendern (samma nummer, samma dag) rör ingenting.
+    Ändrar eventen på plats. Returnerar antal ersatta flyg."""
+    replaced = 0
+    for seg in segments or []:
+        dep, arr = _parse_iso(seg.get("dep")), _parse_iso(seg.get("arr"))
+        no = _norm_no(seg.get("flight_no"))
+        if dep is None or arr is None or not no:
+            continue
+        if any(
+            _norm_no(i.get("flight_no")) == no and _start_date(ev) == dep.date()
+            for ev, i in flights
+        ):
+            continue
+        best = None
+        for ev, info in flights:
+            if ev.get("_rebooked_from"):
+                continue  # redan ombokat av ett nyare ändringsmail
+            if info.get("origin") != seg.get("origin") or info.get("dest") != seg.get("dest"):
+                continue
+            start = _aware_dt(ev["start"])
+            if start is None:
+                continue
+            gap = abs((start - dep).total_seconds())
+            if gap > REBOOK_WINDOW_DAYS * 86400 or gap < 300 and _norm_no(info.get("flight_no")) == no:
+                continue
+            if best is None or gap < best[0]:
+                best = (gap, ev, info)
+        if best is None:
+            continue
+        _, ev, info = best
+        ev["_rebooked_from"] = {
+            "flight_no": info.get("flight_no"),
+            "start": _iso(ev["start"]),
+            "end": _iso(ev["end"]),
+        }
+        ev["start"], ev["end"] = dep, arr
+        summary = ev.get("summary") or ""
+        if re.search(r"\([A-Z0-9]{2}\s?\d{1,4}\)", summary):
+            ev["summary"] = re.sub(r"\([A-Z0-9]{2}\s?\d{1,4}\)", f"({no})", summary)
+        info["flight_no"] = no
+        replaced += 1
+    return replaced
+
+
+# ---------- C44: hotell utan flyg ----------
+
+
+def _domestic_trip(hotel: dict, meetings: list[dict], trips: list[dict]) -> dict | None:
+    """Hotell-event utan flyg → resa flaggad 'domestic_unconfirmed' (t.ex.
+    NH Helsinki Grand Hansa 19 nov, Scandic Go Saaristonkatu 21 dec).
+    Hotell utomlands utan flyg lämnas som ogrupperade."""
+    from app.services.trip_meals import meals_for_day
+
+    start = _start_date(hotel)
+    end = max(start + timedelta(days=1), _end_date(hotel) + (
+        timedelta(days=0) if isinstance(hotel["end"], datetime) else timedelta(days=1)
+    ))
+    if any(date.fromisoformat(t["start_date"]) <= end and date.fromisoformat(t["end_date"]) >= start
+           for t in trips):
+        return None
+    text = f"{hotel.get('summary') or ''} {hotel.get('location') or ''}"
+    code = city_to_iata(text)
+    country = iata_country(code) if code else None
+    if country not in (None, "FI"):
+        return None
+    city = iata_name(code) if code else None
+    name = hotel_name(hotel)
+    days = []
+    d = start
+    while d <= end:
+        day_meetings = [m for m in meetings if _meeting_on(m, d) and is_relevant_meeting(m)]
+        summaries = [m.get("summary") or "" for m in meetings
+                     if _meeting_on(m, d) and m.get("self_response") != "declined"]
+        free, sources = meals_for_day(summaries, name if d > start else None, "FI")
+        days.append({
+            "date": d.isoformat(),
+            "start_time": None,
+            "end_time": None,
+            "airport": None,
+            "destination": city,
+            "country": "FI",
+            "destination_source": "hotel" if city else "unconfirmed",
+            "meetings": [_meeting_dict(m) for m in day_meetings],
+            "hotel": {"id": hotel["id"], "name": name} if d < end else None,
+            "source_event_ids": [hotel["id"]] + [m["id"] for m in day_meetings],
+            "purpose": None,
+            "free_meals": free,
+            "free_meal_sources": sources,
+            "meals_source": "calendar",
+        })
+        d += timedelta(days=1)
+    flags = [FLAG_DOMESTIC_UNCONFIRMED]
+    if not city:
+        flags.append(FLAG_DESTINATION_UNCONFIRMED)
+    return {
+        "start_date": start.isoformat(),
+        "end_date": end.isoformat(),
+        "start_at": None,
+        "end_at": None,
+        "travel_start_at": None,
+        "travel_end_at": None,
+        "destination": city,
+        "country": "FI",
+        "purpose": None,
+        "open_return": False,
+        "flags": flags,
+        "flights": [],
+        "flight_options": [],
+        "hotels": [{"id": hotel["id"], "name": name}],
+        "days": days,
+        "source_event_ids": [hotel["id"]],
     }

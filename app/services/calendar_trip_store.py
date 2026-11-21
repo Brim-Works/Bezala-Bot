@@ -61,10 +61,18 @@ def persist_detected(db: Session, detected: dict) -> dict:
     created = 0
     skipped_locked = 0
     new_rows: list[CalendarTrip] = []
+    for lt in locked:
+        # C44 — förslag räknas om varje refresh (skrivs aldrig in i resan).
+        sugg = dict(lt.suggestions or {})
+        sugg.pop("free_meals", None)
+        sugg.pop("flights", None)
+        lt.suggestions = sugg or None
     for t in detected.get("trips", []):
         start, end = _d(t["start_date"]), _d(t["end_date"])
-        if any(lt.start_date <= end and lt.end_date >= start for lt in locked):
+        hit = [lt for lt in locked if lt.start_date <= end and lt.end_date >= start]
+        if hit:
             skipped_locked += 1
+            _store_locked_suggestions(hit, t)
             continue
         row = CalendarTrip(
             start_date=start,
@@ -83,6 +91,7 @@ def persist_detected(db: Session, detected: dict) -> dict:
             purpose=t.get("purpose"),
             travel_start_at=t.get("travel_start_at"),
             travel_end_at=t.get("travel_end_at"),
+            time_source="flight_default" if t.get("travel_start_at") else None,
         )
         db.add(row)
         db.flush()
@@ -102,6 +111,9 @@ def persist_detected(db: Session, detected: dict) -> dict:
                 purpose=day.get("purpose"),
                 airport=day.get("airport"),
                 destination_source=day.get("destination_source"),
+                free_meals=day.get("free_meals"),
+                free_meal_sources=day.get("free_meal_sources"),
+                meals_source=day.get("meals_source"),
             ))
         created += 1
 
@@ -117,6 +129,28 @@ def persist_detected(db: Session, detected: dict) -> dict:
         "skipped_locked": skipped_locked,
         "restored_marks": restored,
     }
+
+
+def _store_locked_suggestions(locked: list[CalendarTrip], detected: dict) -> None:
+    """C44 — för låsta resor (edited/approved): spara detektorns måltider och
+    ombokade flyg som FÖRSLAG. Resan själv ändras inte."""
+    meals = {
+        d["date"]: {
+            "free_meals": d.get("free_meals"),
+            "free_meal_sources": d.get("free_meal_sources") or [],
+        }
+        for d in detected.get("days", [])
+    }
+    rebooked = [f for f in detected.get("flights", []) if f.get("rebooked_from")]
+    for lt in locked:
+        sugg = dict(lt.suggestions or {})
+        own = {k: v for k, v in meals.items()
+               if lt.start_date.isoformat() <= k <= lt.end_date.isoformat()}
+        if own:
+            sugg["free_meals"] = {**(sugg.get("free_meals") or {}), **own}
+        if rebooked:
+            sugg["flights"] = detected.get("flights")
+        lt.suggestions = sugg or None
 
 
 def _linked_receipts(db: Session, start: date, end: date) -> list[dict]:
@@ -206,6 +240,7 @@ def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = Non
         "purpose": trip.purpose,
         "travel_start_at": trip.travel_start_at,
         "travel_end_at": trip.travel_end_at,
+        "time_source": trip.time_source,
         "status": trip.status,
         "flights": trip.flights or [],
         "hotels": trip.hotels or [],
@@ -225,6 +260,8 @@ def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = Non
                 "flight_departure": flight_times.get(d.day_date.isoformat(), {}).get("departure"),
                 "flight_arrival": flight_times.get(d.day_date.isoformat(), {}).get("arrival"),
                 "purpose": d.purpose,
+                "free_meals": d.free_meals,
+                "free_meal_sources": d.free_meal_sources or [],
                 "source_event_ids": d.source_event_ids or [],
             }
             for d in days
@@ -272,8 +309,28 @@ def refresh_from_calendar(db: Session) -> dict:
         logger.exception("Calendar refresh misslyckades")
         return {"status": "error", "detail": str(exc)}
 
-    detected = detect_trips(events, receipts_by_date=receipt_texts_by_date(db))
+    from app.services import receipt_details as rd
+    from app.services.trip_parking import apply_parking_times
+
+    try:
+        details = rd.enrich_receipts(db)
+        dupes = rd.mark_duplicates(db)
+    except Exception:  # noqa: BLE001 — detaljerna får aldrig fälla refresh
+        db.rollback()
+        logger.exception("C44: kvittodetaljer/dubbletter misslyckades")
+        details, dupes = {"status": "error"}, {}
+    detected = detect_trips(
+        events, receipts_by_date=receipt_texts_by_date(db),
+        rebookings=rebooking_segments(db),
+    )
     saved = persist_detected(db, detected)
+    try:
+        saved["parking_times"] = apply_parking_times(db)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("C44: parkeringstider misslyckades")
+    saved["receipt_details"] = details
+    saved["duplicates"] = dupes
     logger.info(
         "Calendar refresh OK: stats=%s saved=%s ungrouped=%s",
         detected["stats"], saved,
@@ -285,6 +342,31 @@ def refresh_from_calendar(db: Session) -> dict:
         "saved": saved,
         "ungrouped": detected["ungrouped"],
     }
+
+
+# ---------- C44 ----------
+
+
+def rebooking_segments(db: Session) -> list[dict]:
+    """Flygsegment ur Finnairs ombokningsmail ("Bekräftelse på din
+    bokningsändring" / change_fee), nyaste först."""
+    rows = (
+        db.query(ProcessedMessage)
+        .filter(ProcessedMessage.deleted_at.is_(None))
+        .filter(ProcessedMessage.flight_segments.isnot(None))
+        .order_by(ProcessedMessage.received_at.desc())
+        .all()
+    )
+    out: list[dict] = []
+    for m in rows:
+        subj = (m.subject or "").lower()
+        if m.kind != "change_fee" and not any(
+            w in subj for w in ("bokningsändring", "booking change", "varauksen muutos")
+        ):
+            continue
+        for seg in m.flight_segments or []:
+            out.append({**seg, "message_id": m.message_id})
+    return out
 
 
 # ---------- C41 ----------

@@ -383,12 +383,24 @@ def test_events_without_flights():
         ev("h1", "Hotel Kämp", date(2026, 6, 3), date(2026, 6, 4)),
     ]
     res = detect_trips(events, HOMES)
+    # C44: hotell utan flyg (inrikes/okänd ort) blir en resa som Mikko
+    # bekräftar — flaggad domestic_unconfirmed.
+    assert len(res["trips"]) == 1
+    t = res["trips"][0]
+    assert (t["start_date"], t["end_date"]) == ("2026-06-03", "2026-06-04")
+    assert "domestic_unconfirmed" in t["flags"]
+    assert t["flights"] == []
+    assert res["ungrouped"] == []
+    assert res["stats"]["meetings"] == 2
+
+
+def test_hotel_abroad_without_flights_stays_ungrouped():
+    events = [ev("h1", "Hotel Oslo Plaza", date(2026, 6, 3), date(2026, 6, 4))]
+    res = detect_trips(events, HOMES)
     assert res["trips"] == []
-    # Hotellet kunde inte kopplas till någon resa → rapporteras.
     assert [(u["id"], u["reason"]) for u in res["ungrouped"]] == [
         ("h1", "hotel_without_flight"),
     ]
-    assert res["stats"]["meetings"] == 2
 
 
 # ---------- Kantfall ----------

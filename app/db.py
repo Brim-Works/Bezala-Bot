@@ -81,6 +81,17 @@ _SCAN_RUNS_ADDITIONS = {
     "filtered_messages": "JSON",
 }
 
+# C44 — detaljer ur mailtexten (parkeringstider, flygsegment, PNR).
+_PROCESSED_MESSAGES_ADDITIONS.update({
+    "parking_entry_at": "VARCHAR(40)",
+    "parking_exit_at": "VARCHAR(40)",
+    "flight_segments": "JSON",
+    "booking_ref": "VARCHAR(16)",
+    "ticket_number": "VARCHAR(32)",
+    "details_status": "VARCHAR(16)",
+    "duplicate_of": "VARCHAR(255)",
+})
+
 _AI_FEEDBACK_ADDITIONS = {
     # FAS 8.1.1 — subject sparas på not_a_receipt-rader så AI:n kan
     # skilja olika mail-typer från samma avsändare.
@@ -110,6 +121,9 @@ _CALENDAR_TRIPS_ADDITIONS = {
     # C41 — resetider
     "travel_start_at": "VARCHAR(40)",
     "travel_end_at": "VARCHAR(40)",
+    # C44
+    "time_source": "VARCHAR(20)",
+    "suggestions": "JSON",
 }
 
 _CALENDAR_TRIP_DAYS_ADDITIONS = {
@@ -119,6 +133,11 @@ _CALENDAR_TRIP_DAYS_ADDITIONS = {
     # C41 — flygplats skild från arbetsort
     "airport": "VARCHAR(8)",
     "destination_source": "VARCHAR(32)",
+    # C44 — fria måltider
+    "free_meals": "INTEGER",
+    "free_meal_sources": "JSON",
+    "meals_source": "VARCHAR(16)",
+    "purpose_source": "VARCHAR(16)",
 }
 
 _CARD_LINES_ADDITIONS = {

@@ -1,4 +1,5 @@
 import logging
+import os
 import secrets
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -197,6 +198,12 @@ async def lifespan(app: FastAPI):
     _run_once_seed_bezala_vendor_mappings()
     _run_c41_migrations()
     _run_c43_migrations()
+    # C44 — kvittodetaljer (Gmail, read-only), dubbletter, parkeringstider,
+    # omräknade checklistor. I bakgrunden så att uppstarten inte väntar.
+    if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":
+        from app.services.c44_migrations import start_background
+
+        start_background()
     start_scheduler()
     async with mcp_lifespan():
         yield

@@ -227,6 +227,19 @@ class GmailClient:
             except Exception as exc:  # noqa: BLE001
                 logger.exception("Kunde inte hämta meddelande %s: %s", mid, exc)
 
+    def fetch_body(self, message_id: str) -> tuple[str, str, str]:
+        """C44 — (subject, body_text, body_html) utan att ladda bilagor.
+        Bara läsning."""
+        raw = (
+            self._service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="full")
+            .execute()
+        )
+        headers = {h["name"].lower(): h["value"] for h in raw.get("payload", {}).get("headers", [])}
+        body_text, body_html = _collect_body(raw.get("payload", {}))
+        return headers.get("subject", ""), body_text, body_html
+
     def fetch_message(self, message_id: str) -> GmailMessage:
         raw = (
             self._service.users()
