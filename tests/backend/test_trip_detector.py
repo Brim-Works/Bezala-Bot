@@ -32,6 +32,7 @@ from app.services.trip_detector import (  # noqa: E402
     classify,
     detect_trips,
     flight_destination,
+    is_relevant_meeting,
 )
 
 HEL = timezone(timedelta(hours=2))
@@ -39,7 +40,10 @@ STO = timezone(timedelta(hours=1))
 HOMES = ("helsinki", "helsingfors", "vantaa", "hel")
 
 
-def ev(eid, summary, start, end, *, location="", event_type="default"):
+def ev(eid, summary, start, end, *, location="", event_type="default",
+       visibility="default", transparency="opaque", response="accepted",
+       others=1, others_accepted=None, is_stream=False):
+    """Default: accepterat möte med en annan deltagare (relevant möte)."""
     return {
         "id": eid,
         "summary": summary,
@@ -50,12 +54,19 @@ def ev(eid, summary, start, end, *, location="", event_type="default"):
         "all_day": isinstance(start, date) and not isinstance(start, datetime),
         "event_type": event_type,
         "organizer": "",
-        "transparency": "opaque",
+        "transparency": transparency,
+        "visibility": visibility,
+        "self_response": response,
+        "attendees_other": others,
+        "attendees_other_accepted": others if others_accepted is None else others_accepted,
+        "has_room": False,
+        "is_stream": is_stream,
     }
 
 
-def flight(eid, dest, start, end, no="AY 801"):
-    return ev(eid, f"Flight to {dest} ({no})", start, end, event_type="fromGmail")
+def flight(eid, dest, start, end, no="AY 801", origin=""):
+    return ev(eid, f"Flight to {dest} ({no})", start, end, event_type="fromGmail",
+              location=origin, others=0)
 
 
 # ---------- Klassificering ----------
@@ -64,24 +75,224 @@ def flight(eid, dest, start, end, no="AY 801"):
 def test_classify_flight_hotel_meeting():
     d = datetime(2026, 3, 2, 7, 0, tzinfo=HEL)
     assert classify(flight("f", "Stockholm", d, d)) == "flight"
-    assert classify(ev("x", "Finnair AY 123 HEL-ARN", d, d)) == "flight"
+    assert classify(ev("x", "Finnair Helsinki Vantaa (HEL) - Copenhagen Kastrup (CPH)",
+                       d, d)) == "flight"
     assert classify(ev("h", "Stay at Scandic Continental", d, d)) == "hotel"
     assert classify(ev("m", "Q2 review", d, d)) == "meeting"
-    # Flygbolagsnamn utan rutt är ett möte, inte ett flyg.
     assert classify(ev("m2", "Finnair kundmöte", d, d)) == "meeting"
-    assert classify(ev("m3", "Weekly check-in", d, d)) == "meeting"
     assert classify(ev("b", "Födelsedag", d, d, event_type="birthday")) == "ignored"
+    assert classify(ev("w", "Home", d, d, event_type="WORKING_LOCATION")) == "ignored"
 
 
 def test_flight_destination_variants():
     d = datetime(2026, 3, 2, 7, 0, tzinfo=HEL)
-    assert flight_destination(ev("a", "Flight to Stockholm (AY 801)", d, d)) == "Stockholm"
-    assert flight_destination(ev("b", "Flyg till Oslo (SK 1234)", d, d)) == "Oslo"
-    assert flight_destination(ev("c", "AY 123 Helsinki → Riga", d, d)) == "Riga"
-    assert flight_destination(ev("d", "AY 123", d, d)) is None
-    # Bara flygplatskod → stadsnamn.
-    assert flight_destination(ev("e", "Flight to CPH (AY 959)", d, d)) == "Copenhagen"
-    assert flight_destination(ev("f", "Flight to HEL (AY 960)", d, d)) == "Helsinki"
+    g = lambda s: ev("a", s, d, d, event_type="fromGmail")  # noqa: E731
+    assert flight_destination(g("Flight to Stockholm (AY 801)")) == "Stockholm"
+    assert flight_destination(g("Flight to CPH (AY 959)")) == "Köpenhamn"
+    assert flight_destination(g("Flight to HEL (AY 960)")) == "Helsingfors"
+
+
+# ---------- C39: fel från första prod-körningen ----------
+
+
+def test_c39_other_peoples_flights_are_not_flights():
+    """Fel 1: bara Gmail-'Flight to … (XX nnn)' och exakt Finnair-mönster."""
+    d = datetime(2026, 8, 22, 1, 35, tzinfo=HEL)
+    assert classify(ev("x", "Filippas flyg landar LH2466", d, d, others=0)) != "flight"
+    assert classify(ev("y", "Italienarna landar AY1772", d, d, others=0)) != "flight"
+    # "Flight to" utan Gmail-eventtyp är inte ett flyg.
+    assert classify(ev("z", "Flight to Oslo (AY 911)", d, d)) != "flight"
+    # Finnair-event som inte följer mönstret.
+    assert classify(ev("f", "Finnair AY 123 HEL-ARN", d, d)) != "flight"
+    events = [
+        ev("ita", "Italienarna landar AY1772", datetime(2026, 7, 2, 13, 40, tzinfo=HEL),
+           datetime(2026, 7, 2, 18, 10, tzinfo=HEL), visibility="private", others=0),
+        ev("fil", "Filippas flyg landar LH2466", datetime(2026, 8, 22, 1, 35, tzinfo=HEL),
+           datetime(2026, 8, 22, 2, 0, tzinfo=HEL), others=0),
+        flight("o", "Copenhagen", datetime(2026, 8, 25, 6, 20, tzinfo=HEL),
+               datetime(2026, 8, 25, 8, 0, tzinfo=HEL), no="AY 951", origin="Helsinki HEL"),
+        flight("r", "Helsinki", datetime(2026, 8, 26, 20, 25, tzinfo=HEL),
+               datetime(2026, 8, 26, 22, 0, tzinfo=HEL), no="AY 962",
+               origin="Copenhagen CPH"),
+    ]
+    trips = detect_trips(events, HOMES)["trips"]
+    assert [(t["start_date"], t["destination"]) for t in trips] == [
+        ("2026-08-25", "Köpenhamn"),
+    ]
+
+
+def test_c39_manual_finnair_duplicate_is_merged():
+    """Fel 2: manuellt Finnair-event med samma start/slut som Gmail-flyg."""
+    s1, e1 = datetime(2026, 4, 22, 18, 0, tzinfo=HEL), datetime(2026, 4, 22, 19, 40, tzinfo=HEL)
+    s2, e2 = datetime(2026, 4, 23, 20, 25, tzinfo=HEL), datetime(2026, 4, 23, 22, 0, tzinfo=HEL)
+    events = [
+        ev("m1", "Finnair Helsinki Vantaa (HEL) - Copenhagen Kastrup (CPH)", s1, e1,
+           location="Helsinki Vantaa", others=0),
+        flight("g1", "CPH", s1, e1, no="AY 961"),
+        ev("m2", "Finnair Copenhagen Kastrup (CPH) - Helsinki Vantaa (HEL)", s2, e2,
+           location="Copenhagen Kastrup", others=0),
+        flight("g2", "HEL", s2, e2, no="AY 962"),
+    ]
+    res = detect_trips(events, HOMES)
+    assert len(res["trips"]) == 1
+    t = res["trips"][0]
+    assert t["destination"] == "Köpenhamn"
+    assert t["country"] == "DK"
+    assert [f["id"] for f in t["flights"]] == ["g1", "g2"]
+    assert t["flights"][0]["duplicate_ids"] == ["m1"]
+    assert {"m1", "m2"} <= set(t["source_event_ids"])
+    assert res["stats"]["flights"] == 2
+
+
+def test_c39_manual_finnair_alone_is_flight():
+    s, e = datetime(2026, 6, 1, 7, 0, tzinfo=HEL), datetime(2026, 6, 1, 8, 0, tzinfo=HEL)
+    events = [
+        ev("m1", "Finnair Helsinki (HEL) - Oslo (OSL)", s, e, others=0),
+        ev("m2", "Finnair Oslo (OSL) - Helsinki (HEL)", s + timedelta(hours=10),
+           e + timedelta(hours=10), others=0),
+    ]
+    t = detect_trips(events, HOMES)["trips"][0]
+    assert t["destination"] == "Oslo" and t["flags"] == []
+
+
+def test_c39_outbound_from_home_closes_previous_trip():
+    """Fel 3: utresa från HEL betyder att Mikko var hemma emellan."""
+    events = [
+        flight("cph", "Copenhagen Kastrup", datetime(2026, 11, 26, 11, 35, tzinfo=HEL),
+               datetime(2026, 11, 26, 13, 15, tzinfo=HEL), no="AY 957",
+               origin="Helsinki Vantaa HEL"),
+        ev("hotel", "Stay at Scandic Sjølyst", date(2026, 11, 27), date(2026, 11, 29)),
+        flight("osl", "Oslo", datetime(2026, 11, 27, 7, 20, tzinfo=HEL),
+               datetime(2026, 11, 27, 8, 55, tzinfo=HEL), no="AY 911", origin="Helsinki HEL"),
+        flight("ret", "Helsinki", datetime(2026, 11, 28, 13, 30, tzinfo=HEL),
+               datetime(2026, 11, 28, 14, 55, tzinfo=HEL), no="AY 914", origin="Oslo OSL"),
+    ]
+    trips = detect_trips(events, HOMES)["trips"]
+    assert [(t["start_date"], t["end_date"], t["destination"], t["flags"]) for t in trips] == [
+        ("2026-11-26", "2026-11-26", "Köpenhamn", ["missing_return"]),
+        ("2026-11-27", "2026-11-28", "Oslo", []),
+    ]
+    assert trips[0]["open_return"] is True
+    assert trips[0]["hotels"] == []
+    assert trips[1]["days"][0]["hotel"]["name"] == "Scandic Sjølyst"
+
+
+def test_c39_connection_from_abroad_stays_one_trip():
+    events = [
+        flight("o1", "Copenhagen", datetime(2026, 9, 1, 7, 0, tzinfo=HEL),
+               datetime(2026, 9, 1, 8, 30, tzinfo=HEL), origin="Helsinki HEL"),
+        flight("o2", "Oslo", datetime(2026, 9, 2, 9, 0, tzinfo=HEL),
+               datetime(2026, 9, 2, 10, 0, tzinfo=HEL), origin="Copenhagen CPH"),
+        flight("r", "Helsinki", datetime(2026, 9, 3, 12, 0, tzinfo=HEL),
+               datetime(2026, 9, 3, 15, 0, tzinfo=HEL), origin="Oslo OSL"),
+    ]
+    trips = detect_trips(events, HOMES)["trips"]
+    assert len(trips) == 1
+    assert trips[0]["destination"] == "Köpenhamn → Oslo"
+    assert trips[0]["country"] == "DK,NO"
+
+
+def test_c39_two_outbounds_same_day_needs_review():
+    """Fel 4: AY 951 06:20 + AY 953 07:25 → needs_review, båda sparas."""
+    events = [
+        flight("a", "Copenhagen", datetime(2026, 8, 25, 6, 20, tzinfo=HEL),
+               datetime(2026, 8, 25, 8, 0, tzinfo=HEL), no="AY 951", origin="Helsinki HEL"),
+        flight("b", "Copenhagen", datetime(2026, 8, 25, 7, 25, tzinfo=HEL),
+               datetime(2026, 8, 25, 9, 5, tzinfo=HEL), no="AY 953", origin="Helsinki HEL"),
+        flight("r", "Helsinki", datetime(2026, 8, 26, 20, 25, tzinfo=HEL),
+               datetime(2026, 8, 26, 22, 0, tzinfo=HEL), no="AY 962",
+               origin="Copenhagen CPH"),
+    ]
+    res = detect_trips(events, HOMES)
+    assert len(res["trips"]) == 1
+    t = res["trips"][0]
+    assert t["flags"] == ["needs_review"]
+    assert [o["flight_no"] for o in t["flight_options"]] == ["AY 951", "AY 953"]
+    assert (t["start_date"], t["end_date"]) == ("2026-08-25", "2026-08-26")
+    assert t["open_return"] is False
+
+
+def test_c39_city_names_normalized_via_iata():
+    """Fel 5: svenska namn, inga Tukholma/Goteborg/Copenhagen Kastrup."""
+    d = datetime(2026, 4, 30, 7, 15, tzinfo=HEL)
+    g = lambda s: ev("a", s, d, d, event_type="fromGmail")  # noqa: E731
+    assert flight_destination(g("Flight to Tukholma (AY 803)")) == "Stockholm"
+    assert flight_destination(g("Flight to Goteborg (AY 861)")) == "Göteborg"
+    assert flight_destination(g("Flight to Gothenburg (AY 861)")) == "Göteborg"
+    assert flight_destination(g("Flight to Copenhagen Kastrup (AY 957)")) == "Köpenhamn"
+    assert flight_destination(g("Flight to OSL (AY 911)")) == "Oslo"
+    assert flight_destination(
+        g("Flight to HELSINKI HELSINKI VANTAA (AY 864)")) == "Helsingfors"
+    assert flight_destination(g("Flight to ARN (AY 801)")) == "Stockholm"
+
+
+def test_c39_meeting_filter():
+    """Fel 6: mötesfilter per resdag."""
+    d0 = datetime(2026, 11, 18, 9, 0, tzinfo=HEL)
+    d1 = d0 + timedelta(hours=1)
+    keep = [
+        ev("k1", "Management Meeting", d0, d1, visibility="private", others=5),
+        ev("k2", "Mikko & Måns Synk", d0, d1, others=1,
+           location="HEL-RAU-6-Pixel (1), GOT-LIN-19-193 (2)"),
+        ev("k3", "Agda PS Kunddag Malmö ", d0, d1, response="needsAction", others=18),
+        ev("k4", "Agda Kunddagar Malmö", d0, d1, response=None, others=0),
+        ev("k5", "Rum", d0, d1, response=None, others=0, location="OSL-SKO-3-Stockholm (6)"),
+    ]
+    drop = [
+        ev("d1", "Läxläsning Stella", d0, d1, visibility="private", response=None, others=0),
+        ev("d2", "WOD", d0, d1, transparency="transparent", response=None, others=0),
+        ev("d3", "WOOD / Remppa", d0, d1, transparency="transparent", others=0),
+        ev("d4", "Transport", d0, d1, visibility="private", response=None, others=0),
+        ev("d5", "Product steering group", d0, d1, response="needsAction", others=10),
+        ev("d6", "TooEasy", d0, d1, response=None, others=0),
+        ev("d7", "[Live stream] Visma AI Conference Keynote", d0, d1, others=0),
+        ev("d8", "Auntie Webinar (ENG): prioritise", d0, d1, response="needsAction", others=0),
+        ev("d9", "Handbollsträning", d0, d1, visibility="private", others=1,
+           others_accepted=0),
+        ev("d10", "Deadline MD rapport", d0, d1, transparency="transparent", others=10),
+        ev("d11", "Weekly", d0, d1, response="declined", others=2),
+        ev("d12", "Visma Talks", d0, d1, others=0, is_stream=True),
+    ]
+    for e in keep:
+        assert is_relevant_meeting(e), e["summary"]
+    for e in drop:
+        assert not is_relevant_meeting(e), e["summary"]
+
+    events = [
+        flight("o", "Goteborg", datetime(2026, 11, 18, 7, 15, tzinfo=HEL),
+               datetime(2026, 11, 18, 8, 45, tzinfo=HEL), no="AY 861", origin="Helsinki HEL"),
+        *keep, *drop,
+        flight("r", "Helsinki", datetime(2026, 11, 18, 18, 30, tzinfo=HEL),
+               datetime(2026, 11, 18, 19, 55, tzinfo=HEL), no="AY 866",
+               origin="Gothenburg GOT"),
+    ]
+    t = detect_trips(events, HOMES)["trips"][0]
+    assert t["destination"] == "Göteborg"
+    assert sorted(m["id"] for m in t["days"][0]["meetings"]) == sorted(e["id"] for e in keep)
+
+
+def test_c39_normalize_event_attendees():
+    raw = {
+        "id": "m", "summary": "Möte", "visibility": "private",
+        "start": {"dateTime": "2026-11-18T09:30:00+02:00"},
+        "end": {"dateTime": "2026-11-18T10:30:00+02:00"},
+        "attendees": [
+            {"email": "me@x", "self": True, "responseStatus": "accepted"},
+            {"email": "a@x", "responseStatus": "accepted"},
+            {"email": "b@x", "responseStatus": "declined"},
+            {"email": "c@x", "responseStatus": "needsAction"},
+            {"email": "room@resource.calendar.google.com", "resource": True,
+             "responseStatus": "accepted"},
+        ],
+        "conferenceData": {"videoEntryPoint": {"uri": "https://stream.meet.google.com/x"}},
+    }
+    e = normalize_event(raw)
+    assert e["self_response"] == "accepted"
+    assert e["attendees_other"] == 2
+    assert e["attendees_other_accepted"] == 1
+    assert e["has_room"] is True
+    assert e["is_stream"] is True
+    assert e["visibility"] == "private"
 
 
 # ---------- Kärnfall ----------
@@ -383,3 +594,33 @@ def test_gmail_oauth_scopes_include_calendar_readonly():
     assert "https://www.googleapis.com/auth/calendar.readonly" in OAUTH_SCOPES["gmail"]
     # Gmail-klienten får INTE begära kalender-scopen vid refresh.
     assert not any("calendar" in s for s in GMAIL_SCOPES)
+
+
+def test_c39_refresh_persists_flags_and_options(client):
+    c, db_module = client
+    from app.models import CalendarTrip
+
+    events = [
+        flight("a", "Copenhagen", datetime(2026, 8, 25, 6, 20, tzinfo=HEL),
+               datetime(2026, 8, 25, 8, 0, tzinfo=HEL), no="AY 951", origin="Helsinki HEL"),
+        flight("b", "Copenhagen", datetime(2026, 8, 25, 7, 25, tzinfo=HEL),
+               datetime(2026, 8, 25, 9, 5, tzinfo=HEL), no="AY 953", origin="Helsinki HEL"),
+        flight("r", "Helsinki", datetime(2026, 8, 26, 20, 25, tzinfo=HEL),
+               datetime(2026, 8, 26, 22, 0, tzinfo=HEL), no="AY 962", origin="Copenhagen CPH"),
+        flight("x", "Oslo", datetime(2026, 11, 27, 7, 20, tzinfo=HEL),
+               datetime(2026, 11, 27, 8, 55, tzinfo=HEL), no="AY 911", origin="Helsinki HEL"),
+    ]
+    # En redigerad resa som överlappar Oslo-resan får inte skrivas över.
+    with db_module.session_scope() as s:
+        s.add(CalendarTrip(start_date=date(2026, 11, 27), end_date=date(2026, 11, 28),
+                           status="edited", destination="Oslo (manuell)"))
+    with patch("app.services.calendar_client.fetch_events", return_value=events):
+        body = c.post("/api/trips/refresh").json()
+    assert body["saved"]["skipped_locked"] == 1
+    trips = c.get("/api/trips/suggestions?source=calendar").json()["trips"]
+    by_status = {t["status"]: t for t in trips}
+    assert by_status["edited"]["destination"] == "Oslo (manuell)"
+    aug = by_status["suggested"]
+    assert aug["flags"] == ["needs_review"]
+    assert aug["country"] == "DK"
+    assert [o["flight_no"] for o in aug["flight_options"]] == ["AY 951", "AY 953"]
