@@ -221,7 +221,7 @@ def test_amadeus_reissue_detected_as_change_fee():
     assert info.reason == "grand_total_below_fare"
     assert info.amount == 0.02 and info.currency == "EUR"
     assert (info.origin, info.destination, info.flight_date) == ("HEL", "GOT", "2026-10-13")
-    assert info.description_en() == "Finnair change fee – flight HEL–GOT 13 Oct 2026"
+    assert info.description_en() == "Finnair change fee - flight HEL-GOT 13 Oct 2026"
 
 
 def test_finnair_change_confirmation_detected():
@@ -231,7 +231,7 @@ def test_finnair_change_confirmation_detected():
         text=FINNAIR_CHANGE_CONFIRMATION, amount=0.02, currency="EUR",
     )
     assert info is not None
-    assert info.description_en() == "Finnair change fee – flight HEL–GOT 13 Oct 2026"
+    assert info.description_en() == "Finnair change fee - flight HEL-GOT 13 Oct 2026"
 
 
 def test_normal_eticket_is_not_change_fee():
@@ -279,7 +279,7 @@ def test_backfill_marks_rows_and_rewrites_uncoupled_description(db):
     db.refresh(fee)
     db.refresh(ticket)
     assert fee.kind == KIND_CHANGE_FEE and ticket.kind is None
-    assert fee.ai_description_en == "Finnair change fee – flight 13 Oct 2026"
+    assert fee.ai_description_en == "Finnair change fee - flight 13 Oct 2026"
     assert backfill_change_fee_kind(db) == []  # idempotent
 
 
@@ -363,11 +363,11 @@ def test_mark_private_expense_syncs_unknown_row_first(db):
 
 def test_private_expense_description():
     assert bls.private_expense_description() == (
-        "Private expense – to be deducted from salary."
+        "Private expense - to be deducted from salary."
     )
     assert bls.private_expense_description(
         "Weekend parking", base="Parking at Helsinki-Vantaa Airport",
-    ) == ("Private expense – to be deducted from salary. "
+    ) == ("Private expense - to be deducted from salary. "
           "Parking at Helsinki-Vantaa Airport Weekend parking")
 
 
@@ -383,7 +383,7 @@ def test_private_expense_draft_only_creates_unapproved_draft(db):
     assert tx == "5001"
     args, kwargs = bezala.attach_file.call_args
     assert args[0] == "2316962"
-    assert kwargs["description"] == "Private expense – to be deducted from salary."
+    assert kwargs["description"] == "Private expense - to be deducted from salary."
     # Bara attach_file (POST /attachments med state=unapproved) — inget
     # submit/attest-anrop.
     assert {c[0] for c in bezala.method_calls} == {"attach_file"}
@@ -405,7 +405,7 @@ def test_mcp_mark_private_expense_and_list_missing(env):
         assert res["data"]["status"] == "private_expense"
         assert res["data"]["amount"] == 8.49
         assert res["data"]["bezala_comment"] == (
-            "Private expense – to be deducted from salary. Private errand"
+            "Private expense - to be deducted from salary. Private errand"
         )
         res = _call(c, at, "list_missing", older_than_days=0)
         assert [x["bill_line_id"] for x in res["data"]["card_lines_without_receipt"]] == ["2352152"]

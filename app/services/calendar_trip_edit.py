@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.models import CalendarTrip, CalendarTripDay
 from app.services.calendar_trip_store import _flight_times_by_day, _linked_receipts
+from app.services.trip_meals import meals_included
 from app.services.trip_english import (
     country_name,
     meals_note,
@@ -29,7 +30,7 @@ from app.services.trip_english import (
 )
 
 HELSINKI = ZoneInfo("Europe/Helsinki")
-STATUSES = ("suggested", "edited", "approved")
+STATUSES = ("suggested", "edited", "approved", "rejected")
 FLAG_NEEDS_REVIEW = "needs_review"
 FLAG_MISSING_RETURN = "missing_return"
 FLAG_DESTINATION_UNCONFIRMED = "destination_unconfirmed"
@@ -201,6 +202,7 @@ def summary(trip: CalendarTrip) -> dict:
         "country_name": country_name(trip.country),
         "purpose": trip.purpose,
         "status": trip.status,
+        "rejected_reason": getattr(trip, "rejected_reason", None),
         "flags": list(trip.flags or []),
         "travel_start_helsinki": _hel(trip.travel_start_at),
         "travel_end_helsinki": _hel(trip.travel_end_at),
@@ -222,8 +224,12 @@ def list_trips(
     date_from: str | None = None,
     date_to: str | None = None,
     flagged_only: bool = False,
+    include_rejected: bool = False,
 ) -> list[dict]:
     q = db.query(CalendarTrip)
+    if not include_rejected and status != "rejected":
+        # C46 — avvisade resor döljs som standard.
+        q = q.filter(CalendarTrip.status != "rejected")
     if status:
         if status not in STATUSES:
             raise TripEditError(
@@ -273,7 +279,14 @@ def trip_detail(db: Session, trip: CalendarTrip) -> dict:
             "purpose": d.purpose,
             "free_meals": d.free_meals,
             "free_meal_sources": d.free_meal_sources or [],
+            "free_meal_note": d.free_meal_note,
             "meals_source": d.meals_source,
+            # C46 — Netvisor-förslaget för dagen: "Inklusive kost" vid 2
+            # fria måltider (lunch + middag).
+            "netvisor": {
+                "meals_included": meals_included(d.free_meals),
+                "label": "Inklusive kost" if meals_included(d.free_meals) else None,
+            },
             "hotel": (d.hotel or {}).get("name") if d.hotel else None,
             "meetings": [
                 {
@@ -343,6 +356,10 @@ def get_trip(db: Session, trip_id: int) -> dict:
 
 
 def _mark_edited(trip: CalendarTrip) -> None:
+    if trip.status == "rejected":
+        # C46 — en avvisad resa förblir avvisad tills unreject_trip.
+        trip.edited_at = datetime.utcnow()
+        return
     trip.status = "edited"
     trip.edited_at = datetime.utcnow()
     trip.approved_at = None
@@ -529,6 +546,7 @@ def update_trip_day(
     purpose: str | None = None,
     free_meals: int | None = None,
     free_meal_sources: list[str] | None = None,
+    free_meal_note: str | None = None,
 ) -> dict:
     trip = _get(db, trip_id)
     day_date = parse_date(day, "date")
@@ -538,10 +556,10 @@ def update_trip_day(
             f"Trip {trip.id} has no day {day_date.isoformat()}. Use add_trip_day."
         )
     if all(v is None for v in (start_time, end_time, destination, country, hotel, purpose,
-                               free_meals, free_meal_sources)):
+                               free_meals, free_meal_sources, free_meal_note)):
         raise TripEditError("Nothing to update — pass at least one field.")
     _apply_day_fields(row, start_time, end_time, destination, country, hotel, purpose)
-    _apply_meals(row, trip, free_meals, free_meal_sources)
+    _apply_meals(row, trip, free_meals, free_meal_sources, free_meal_note)
     _after_day_edit(db, trip)
     _mark_edited(trip)
     db.commit()
@@ -569,13 +587,16 @@ def _after_day_edit(db: Session, trip: CalendarTrip) -> None:
             trip.country = ",".join(countries)
 
 
-def _apply_meals(row, trip, free_meals, free_meal_sources) -> None:
-    """C44 — Mikkos måltider (fungerar även på edited-resor). Bara källor →
-    antalet räknas ur källorna; bara antal → källorna behålls."""
-    from app.services.trip_meals import count_meals, validate_sources
+def _apply_meals(row, trip, free_meals, free_meal_sources, free_meal_note=None) -> None:
+    """C44/C46 — Mikkos måltider (fungerar även på edited-resor). Bara
+    källor → antalet räknas ur källorna; bara antal → källorna behålls.
+    free_meals 0–2 (lunch och middag, frukost räknas aldrig)."""
+    from app.services.trip_meals import MAX_FREE_MEALS, count_meals, validate_sources
 
-    if free_meals is None and free_meal_sources is None:
+    if free_meals is None and free_meal_sources is None and free_meal_note is None:
         return
+    if free_meal_note is not None:
+        row.free_meal_note = clean_text(free_meal_note, "free_meal_note") or None
     if free_meal_sources is not None:
         if isinstance(free_meal_sources, str):
             free_meal_sources = [p for p in re.split(r"[,\s]+", free_meal_sources) if p]
@@ -587,11 +608,11 @@ def _apply_meals(row, trip, free_meals, free_meal_sources) -> None:
         try:
             n = int(free_meals)
         except (TypeError, ValueError):
-            raise TripEditError("free_meals must be 0–3.")
-        if not 0 <= n <= 3:
-            raise TripEditError("free_meals must be 0–3.")
+            raise TripEditError("free_meals must be 0-2 (lunch and dinner).")
+        if not 0 <= n <= MAX_FREE_MEALS:
+            raise TripEditError("free_meals must be 0-2 (lunch and dinner; breakfast never counts).")
         row.free_meals = n
-    else:
+    elif free_meal_sources is not None:
         row.free_meals = count_meals(row.free_meal_sources or [], row.country or trip.country)
     row.meals_source = "manual"
 
@@ -710,5 +731,31 @@ def unapprove_trip(db: Session, trip_id: int) -> dict:
         raise TripEditError(f"Trip {trip.id} is not approved (status: {trip.status}).")
     trip.status = "edited" if trip.edited_at else "suggested"
     trip.approved_at = None
+    db.commit()
+    return trip_detail(db, trip)
+
+
+def reject_trip(db: Session, trip_id: int, reason: str | None = None) -> dict:
+    """C46 — Mikko avvisar resan (t.ex. privat resa eller felupptäckt).
+    Bara statusbyte. refresh_calendar återskapar den aldrig, list_trips
+    döljer den och list_missing ignorerar den."""
+    trip = _get(db, trip_id)
+    trip.status = "rejected"
+    trip.rejected_at = datetime.utcnow()
+    trip.rejected_reason = (clean_text(reason, "reason") or None) if reason is not None else None
+    trip.approved_at = None
+    db.commit()
+    return trip_detail(db, trip)
+
+
+def unreject_trip(db: Session, trip_id: int) -> dict:
+    """C46 — ångra reject_trip: tillbaka till 'edited' (om resan redigerats)
+    annars 'suggested'."""
+    trip = _get(db, trip_id)
+    if trip.status != "rejected":
+        raise TripEditError(f"Trip {trip.id} is not rejected (status: {trip.status}).")
+    trip.status = "edited" if trip.edited_at else "suggested"
+    trip.rejected_at = None
+    trip.rejected_reason = None
     db.commit()
     return trip_detail(db, trip)

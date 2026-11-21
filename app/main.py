@@ -206,12 +206,24 @@ def _run_c46_migrations() -> None:
     from app.db import SessionLocal
     from app.services.private_senders import seed_from_env
 
+    from app.services.c46_migrations import fix_saved_descriptions, seed_c46_html_only_senders
+
     db = SessionLocal()
     try:
         seed_from_env(db)
     except Exception:  # noqa: BLE001
         db.rollback()
         logger.exception("C46: seed private_gmail_senders misslyckades")
+    try:
+        seed_c46_html_only_senders(db)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("C46: seed html_only_senders misslyckades")
+    try:
+        fix_saved_descriptions(db)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("C46: bindestreck i beskrivningar misslyckades")
     finally:
         db.close()
 

@@ -87,10 +87,10 @@ def test_breakfast_setting_and_scandic_go(monkeypatch):
     assert hotel_has_breakfast("Clarion Hotel Sea U")
     # Scandic Go: ingen frukost ens i källorna.
     assert meals_for_day([], "Scandic Go, Gasverksgatan 11", "SE") == (0, [])
-    # Utrikes frukost räknas bara med inställningen.
+    # C46: frukost räknas aldrig, inte ens med den gamla inställningen.
     assert count_meals(["hotel_breakfast"], "SE") == 0
     monkeypatch.setenv("TRIP_BREAKFAST_COUNTS_AS_MEAL_ABROAD", "true")
-    assert count_meals(["hotel_breakfast"], "SE") == 1
+    assert count_meals(["hotel_breakfast"], "SE") == 0
     # Inrikes räknas hotellfrukost aldrig.
     assert count_meals(["hotel_breakfast"], "FI") == 0
 
@@ -108,7 +108,7 @@ def test_update_trip_day_meals_on_edited_trip_and_netvisor_line(db):
         1, ["dinner_kickoff"], "manual")
     assert out["status"] == "edited"
     assert out["netvisor_line_description"] == (
-        "Business trip Båstad, Sweden – HRM SE kick-off (1 free meal: dinner)"
+        "Business trip Båstad, Sweden - HRM SE kick-off (1 free meal: dinner)"
     )
     with pytest.raises(edit.TripEditError):
         edit.update_trip_day(db, t.id, "2026-05-07", free_meals=4)

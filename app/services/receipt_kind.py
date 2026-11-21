@@ -95,18 +95,18 @@ class ChangeFeeInfo:
     reason: str
 
     def description_en(self) -> str:
-        """'Finnair change fee – flight HEL–GOT 13 Oct 2026'."""
+        """'Finnair change fee - flight HEL-GOT 13 Oct 2026'."""
         parts = ["Finnair change fee"]
         flight = "flight"
         if self.origin and self.destination:
-            flight += f" {self.origin}–{self.destination}"
+            flight += f" {self.origin}-{self.destination}"
         if self.flight_date:
             try:
                 d = datetime.strptime(self.flight_date, "%Y-%m-%d")
                 flight += f" {d.day} {_MONTH_NAMES[d.month - 1]} {d.year}"
             except ValueError:
                 pass
-        return f"{parts[0]} – {flight}"
+        return f"{parts[0]} - {flight}"
 
 
 def _to_float(raw: str) -> float | None:

@@ -6,7 +6,7 @@ Apple skickar kvittot som HTML i mailet ("Your receipt from Apple." /
 för andra html-kvitton; den här modulen tolkar texten deterministiskt så
 Bezala-beskrivningen blir engelsk och förutsägbar:
 
-    "Apple iCloud+ subscription – Nov 2026"
+    "Apple iCloud+ subscription - Nov 2026"
 
 Hårdvara/AppleCare/okänt köp flaggas (`needs_review=True`) — vi gissar
 aldrig bokföringskonto.
@@ -77,13 +77,13 @@ class AppleReceipt:
 
     def description_en(self) -> str:
         if self.is_hardware:
-            return f"Apple hardware/AppleCare purchase – {self.period}"
+            return f"Apple hardware/AppleCare purchase - {self.period}"
         if self.service and self.is_subscription:
             name = self.service if self.service.startswith("Apple") else f"Apple {self.service}"
-            return f"{name} subscription – {self.period}"
+            return f"{name} subscription - {self.period}"
         if self.service:
-            return f"Apple {self.service} – {self.period}"
-        return f"Apple App Store purchase – {self.period}"
+            return f"Apple {self.service} - {self.period}"
+        return f"Apple App Store purchase - {self.period}"
 
 
 def is_apple_sender(sender: str | None) -> bool:

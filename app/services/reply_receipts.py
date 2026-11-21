@@ -28,7 +28,7 @@ REPLY_RECEIPT_RULES: tuple[ReplyReceiptRule, ...] = (
         sender="support@airportrecovery.com",
         phrases=("receipt of payment", "amount paid"),
         vendor="Airport Recovery Services",
-        description="Airport Recovery Services – lost item recovery fee{order}",
+        description="Airport Recovery Services - lost item recovery fee{order}",
     ),
 )
 

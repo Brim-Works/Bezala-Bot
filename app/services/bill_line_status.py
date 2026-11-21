@@ -28,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 STATUS_PRIVATE_EXPENSE = "private_expense"
 
-PRIVATE_EXPENSE_COMMENT = "Private expense – to be deducted from salary."
+PRIVATE_EXPENSE_COMMENT = "Private expense - to be deducted from salary."
 
 FLAG_POSSIBLE_PRIVATE = "possible_private"
 
@@ -164,7 +164,9 @@ def private_expense_description(note: str | None = None, base: str | None = None
         extra = (extra or "").strip()
         if extra and extra not in parts:
             parts.append(extra)
-    return " ".join(parts)
+    from app.services.text_clean import plain_dashes
+
+    return plain_dashes(" ".join(parts))
 
 
 # ---------- Kalenderresor ----------

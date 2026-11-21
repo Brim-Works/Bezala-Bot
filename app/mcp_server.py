@@ -46,10 +46,12 @@ INSTRUCTIONS = (
     "Bezala card payments without a receipt (read-only — nothing is created in Bezala). "
     "Card lines flagged 'possible_private' are parking outside any trip — ask Mikko "
     "whether it was private; if so use mark_private_expense (Bezala comment 'Private "
-    "expense – to be deducted from salary.'). Nothing is ever submitted for approval. "
-    "Free meals per day (free_meals 0–3 + free_meal_sources) are prefilled from the "
-    "calendar (kick-off = dinner, customer day = lunch, dinner/lunch events, hotel "
-    "breakfast except Scandic Go) and can be corrected with update_trip_day. "
+    "expense - to be deducted from salary.'). Nothing is ever submitted for approval. "
+    "Free meals per day (free_meals 0-2: lunch and dinner, breakfast never counts) are "
+    "prefilled from the calendar (kick-off = dinner, customer day = lunch, dinner/lunch "
+    "events) and can be corrected with update_trip_day (free_meals, free_meal_note); "
+    "2 free meals = the day's Netvisor proposal is marked 'Inklusive kost'. "
+    "reject_trip hides a trip that is not a business trip; refresh never recreates it. "
     "time_source tells where travel times come from: 'parking' (Moovy entry/exit ± "
     "drive), 'flight_default' (flights + margin) or 'manual'. Edited/approved trips "
     "are never recalculated — get_trip shows 'suggestions' instead. list_missing gives "
@@ -92,18 +94,21 @@ async def list_trips(
     date_from: str | None = None,
     date_to: str | None = None,
     flagged_only: bool = False,
+    include_rejected: bool = False,
 ) -> dict:
     """List calendar trips: id, dates, destination (work city, English), country,
     purpose (English), status, flags, travel times and flight times (Helsinki),
     and completeness ('complete' | 'incomplete' + number of missing receipts).
 
-    status: 'suggested' | 'edited' | 'approved'. date_from/date_to: YYYY-MM-DD
+    status: 'suggested' | 'edited' | 'approved' | 'rejected'. Rejected trips are
+    hidden unless include_rejected=true (or status='rejected'). date_from/date_to: YYYY-MM-DD
     (trips overlapping the range). flagged_only: only trips with flags
     ('needs_review' = pick the outbound flight, 'missing_return' = no return flight
     found, 'destination_unconfirmed' = work city unknown, ask Mikko).
     """
     trips = await _run(edit.list_trips, status=status, date_from=date_from,
-                       date_to=date_to, flagged_only=flagged_only)
+                       date_to=date_to, flagged_only=flagged_only,
+                       include_rejected=include_rejected)
     return {"count": len(trips), "trips": trips}
 
 
@@ -155,21 +160,26 @@ async def update_trip_day(
     purpose: str | None = None,
     free_meals: int | None = None,
     free_meal_sources: list[str] | None = None,
+    free_meal_note: str | None = None,
 ) -> dict:
     """Edit one day of a trip. date: YYYY-MM-DD. Times HH:MM Helsinki (travel times).
     destination = work city in English (e.g. 'Malmö', 'Copenhagen'); purpose in
     English. Pass an empty string to clear a field. Status → 'edited'.
-    free_meals: 0–3 free meals that day (reduces the per diem). free_meal_sources:
-    any of 'hotel_breakfast', 'lunch_customer_day', 'dinner_kickoff',
-    'dinner_calendar', 'lunch_calendar', 'ticket'. Sources only → the count is
-    calculated (hotel breakfast counts only abroad when the setting allows it).
+    free_meals: 0-2 free meals that day, lunch and dinner (breakfast never counts;
+    reduces the per diem). 2 = the day's Netvisor proposal is marked
+    'Inklusive kost' (meals included). free_meal_note: optional English note,
+    e.g. 'Kick-off lunch and dinner'. Sets meals_source='manual'.
+    free_meal_sources: any of 'hotel_breakfast', 'lunch_customer_day',
+    'dinner_kickoff', 'dinner_calendar', 'lunch_calendar', 'ticket'. Sources only
+    → the count is calculated.
     Works on edited trips too. Free meals are added to the Netvisor line in
     English, e.g. '(1 free meal: dinner)'.
     Returns the updated trip (with 'warnings' if a field is not in English)."""
     return await _run(edit.update_trip_day, trip_id, date, start_time=start_time,
                       end_time=end_time, destination=destination, country=country,
                       hotel=hotel, purpose=purpose, free_meals=free_meals,
-                      free_meal_sources=free_meal_sources)
+                      free_meal_sources=free_meal_sources,
+                      free_meal_note=free_meal_note)
 
 
 @mcp.tool()
@@ -207,6 +217,21 @@ async def approve_trip(trip_id: int) -> dict:
 async def unapprove_trip(trip_id: int) -> dict:
     """Undo approval (back to 'edited', or 'suggested' if never edited). Status only."""
     return await _run(edit.unapprove_trip, trip_id)
+
+
+@mcp.tool()
+async def reject_trip(trip_id: int, reason: str | None = None) -> dict:
+    """Reject a trip (not a business trip, wrongly detected …). Status →
+    'rejected'. refresh_calendar never recreates it (same dates + same flights/
+    events = same trip), list_trips hides it and list_missing ignores it.
+    reason: short English note. Undo with unreject_trip. Only on Mikko's word."""
+    return await _run(edit.reject_trip, trip_id, reason)
+
+
+@mcp.tool()
+async def unreject_trip(trip_id: int) -> dict:
+    """Undo reject_trip: back to 'edited' (if it was edited) or 'suggested'."""
+    return await _run(edit.unreject_trip, trip_id)
 
 
 @mcp.tool()
@@ -295,7 +320,7 @@ async def mark_private_expense(
 ) -> dict:
     """Mark a Bezala card payment as a PRIVATE expense (paid by mistake with the
     company card). It stops counting as missing, and the Bezala comment becomes
-    'Private expense – to be deducted from salary.' so payroll deducts it.
+    'Private expense - to be deducted from salary.' so payroll deducts it.
     note: optional English note. create_draft=True also creates a Bezala DRAFT for
     the row with that comment — it is never submitted for approval.
     Only on Mikko's word. Undo: set_card_line_status(bill_line_id, 'missing')."""

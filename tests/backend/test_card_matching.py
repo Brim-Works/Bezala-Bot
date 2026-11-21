@@ -2286,7 +2286,7 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(args[2], PDF_BYTES)
         self.assertEqual(
             kwargs["description"],
-            "Lovable Pro 3 subscription, May 5–Jun 5, 2026",
+            "Lovable Pro 3 subscription, May 5-Jun 5, 2026",
         )
 
     def test_match_flow_uses_mapping_override_when_present(self):
@@ -2322,7 +2322,7 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         resp, fake_bezala = self._run_match(mid)
         self.assertEqual(resp.status_code, 200, resp.text)
         kwargs = fake_bezala.attach_file.call_args.kwargs
-        self.assertEqual(kwargs["description"], "Flygbiljett HEL–ARN 14 april 2026")
+        self.assertEqual(kwargs["description"], "Flygbiljett HEL-ARN 14 april 2026")
 
     def test_match_flow_payload_includes_description_field(self):
         """Integrationssäkring: attach_file-anropet (mockad Bezala-API)
@@ -2336,7 +2336,7 @@ class CardMatchingEndpointsTest(unittest.TestCase):
         self.assertEqual(fake_bezala.attach_file.call_count, 1)
         kwargs = fake_bezala.attach_file.call_args.kwargs
         self.assertIn("description", kwargs)
-        self.assertEqual(kwargs["description"], "Anthropic API usage — april 2026")
+        self.assertEqual(kwargs["description"], "Anthropic API usage - april 2026")
 
     def test_match_to_bezala_404_for_missing_message(self):
         resp = self.client.post(

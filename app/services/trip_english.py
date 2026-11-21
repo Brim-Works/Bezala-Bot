@@ -12,7 +12,7 @@ Här finns också:
   * `non_english_warnings` — varningar (blockerar inte) när syfte eller
     destination ser ut att vara på svenska/finska.
   * `netvisor_line_description` — förberedd Netvisor-text (beräknas,
-    sparas inte), t.ex. "Business trip Malmö, Sweden – Customer day Agda PS".
+    sparas inte), t.ex. "Business trip Malmö, Sweden - Customer day Agda PS".
 """
 
 from __future__ import annotations
@@ -247,17 +247,22 @@ def netvisor_line_description(
     purpose: str | None,
     meals: str | None = None,
 ) -> str:
-    """'Business trip Malmö, Sweden – Customer day Agda PS'.
+    """'Business trip Malmö, Sweden - Customer day Agda PS'.
 
     Beräknas när den behövs (R3), sparas inte. Orten i syftet tas bort om
     den redan står i början ("…, Malmö" / "…, Malmö office").
     """
+    # C46 — en dag kan ha flera orter ("Ängelholm, Ljungby"): dela upp,
+    # ta bort dubbletter och behåll ordningen.
     uniq: list[str] = []
-    for c in cities:
-        c = city_to_english(c) if c else None
-        if c and c not in uniq:
-            uniq.append(c)
-    place = " and ".join(uniq)
+    for raw in cities:
+        for part in re.split(r"\s*(?:,|→|->|/|\band\b)\s*", raw or ""):
+            c = city_to_english(part.strip()) if part and part.strip() else None
+            if c and c not in uniq:
+                uniq.append(c)
+    place = uniq[0] if len(uniq) == 1 else (
+        ", ".join(uniq[:-1]) + " and " + uniq[-1] if uniq else ""
+    )
     cname = country_name(country)
     where = ", ".join(p for p in (place, cname) if p)
     text = "Business trip" + (f" {where}" if where else "")
@@ -265,7 +270,9 @@ def netvisor_line_description(
         p = purpose.strip()
         for c in uniq:
             p = re.sub(rf",\s*{re.escape(c)}( office)?\s*$", "", p)
-        text += f" – {p}"
+        text += f" - {p}"
     if meals:
         text += f" {meals}"
-    return text
+    from app.services.text_clean import plain_dashes
+
+    return plain_dashes(text)
