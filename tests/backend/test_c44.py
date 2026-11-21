@@ -42,8 +42,9 @@ def _bastad_events():
     return [
         gflight("f1", "Copenhagen", "AY 951", datetime(2026, 5, 7, 6, 20, tzinfo=HEL_TZ),
                 datetime(2026, 5, 7, 7, 0, tzinfo=CET), "Helsinki HEL"),
-        gflight("f2", "HELSINKI HELSINKI VANTAA", "AY 958",
-                datetime(2026, 5, 8, 16, 45, tzinfo=CET),
+        # AY 960 avgår 17:00 lokal tid (18:00 i Helsingfors) — före kvällen.
+        gflight("f2", "HELSINKI HELSINKI VANTAA", "AY 960",
+                datetime(2026, 5, 8, 17, 0, tzinfo=CET),
                 datetime(2026, 5, 8, 19, 35, tzinfo=HEL_TZ), "Copenhagen CPH"),
         ev("k1", "HRM SE kick-off Båstad", date(2026, 5, 7), date(2026, 5, 9), others=12),
         ev("h1", "Stay at Hotel Skansen", date(2026, 5, 7), date(2026, 5, 8), others=0),

@@ -902,7 +902,14 @@ def _build_trip(
         m for m in meetings
         if m.get("self_response") != "declined" and _on_site(m)
     ]
-    ret_leaves_hel = leaves.astimezone(_helsinki()) if leaves is not None else None
+    # Hemresans avgång i LOKAL tid på avreseflygplatsen (CPH 17:00 = HEL
+    # 18:00): flyger Mikko hem före kvällen blir det ingen middag på plats.
+    ret_leaves_hel = None
+    if leaves is not None:
+        from app.services.receipt_details import _tz
+
+        ret_origin = (parse_flight(ret) or {}).get("origin") if ret else None
+        ret_leaves_hel = leaves.astimezone(_tz(ret_origin))
     for day in days:
         dd = date.fromisoformat(day["date"])
         summaries = [m.get("summary") or "" for m in on_site_all if _meeting_on(m, dd)]
