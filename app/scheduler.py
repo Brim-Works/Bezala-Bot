@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -119,6 +120,7 @@ def start_scheduler() -> BackgroundScheduler | None:
     _scheduler.add_job(
         _card_lines_job,
         trigger=IntervalTrigger(hours=2),
+        next_run_time=datetime.now(timezone.utc) + timedelta(minutes=1),
         id=_CARD_LINES_JOB_ID,
         replace_existing=True,
         max_instances=1,

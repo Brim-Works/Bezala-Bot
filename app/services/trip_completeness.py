@@ -460,7 +460,9 @@ def card_lines_for_trip(db: Session, trip: CalendarTrip) -> list[CardLine]:
 
 
 def completeness(rows: Iterable[TripExpectation], card_lines: Iterable[CardLine]) -> dict:
-    missing_items = sum(1 for r in rows if r.status == "missing")
+    rows = list(rows)
+    missing_rows = [r for r in rows if r.status == "missing"]
+    missing_items = len(missing_rows)
     missing_cards = sum(1 for c in card_lines if c.status == "missing")
     missing = missing_items + missing_cards
     return {
@@ -468,6 +470,10 @@ def completeness(rows: Iterable[TripExpectation], card_lines: Iterable[CardLine]
         "missing": missing,
         "missing_items": missing_items,
         "card_lines_without_receipt": missing_cards,
+        # t.ex. ['flight', 'hotel 2026-03-02'] — syns direkt i list_trips.
+        "missing_kinds": [
+            f"{r.kind} {r.slot}" if r.slot else r.kind for r in missing_rows
+        ],
     }
 
 
