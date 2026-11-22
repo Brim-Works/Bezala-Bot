@@ -3462,6 +3462,35 @@ def _do_match_to_bezala(
     }
 
 
+@app.get("/api/bezala/bot-writes")
+def get_bot_bezala_writes(
+    days: int = 14,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """C50 — läsrapport: Bezala-transaktioner boten skrivit till (live-status)."""
+    from app.services.bezala_writes_report import list_bot_bezala_writes
+
+    return list_bot_bezala_writes(db, days)
+
+
+@app.get("/api/bezala/kill-switch")
+def get_bezala_kill_switch(db: Session = Depends(get_db), _: None = Depends(require_auth)):
+    from app.services.bezala_write_guard import kill_switch_status
+
+    return kill_switch_status(db)
+
+
+@app.post("/api/bezala/kill-switch/reset")
+def reset_bezala_kill_switch(db: Session = Depends(get_db), _: None = Depends(require_auth)):
+    """C50 — tar bort stoppet (endast på Mikkos begäran). Automatisk koppling
+    kräver fortfarande env AUTO_COUPLE_ENABLED=true."""
+    from app.services.bezala_write_guard import kill_switch_status, reset_kill_switch
+
+    reset_kill_switch(db)
+    return kill_switch_status(db)
+
+
 @app.post("/api/messages/{msg_id}/match-to-bezala")
 def match_message_to_bezala(
     msg_id: int,

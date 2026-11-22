@@ -544,7 +544,8 @@ class BezalaLoggingTest(unittest.TestCase):
 
         client._client.request = fake_request
 
-        with self.assertRaises(BezalaError) as ctx:
+        with patch.dict(os.environ, {"BEZALA_METADATA_PUT_ENABLED": "true"}), \
+                self.assertRaises(BezalaError) as ctx:
             client.update_transaction(
                 "tx-42",
                 description="Test",
@@ -569,9 +570,10 @@ class BezalaLoggingTest(unittest.TestCase):
         resp.json = MagicMock(return_value={"id": 2804})
 
         def fake_request(method, url, **kwargs):
-            captured["method"] = method
-            captured["url"] = url
-            captured["json"] = kwargs.get("json")
+            if method == "PUT":
+                captured["method"] = method
+                captured["url"] = url
+                captured["json"] = kwargs.get("json")
             return resp
 
         client._client.request = fake_request
@@ -584,13 +586,14 @@ class BezalaLoggingTest(unittest.TestCase):
             "cost_center_ids": [927151],
             "vat_code_id": 1355,
         }
-        result = client.update_transaction(
-            "2804",
-            description="Finnair HEL-CPH",
-            date="2026-04-22",
-            credit_account_id=82320,
-            vat_lines_attributes=[vat_line],
-        )
+        with patch.dict(os.environ, {"BEZALA_METADATA_PUT_ENABLED": "true"}):
+            result = client.update_transaction(
+                "2804",
+                description="Finnair HEL-CPH",
+                date="2026-04-22",
+                credit_account_id=82320,
+                vat_lines_attributes=[vat_line],
+            )
         self.assertEqual(result.transaction_id, "2804")
         self.assertEqual(captured["method"], "PUT")
         self.assertTrue(captured["url"].endswith("/transactions/2804"))
@@ -599,7 +602,9 @@ class BezalaLoggingTest(unittest.TestCase):
         self.assertIn("transaction", payload)
         tx = payload["transaction"]
         self.assertEqual(tx["description"], "Finnair HEL-CPH")
-        self.assertEqual(tx["date"], "2026-04-22")
+        # C50 — date och state skickas aldrig (bara tillåtna fält).
+        self.assertNotIn("date", tx)
+        self.assertNotIn("state", tx)
         # credit_account_id = betalningsmetod (kreditkort, t.ex. 82320)
         self.assertEqual(tx["credit_account_id"], 82320)
         # expense_account_id = kategori (67100 Matkaliput) ligger i vat_line

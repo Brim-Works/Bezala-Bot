@@ -618,6 +618,12 @@ def _attempt_bezala_upload(
     """
     if not auto_upload:
         return "pending", None, None
+    from app.services.bezala_write_guard import auto_couple_enabled
+
+    if not auto_couple_enabled():
+        # C50 — automatisk Bezala-uppladdning bara med AUTO_COUPLE_ENABLED.
+        logger.info("Bezala auto-upload hoppas över (AUTO_COUPLE_ENABLED av): %s", filename)
+        return "pending", None, None
     if analysis is None:
         # Ingen AI-data = kan inte auto-fylla transaktionen. Låt användaren
         # ladda upp manuellt via knappen.

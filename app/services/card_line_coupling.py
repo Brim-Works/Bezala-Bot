@@ -188,7 +188,11 @@ def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
         "amount": row.amount,
         "currency": row.currency,
         "bezala_transaction_id": row.bezala_transaction_id,
-        "bezala_state": "draft (unapproved) — not submitted for approval",
+        "bezala_state": "draft — not submitted for approval",
+        # C50 — beskrivningen skrivs inte via API (kunde skicka för attest).
+        # Mikko klistrar in den själv i Bezala.
+        "bezala_description_written": False,
+        "description_to_paste": row.ai_description_en or row.summary,
     }
 
 

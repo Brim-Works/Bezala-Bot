@@ -132,6 +132,15 @@ class BezalaUploaderUsesEnglishFieldTest(unittest.TestCase):
     """_attempt_bezala_upload prioriterar analysis.description_en
     framför filnamns-baserad fallback."""
 
+    def setUp(self):
+        # C50 — automatisk uppladdning kräver AUTO_COUPLE_ENABLED=true.
+        import os
+        from unittest.mock import patch as _patch
+
+        p = _patch.dict(os.environ, {"AUTO_COUPLE_ENABLED": "true"})
+        p.start()
+        self.addCleanup(p.stop)
+
     def _make_msg(self):
         from app.services.gmail_client import GmailMessage
 
