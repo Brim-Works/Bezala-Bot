@@ -486,3 +486,108 @@ def test_mobile_upload_endpoint_waiting_then_suggested(client, db, monkeypatch):
     assert "items" in q and "last_decision" in q
     ov = client.get("/api/overview").json()
     assert ov["receipts_waiting_for_transaction"] == 1 and ov["card_lines_without_receipt"] == 1
+
+
+# ---------------------------------------------------------------- Del 6.7 loggning
+
+
+def test_logging_info_to_stdout_errors_to_stderr_fonttools_quiet(capsys):
+    import logging
+
+    from app.logging_setup import configure_logging
+
+    configure_logging(logging.INFO)
+    logging.getLogger("bezala-test").info("vanlig rad")
+    logging.getLogger("bezala-test").error("riktigt fel")
+    logging.getLogger("fontTools.subset").info("brus")
+    out, err = capsys.readouterr()
+    assert "vanlig rad" in out and "vanlig rad" not in err
+    assert "riktigt fel" in err and "riktigt fel" not in out
+    assert "brus" not in out and "brus" not in err
+
+
+# ---------------------------------------------------------------- Del 6.4 + 6.6
+
+
+def _scope_for(db):
+    from contextlib import contextmanager
+
+    @contextmanager
+    def scope():
+        yield db
+        db.commit()
+    return scope
+
+
+def test_trash_auto_purge_setting_works(db, monkeypatch):  # noqa: F811
+    from datetime import timezone
+
+    from app.models import ProcessedMessage
+    from app.services import trash_scheduler
+    from app.services.settings_service import load_settings
+
+    monkeypatch.setattr(trash_scheduler, "session_scope", _scope_for(db))
+    old = _receipt(db, date(2026, 9, 1), "Old", 1.0, waiting=False)
+    new = _receipt(db, date(2026, 9, 1), "New", 1.0, waiting=False)
+    old.deleted_at = datetime.now(timezone.utc) - timedelta(days=40)
+    new.deleted_at = datetime.now(timezone.utc) - timedelta(days=2)
+    old_id, new_id = old.message_id, new.message_id
+    db.commit()
+    assert trash_scheduler.purge_old_trash() == 0  # 0 = av
+    load_settings(db).trash_auto_purge_days = 30
+    db.commit()
+    assert trash_scheduler.purge_old_trash() == 1
+    db.expire_all()
+    ids = {m.message_id for m in db.query(ProcessedMessage).all()}
+    assert old_id not in ids and new_id in ids
+
+
+def test_finnair_confirmation_and_hotel_payment_are_duplicates(db):  # noqa: F811
+    from app.models import ProcessedMessage
+    from app.services.receipt_details import mark_duplicates
+
+    ticket = _receipt(db, date(2026, 3, 10), "Finnair", 334.0, waiting=False,
+                      subject="Finnair e-ticket receipt", booking_ref="ABC123",
+                      sender="Finnair <noreply@finnair.com>")
+    conf = _receipt(db, date(2026, 2, 1), "Finnair", 334.0, waiting=False,
+                    subject="Bokningsbekräftelse ABC123", booking_ref="ABC123",
+                    sender="Finnair <noreply@finnair.com>")
+    pay = _receipt(db, date(2026, 1, 13), "Clarion Hotel Sea U", 1444.0, "SEK", waiting=False,
+                   category="Hotell", subject="Betalningsbekräftelse",
+                   sender="Clarion <noreply@strawberry.se>")
+    inv = _receipt(db, date(2026, 1, 13), "Clarion Hotel Sea U", 1444.0, "SEK", waiting=False,
+                   category="Hotell", subject="Faktura SE131B0074992",
+                   sender="Clarion <invoice@strawberry.se>")
+    mark_duplicates(db)
+    for m in (ticket, conf, pay, inv):
+        db.refresh(m)
+    assert conf.duplicate_of == ticket.message_id and ticket.duplicate_of is None
+    assert pay.duplicate_of == inv.message_id and inv.duplicate_of is None
+    # Idempotent — körs igen utan att märkningen försvinner.
+    mark_duplicates(db)
+    db.refresh(conf)
+    assert conf.duplicate_of == ticket.message_id
+    assert db.query(ProcessedMessage).filter(ProcessedMessage.duplicate_of.isnot(None)).count() == 2
+
+
+def test_cleanup_empty_errors_and_pre_2026(db):  # noqa: F811
+    from app.models import MaintenanceTask, ProcessedMessage
+    from app.services.c47_cleanup import run_once
+
+    db.add(ProcessedMessage(message_id="err-1", status="error", error_message="HttpError 404"))
+    db.add(ProcessedMessage(message_id="err-2", status="error", sender="x@y", subject="s",
+                            error_message="AI"))
+    db.add(MaintenanceTask(name="c46_rescan_work_2026_v1",
+                           ran_at=datetime.utcnow() - timedelta(days=3)))
+    db.commit()
+    skane = _receipt(db, date(2025, 11, 7), "Skånetrafiken", 30.0, "SEK", waiting=False)
+    keep = _receipt(db, date(2026, 1, 5), "Moovy", 30.0, waiting=False)
+    out = run_once(db)
+    assert out["empty_errors"]["deleted"] == 1 and out["pre_2026"]["trashed"] == 1
+    ids = {m.message_id for m in db.query(ProcessedMessage).all()}
+    assert "err-1" not in ids and "err-2" in ids
+    db.refresh(skane)
+    db.refresh(keep)
+    assert skane.deleted_at is not None and skane.delete_reason == "pre_2026"
+    assert keep.deleted_at is None
+    assert run_once(db) is None

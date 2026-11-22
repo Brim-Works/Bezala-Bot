@@ -17,7 +17,10 @@ def after_card_sync(db: Session, *, couple=None) -> dict:
     from app.services.subscriptions import detect_subscriptions, process_lines
     from app.services.waiting_receipts import match_waiting_receipts
 
+    from app.services.c47_cleanup import mark_all_duplicates
+
     steps = (
+        ("duplicates", lambda: mark_all_duplicates(db)),
         ("refunds", lambda: match_refunds(db)),
         ("subscriptions", lambda: process_lines(db, couple=couple)),
         ("waiting_receipts", lambda: match_waiting_receipts(db, couple=couple)),

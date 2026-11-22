@@ -8,22 +8,24 @@ import PipelineDrawer from './drawer/PipelineDrawer.jsx';
 import AppShell from './components/AppShell.jsx';
 import ViewErrorBoundary from './components/ViewErrorBoundary.jsx';
 import Dashboard from './views/Dashboard.jsx';
-import Review from './views/Review.jsx';
-import Match from './views/Match.jsx';
-import TravelTinder from './views/TravelTinder.jsx';
+import TravelTinderHub from './views/TravelTinderHub.jsx';
+import Status from './views/Status.jsx';
 import Trips from './views/Trips.jsx';
-import Log from './views/Log.jsx';
-import MatchHealth from './views/MatchHealth.jsx';
 import Settings from './views/Settings.jsx';
 import Trash from './views/Trash.jsx';
 import NotFound from './views/NotFound.jsx';
 import { TrashCountProvider } from './hooks/TrashCountProvider.jsx';
 import { api, ApiError, loginUrl, setUnauthorizedHandler } from './api/client.js';
 import MobileApp from './mobile/MobileApp.jsx';
-import { viewForPath } from './routes.js';
+import { REDIRECTS, viewForPath } from './routes.js';
 
 function ViewForRoute() {
-  const { path } = useRouter();
+  const { path, navigate } = useRouter();
+  const redirect = REDIRECTS[path];
+  useEffect(() => {
+    if (redirect) navigate(redirect, { replace: true });
+  }, [redirect, navigate]);
+  if (redirect) return null;
   const view = viewForPath(path);
   switch (view) {
     case 'dashboard':
@@ -32,40 +34,22 @@ function ViewForRoute() {
           <Dashboard />
         </ViewErrorBoundary>
       );
-    case 'review':
-      return (
-        <ViewErrorBoundary viewKey="review">
-          <Review />
-        </ViewErrorBoundary>
-      );
-    case 'match':
-      return (
-        <ViewErrorBoundary viewKey="match">
-          <Match />
-        </ViewErrorBoundary>
-      );
     case 'travelTinder':
       return (
         <ViewErrorBoundary viewKey="travelTinder">
-          <TravelTinder />
+          <TravelTinderHub />
+        </ViewErrorBoundary>
+      );
+    case 'status':
+      return (
+        <ViewErrorBoundary viewKey="status">
+          <Status />
         </ViewErrorBoundary>
       );
     case 'trips':
       return (
         <ViewErrorBoundary viewKey="trips">
           <Trips />
-        </ViewErrorBoundary>
-      );
-    case 'log':
-      return (
-        <ViewErrorBoundary viewKey="log">
-          <Log />
-        </ViewErrorBoundary>
-      );
-    case 'matchHealth':
-      return (
-        <ViewErrorBoundary viewKey="matchHealth">
-          <MatchHealth />
         </ViewErrorBoundary>
       );
     case 'settings':

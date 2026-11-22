@@ -3,7 +3,6 @@ import { useI18n } from '../i18n/useI18n.jsx';
 import { api } from '../api/client.js';
 import { useToast } from '../lib/toast.jsx';
 import { useRouter } from '../router/useRouter.jsx';
-import { routeForView } from '../routes.js';
 import { IconBezala } from '../icons/index.jsx';
 
 function Row({ label, children }) {
@@ -52,7 +51,7 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
 
   function openReview() {
     onClose?.();
-    navigate(routeForView('review'));
+    navigate('/travel-tinder?mode=review');
   }
 
   return (

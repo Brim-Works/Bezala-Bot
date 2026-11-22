@@ -133,3 +133,9 @@
   display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 14px;
 }
 .m-tabs-wrap--desktop .m-qcard { min-height: 0; }
+
+/* C47 Del 6 — desktop: Travel Tinder-hubben och Status. */
+.tt-hub__modes { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; }
+.overview-numbers .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.overview-tile { text-align: left; cursor: pointer; font: inherit; color: inherit; }
+.overview-last { margin: 8px 0 16px; }

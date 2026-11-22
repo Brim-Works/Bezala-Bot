@@ -9,6 +9,7 @@ export default {
     trips: 'Resor',
     log: 'Logg',
     matchHealth: 'Match Health',
+    status: 'Status',
     settings: 'Inställningar',
     trash: 'Papperskorg',
   },
@@ -637,6 +638,7 @@ export default {
       calendar: 'Kalenderinbjudan',
       spam: 'Spam',
       misclassified: 'Felklassad',
+      pre_2026: 'Före 2026',
     },
     reasonHints: {
       manual: 'Jag tar bort detta av egen vilja.',
@@ -1065,6 +1067,7 @@ export default {
     trips: { title: 'Resor' },
     log: { title: 'Kommandocenter' },
     matchHealth: { title: 'Match Health' },
+    status: { title: 'Status' },
     settings: { title: 'Inställningar' },
     trash: { title: 'Papperskorg' },
     notFound: {

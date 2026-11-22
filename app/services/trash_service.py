@@ -14,7 +14,7 @@ from app.models import ProcessedMessage
 
 logger = logging.getLogger(__name__)
 
-VALID_REASONS = {"manual", "calendar", "spam", "misclassified"}
+VALID_REASONS = {"manual", "calendar", "spam", "misclassified", "pre_2026"}
 
 
 def now_utc() -> datetime:
