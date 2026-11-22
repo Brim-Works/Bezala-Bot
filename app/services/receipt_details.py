@@ -455,6 +455,13 @@ def mark_duplicates(db: Session) -> dict:
     for g in groups:
         for d in g["dupes"]:
             want[d.id] = g["keep"].message_id
+    # C47 — Finnair bokningsbekräftelse ↔ e-ticket, hotell faktura ↔ betalning.
+    from app.services.c47_duplicates import extra_duplicates
+
+    dupe_mids = {m.message_id for m in rows if m.id in want}
+    for rid, keep in extra_duplicates(rows).items():
+        if rid not in want and keep not in dupe_mids:
+            want[rid] = keep
     cleared = 0
     for m in rows:
         target = want.get(m.id)

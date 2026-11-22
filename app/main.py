@@ -60,10 +60,10 @@ from app.services.trash_service import (
 
 settings = get_settings()
 
-logging.basicConfig(
-    level=getattr(logging, settings.log_level.upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-)
+from app.logging_setup import configure_logging  # noqa: E402
+
+# C47 — INFO till stdout (Railway: stderr = "error"), fontTools tystad.
+configure_logging(getattr(logging, settings.log_level.upper(), logging.INFO))
 logger = logging.getLogger("bezala-bot")
 
 

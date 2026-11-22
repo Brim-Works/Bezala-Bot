@@ -63,11 +63,11 @@ async function setupMatchMocks(page, suggestions = SAMPLE_SUGGESTIONS) {
   );
 }
 
-test('Match-vy — sidebar-länk navigerar till /match', async ({ page }) => {
+test('Match-vy — gamla /match öppnar Kortmatchning i Travel Tinder', async ({ page }) => {
+  // C47 — menyvalet är borta; vyn ligger under Travel Tinder → Kortmatchning.
   await setupMatchMocks(page);
-  await page.goto('/');
-  await page.getByTestId('nav-match').click();
-  await expect(page).toHaveURL(/\/match$/);
+  await page.goto('/match');
+  await expect(page).toHaveURL(/\/travel-tinder\?mode=match$/);
   await expect(page.getByTestId('match-grid')).toBeVisible();
 });
 

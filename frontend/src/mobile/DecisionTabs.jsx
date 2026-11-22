@@ -26,11 +26,12 @@ const KIND_LABELS = {
   refund: { tag: 'Återbetalning saknas', yes: 'Klart – stäng', no: 'Vänta mer' },
 };
 
-export default function DecisionTabs({ initialTab = 'decide', variant = 'mobile' }) {
+export default function DecisionTabs({ initialTab = 'decide', variant = 'mobile', hideTabs = false }) {
   const [tab, setTab] = useState(initialTab);
   const [count, setCount] = useState(null);
   return (
     <div className={`m-tabs-wrap m-tabs-wrap--${variant}`}>
+      {!hideTabs && (
       <div className="m-tabs" role="tablist">
         {TABS.map((t) => (
           <button key={t.key} type="button" role="tab" aria-selected={tab === t.key}
@@ -40,6 +41,7 @@ export default function DecisionTabs({ initialTab = 'decide', variant = 'mobile'
           </button>
         ))}
       </div>
+      )}
       {tab === 'decide' && <SwipeQueue onCount={setCount} variant={variant} />}
       {tab === 'matched' && <MatchedList />}
       {tab === 'waiting' && <WaitingList />}

@@ -19,8 +19,7 @@ import {
 import { useScanFeedback } from '../hooks/useScanFeedback.js';
 import { useDrawer } from '../drawer/DrawerProvider.jsx';
 
-import HeroStrip from '../components/dashboard/HeroStrip.jsx';
-import StatGrid from '../components/dashboard/StatGrid.jsx';
+import OverviewNumbers from '../components/dashboard/OverviewNumbers.jsx';
 import FilterTabs from '../components/dashboard/FilterTabs.jsx';
 import DateFilter from '../components/dashboard/DateFilter.jsx';
 import MessageTable from '../components/dashboard/MessageTable.jsx';
@@ -192,9 +191,9 @@ export default function Dashboard() {
 
   return (
     <>
-      <HeroStrip pendingCount={stats.pending} />
-
-      <StatGrid stats={stats} />
+      {/* C47 — tre siffror (att besluta / kortrader utan kvitto / väntande
+          kvitton) + senaste scanning; gamla mått (auto-överförda idag …) borta. */}
+      <OverviewNumbers version={`${messagesVersion}-${runs.length}-${data?.stats?.last_run?.finished_at || ''}`} />
 
       <div className="section-header">
         <h2>{t.sections.processed}</h2>

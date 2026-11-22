@@ -9,6 +9,7 @@ export default {
     trips: 'Trips',
     log: 'Log',
     matchHealth: 'Match Health',
+    status: 'Status',
     settings: 'Settings',
     trash: 'Trash',
   },
@@ -636,6 +637,7 @@ export default {
       calendar: 'Calendar invite',
       spam: 'Spam',
       misclassified: 'Misclassified',
+      pre_2026: 'Before 2026',
     },
     reasonHints: {
       manual: 'I am removing this on purpose.',
@@ -1057,6 +1059,7 @@ export default {
     trips: { title: 'Trips' },
     log: { title: 'Command center' },
     matchHealth: { title: 'Match Health' },
+    status: { title: 'Status' },
     settings: { title: 'Settings' },
     trash: { title: 'Trash' },
     notFound: {

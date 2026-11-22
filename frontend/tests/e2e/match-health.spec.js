@@ -158,10 +158,11 @@ async function setupMatchHealthMocks(page, {
 test('Match Health — nav-länk syns och navigerar', async ({ page }) => {
   await setupMatchHealthMocks(page);
   await page.goto('/');
-  const nav = page.getByTestId('nav-matchHealth');
+  // C47 — Match Health ligger under Status; gamla URL:en pekar dit.
+  const nav = page.getByTestId('nav-status');
   await expect(nav).toBeVisible();
-  await nav.click();
-  await expect(page).toHaveURL(/\/match-health$/);
+  await page.goto('/match-health');
+  await expect(page).toHaveURL(/\/status\?tab=match-health$/);
   await expect(page.getByTestId('match-health')).toBeVisible();
 });
 

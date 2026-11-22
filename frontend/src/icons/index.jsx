@@ -207,6 +207,7 @@ export const NAV_ICONS = {
   trips: IconGlobe,
   log: IconLog,
   matchHealth: IconActivity,
+  status: IconActivity,
   settings: IconSettings,
   trash: IconTrash,
 };

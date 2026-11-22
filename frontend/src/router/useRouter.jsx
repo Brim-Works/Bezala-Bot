@@ -18,13 +18,13 @@ export function RouterProvider({ children }) {
 
   const navigate = useCallback(
     (to, { replace = false } = {}) => {
-      if (!to || to === window.location.pathname) return;
+      if (!to || to === `${window.location.pathname}${window.location.search}`) return;
       if (replace) {
         window.history.replaceState({}, '', to);
       } else {
         window.history.pushState({}, '', to);
       }
-      setPath(to);
+      setPath(to.split('?')[0]);
     },
     [],
   );

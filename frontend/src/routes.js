@@ -4,14 +4,19 @@
 
 export const ROUTES = {
   dashboard: '/',
-  review: '/review',
-  match: '/match',
   travelTinder: '/travel-tinder',
   trips: '/trips',
-  log: '/log',
-  matchHealth: '/match-health',
+  status: '/status',
   settings: '/settings',
   trash: '/trash',
+};
+
+/* C47 Del 6 — gamla URL:er pekar vidare till de sammanslagna sidorna. */
+export const REDIRECTS = {
+  '/review': '/travel-tinder?mode=review',
+  '/match': '/travel-tinder?mode=match',
+  '/log': '/status',
+  '/match-health': '/status?tab=match-health',
 };
 
 export function routeForView(view) {
@@ -22,18 +27,12 @@ export function viewForPath(path) {
   switch (path) {
     case '/':
       return 'dashboard';
-    case '/review':
-      return 'review';
-    case '/match':
-      return 'match';
     case '/travel-tinder':
       return 'travelTinder';
     case '/trips':
       return 'trips';
-    case '/log':
-      return 'log';
-    case '/match-health':
-      return 'matchHealth';
+    case '/status':
+      return 'status';
     case '/settings':
       return 'settings';
     case '/trash':

@@ -38,6 +38,7 @@ def fix_dates_once(db: Session) -> dict | None:
 def run_all(db: Session) -> dict:
     from app.services.refunds import seed_finnair_refund
     from app.services.subscriptions import seed_subscriptions
+    from app.services.c47_cleanup import run_once
     from app.services.waiting_receipts import adopt_gmail_receipts
 
     out: dict = {}
@@ -45,6 +46,7 @@ def run_all(db: Session) -> dict:
         ("subscriptions", lambda: seed_subscriptions(db)),
         ("finnair_refund", lambda: seed_finnair_refund(db)),
         ("dates", lambda: fix_dates_once(db)),
+        ("cleanup", lambda: run_once(db)),
         ("waiting_cutoff", lambda: adopt_gmail_receipts(db)),
     ):
         try:
