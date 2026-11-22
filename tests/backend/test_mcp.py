@@ -281,6 +281,8 @@ def test_valid_token_works(env):
         # C47
         "list_pending_decisions", "decide", "undo_last_decision", "expect_refund",
         "list_subscriptions",
+        # C49
+        "get_netvisor_entry", "list_netvisor_status", "set_netvisor_status",
     }
 
 
