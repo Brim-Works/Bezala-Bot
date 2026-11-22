@@ -550,7 +550,7 @@ async def inspect_bezala_transaction(transaction_id: str | None = None,
     """Read-only (GET only): a Bezala transaction's `state` and key fields, to
     compare a draft with an expense waiting for approval. Give transaction_id, or
     bill_line_id to find the transaction that references that card line. Draft =
-    state "unapproved"; waiting for approval = "reviewing" (docs/bezala_states.md).
+    state "draft"; waiting for approval = "reviewing" (docs/bezala_states.md).
     Nothing is written to Bezala."""
     import asyncio
 
@@ -594,6 +594,66 @@ async def get_c50_rerun_report(run_again: bool = False) -> dict:
                          "probably_handled_elsewhere")}}
 
     return await _run(work)
+
+
+# ---------- C52 ----------
+
+
+@mcp.tool()
+async def run_bolt_description_test() -> dict:
+    """C52 Del 1 - the ONE description test Mikko approved on 2026-11-22 12:30:
+    PUT Bezala transaction 5579365 with only
+    {"description": "Bolt.new Pro subscription, 16 November 2026"}, through the
+    write guard (read before/after, kill switch if the status changes). No
+    `state`, no other field, no other transaction. Runs at most once; returns
+    state, approvers and description before and after."""
+    from app.services.c52 import run_bolt_test
+
+    return await _run(run_bolt_test)
+
+
+@mcp.tool()
+async def get_vat_read_report(message_ids: list[str] | None = None,
+                              reread: bool = False) -> dict:
+    """C52 Del 3 - read-only report of VAT reading from receipts (last 90 days):
+    how many receipts have VAT read, how many were read without VAT found, and
+    which are not read yet and why. message_ids shows those receipts in detail.
+    reread=True reads the VAT again for receipts without it (changes only Bezala
+    Bot's own vat_info - nothing is written to Bezala) and logs each result."""
+    from app.services.c52 import reread_vat, vat_report
+
+    def work(db):
+        out = {}
+        if reread:
+            out["reread"] = reread_vat(db)
+        out.update(vat_report(db, message_ids))
+        return out
+
+    return await _run(work)
+
+
+@mcp.tool()
+async def list_already_handled_candidates() -> dict:
+    """C52 Del 4 - DRY RUN, changes nothing: receipts with status 'saved', no
+    waiting status and no Bezala transaction (shown in no list) matched against
+    Mikko's expenses in Bezala (date +-1 day, amount incl. NOK/SEK vs EUR with
+    tolerance, vendor). 'matches' = date+amount+vendor, 'amount_and_date_only' =
+    vendor not found in the description. Show the list to Mikko before anything
+    is applied with mark_already_handled."""
+    from app.services.c52 import find_matches
+
+    return await _run(find_matches)
+
+
+@mcp.tool()
+async def mark_already_handled(message_ids: list[str]) -> dict:
+    """C52 Del 4 - ONLY after Mikko said yes to the dry-run list: sets Bezala
+    Bot's own status 'already_handled_in_bezala' on these receipts (must be in
+    the current list_already_handled_candidates result). Nothing is written to
+    Bezala."""
+    from app.services.c52 import apply_already_handled
+
+    return await _run(apply_already_handled, message_ids)
 
 
 # ---------- C48 ----------

@@ -220,9 +220,10 @@ def _description_to_paste(row: ProcessedMessage, line: CardLine | None) -> str |
 def _account_suggestion(row: ProcessedMessage, line: CardLine | None) -> dict:
     from app.services.c50_accounts import suggest_account
 
-    return suggest_account(row.vendor, row.sender, row.subject,
-                           line.description if line is not None else None,
-                           row.ai_description_en, category=row.category)
+    return suggest_account(row.vendor, row.sender, row.subject, row.ai_description_en,
+                           category=row.category,
+                           card_description=(line.description if line is not None
+                                             else row.bezala_payment_merchant))
 
 
 def _bezala_fill(row: ProcessedMessage, line: CardLine | None,
