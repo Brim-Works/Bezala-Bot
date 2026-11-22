@@ -152,3 +152,12 @@
   overflow-wrap: anywhere;
 }
 .m-footer a { color: inherit; }
+
+/* C51 — konto/moms/kostnadsställe/beskrivning med kopieringsknapp */
+.m-fill { display: flex; flex-direction: column; gap: 6px; border-top: 1px solid var(--border); padding-top: 8px; }
+.m-fill__row { display: grid; grid-template-columns: 7.5em minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.m-fill__label { color: var(--muted); font-size: 13px; }
+.m-fill__value { font-size: 13px; overflow-wrap: anywhere; white-space: normal; }
+.m-copy { padding: 4px 10px; font-size: 13px; min-height: 0; }
+.m-fill__rule { font-size: 12px; }
+.m-fill__flags { margin: 0; padding-left: 0; list-style: none; font-size: 13px; color: var(--warning, #b45309); }

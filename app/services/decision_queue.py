@@ -124,9 +124,12 @@ def _receipt_items(db: Session) -> list[dict]:
         trip = _trip_for_date(trips, c.txn_date)
         amount_missing = m.amount is None
         # C50 — kontoförslag + beskrivning att klistra in (skrivs inte via API).
-        from app.services.card_line_coupling import _account_suggestion, _description_to_paste
+        from app.services.card_line_coupling import (
+            _account_suggestion, _bezala_fill, _description_to_paste,
+        )
 
         account = _account_suggestion(m, c)
+        fill = _bezala_fill(m, c, account)
         warning = ("Amount missing - open the receipt before coupling"
                    if amount_missing else None)
         if account.get("missing"):
@@ -142,7 +145,9 @@ def _receipt_items(db: Session) -> list[dict]:
             "warning": warning,
             "account": account,
             "account_missing": bool(account.get("missing")),
-            "description_to_paste": _description_to_paste(m, c),
+            "description_to_paste": fill["description"] or _description_to_paste(m, c),
+            # C51 — konto → moms → kostnadsställe → beskrivning med kopieringsknapp.
+            "bezala_fill": fill,
             "yes_label": "Couple",
             "no_label": "Not this pair",
             "date": c.txn_date.isoformat() if c.txn_date else None,

@@ -44,7 +44,15 @@ SYSTEM_PROMPT = (
     'Datakommunikation | Böcker | Utbildning | Representation | '
     'Kontorsmaterial | Annat",\n'
     '  "summary": "kort beskrivning på svenska",\n'
-    '  "description_en": "vendor + place/purpose + date på engelska"\n'
+    '  "description_en": "vendor + place/purpose + date på engelska",\n'
+    '  "vat": {\n'
+    '    "lines": [{"rate": 25.5, "net": 10.0, "vat": 2.55, "gross": 12.55}],\n'
+    '    "reverse_charge": bool,\n'
+    '    "finnish_vat_charged": bool,\n'
+    '    "seller_country": "ISO-2, t.ex. FI/SE/US" eller null,\n'
+    '    "purchase_country": "ISO-2 där köpet gjordes/tjänsten utfördes" eller null,\n'
+    '    "document": "receipt | invoice | card_slip | hotel_folio | other"\n'
+    "  }\n"
     "}\n\n"
     "Regler:\n"
     "- Svenska filnamn och sammanfattningar.\n"
@@ -67,7 +75,16 @@ SYSTEM_PROMPT = (
     "- Tvåsiffrigt år (t.ex. 26.11.25) eller datum utan år: utgå från\n"
     "  mailets mottagningsdatum — kvittot är nästan alltid från samma år\n"
     "  eller månaderna strax före. Gissa aldrig ett år långt bakåt.\n"
-    "- confidence speglar hur säker du är på att detta är ett kvitto/utläggsunderlag.\n\n"
+    "- confidence speglar hur säker du är på att detta är ett kvitto/utläggsunderlag.\n"
+    "- vat: läs momsen EXAKT från dokumentet. lines = en rad per momssats som\n"
+    "  står på kvittot (rate i procent, belopp om de syns, annars null). Ingen\n"
+    "  momsspecifikation på kvittot → lines = []. Gissa aldrig en sats.\n"
+    "  reverse_charge = true bara om fakturan säger reverse charge / omvänd\n"
+    "  skattskyldighet / käännetty verovelvollisuus. finnish_vat_charged = true\n"
+    "  om fakturan tar finsk moms (t.ex. 'VAT FI 25.5%', 'ALV 25,5 %' med finskt\n"
+    "  VAT-nummer/OSS). document = card_slip för en ren kortbetalningsslip\n"
+    "  (bara belopp/kort, ingen specifikation); hotel_folio för hotellets\n"
+    "  specificerade nota.\n\n"
     "Kategori-vägledning (välj EN — använd 'Annat' bara om inget annat passar):\n"
     "- Flyg: Finnair, SAS, Norwegian, KLM, Lufthansa etc.\n"
     "- Tåg: SJ, Snälltåget, MTR Express, VR (finska järnvägen), DB.\n"
@@ -220,6 +237,8 @@ class ReceiptAnalysis:
     description_en: str | None = None
     # C47 — datumet var orimligt mot mottagningsdatumet och har rättats.
     date_corrected: bool = False
+    # C51 — momsen som den står på kvittot (se normalize_vat_info).
+    vat_info: dict | None = None
 
 
 def _sanitize_filename(name: str) -> str:
@@ -375,7 +394,7 @@ class ReceiptAnalyzer:
         try:
             resp = self._client.messages.create(
                 model=self._model,
-                max_tokens=800,
+                max_tokens=1200,
                 system=system_prompt,
                 messages=[
                     {
@@ -503,7 +522,45 @@ def _normalize(
         summary=summary,
         description_en=description_en,
         date_corrected=date_corrected,
+        vat_info=normalize_vat_info(payload.get("vat")),
     )
+
+
+def normalize_vat_info(raw) -> dict | None:
+    """C51 — städa AI:ns moms-objekt. Okända värden blir None/[]."""
+    if not isinstance(raw, dict):
+        return None
+
+    def num(v):
+        try:
+            return round(float(str(v).replace(",", ".").rstrip("%").strip()), 2)
+        except (TypeError, ValueError):
+            return None
+
+    lines = []
+    for ln in raw.get("lines") or []:
+        if not isinstance(ln, dict):
+            continue
+        rate = num(ln.get("rate"))
+        if rate is None or not (0 <= rate <= 30):
+            continue
+        lines.append({"rate": rate, "net": num(ln.get("net")), "vat": num(ln.get("vat")),
+                      "gross": num(ln.get("gross"))})
+
+    def cc(v):
+        v = str(v or "").strip().upper()
+        return v if re.fullmatch(r"[A-Z]{2}", v) else None
+
+    doc = str(raw.get("document") or "").strip().lower()
+    return {
+        "lines": lines[:6],
+        "reverse_charge": bool(raw.get("reverse_charge")),
+        "finnish_vat_charged": bool(raw.get("finnish_vat_charged")),
+        "seller_country": cc(raw.get("seller_country")),
+        "purchase_country": cc(raw.get("purchase_country")),
+        "document": doc if doc in ("receipt", "invoice", "card_slip", "hotel_folio", "other")
+        else None,
+    }
 
 
 def build_fallback_filename(

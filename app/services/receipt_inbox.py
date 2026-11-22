@@ -140,6 +140,7 @@ def ingest_receipt_file(
         category=analysis.category if analysis else None,
         summary=analysis.summary if analysis else None,
         ai_description_en=analysis.description_en if analysis else None,
+        vat_info=getattr(analysis, "vat_info", None) if analysis else None,
         ai_confidence=analysis.confidence if analysis else None,
         bezala_upload_status="pending",
         payment_method="company_card",

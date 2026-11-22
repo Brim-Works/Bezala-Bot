@@ -108,6 +108,11 @@ _PROCESSED_MESSAGES_ADDITIONS.update({
     "review_flag": "VARCHAR(64)",
 })
 
+# C51 — momsen från kvittot.
+_PROCESSED_MESSAGES_ADDITIONS.update({
+    "vat_info": "JSON",
+})
+
 _AI_FEEDBACK_ADDITIONS = {
     # FAS 8.1.1 — subject sparas på not_a_receipt-rader så AI:n kan
     # skilja olika mail-typer från samma avsändare.

@@ -386,7 +386,7 @@ class BezalaClient:
             "POST",
             "/attachments",
             files={"file": (filename, pdf_bytes, "application/pdf")},
-            data={"draft": "1", "state": "unapproved"},
+            data={"draft": "1"},  # C51 — aldrig `state` i en skrivning
         )
         if resp.status_code >= 400:
             raise BezalaError(
@@ -422,7 +422,7 @@ class BezalaClient:
         try:
             guard.verify_new_draft(
                 self, transaction_id,
-                fields={"attachment": filename, "draft": "1", "state": "unapproved"},
+                fields={"attachment": filename, "draft": "1"},
                 operation="upload_file_as_draft",
             )
         except guard.BezalaWriteBlocked as exc:
@@ -744,9 +744,9 @@ class BezalaClient:
         # C50 — exakt samma formulär som Bolt-kopplingen (låg kvar som
         # utkast), men UTAN description: beskrivningen skrivs inte via API
         # förrän det verifierats säkert. Förslaget ligger kvar i boten.
+        # C51 — `state` skickas aldrig (hårdregel).
         form: dict[str, Any] = {
             "draft": "1",
-            "state": "unapproved",
             "bill_line_id": str(bill_line_id),
         }
         guard.check_fields(form, guard.ALLOWED_ATTACHMENT_FORM_FIELDS)

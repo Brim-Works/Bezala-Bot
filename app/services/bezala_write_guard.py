@@ -40,10 +40,21 @@ ALLOWED_TRANSACTION_FIELDS = frozenset({
     "cost_lines_attributes", "transaction_lines_attributes",
 })
 
-# Fält i POST /attachments-formuläret (kvitto/bilaga). `draft=1` och
-# `state=unapproved` är exakt det formulär som Bolt-kopplingen (utkast kvar)
-# använde. `description` skickas inte längre.
-ALLOWED_ATTACHMENT_FORM_FIELDS = frozenset({"draft", "state", "bill_line_id", "transaction_id"})
+# Fält i POST /attachments-formuläret (kvitto/bilaga). C51: `state` skickas
+# ALDRIG i någon skrivning (Arlanda m.fl. fick `state=unapproved` i både POST
+# och PUT och hamnade i `reviewing`). `description` skickas inte heller.
+ALLOWED_ATTACHMENT_FORM_FIELDS = frozenset({"draft", "bill_line_id", "transaction_id"})
+
+# C51 — fält som aldrig får finnas i en skrivning, oavsett lista.
+FORBIDDEN_WRITE_FIELDS = frozenset({"state", "status", "workflow_state", "approval_status",
+                                    "approval_state", "submit", "submitted"})
+
+# C51 — Bezalas `state` (se docs/bezala_states.md). Läst med GET 2026-11-22:
+#   "unapproved" = Utkast (inte skickat för attest)
+#   "reviewing"  = Väntar på (andras) attestering
+# Skrivning tillåts BARA när transaktionen har ett utkast-state. Saknas
+# state-fältet, eller är värdet något annat, nekas skrivningen.
+DRAFT_STATES = frozenset({"unapproved"})
 
 # Statusrelaterade fält vi jämför före/efter.
 STATUS_FIELDS = (
@@ -198,7 +209,8 @@ def kill_switch_status(db=None) -> dict:
 
 
 def check_fields(fields: dict[str, Any], allowed=ALLOWED_TRANSACTION_FIELDS) -> None:
-    denied = sorted(k for k in (fields or {}) if k not in allowed)
+    denied = sorted(k for k in (fields or {})
+                    if k not in allowed or k in FORBIDDEN_WRITE_FIELDS)
     if denied:
         raise BezalaWriteBlocked(f"Bezala write refused - field(s) not allowed: {denied}")
 
@@ -234,6 +246,17 @@ def is_definitely_not_draft(snapshot: dict) -> bool:
         if snapshot.get(key):
             return True
     return False
+
+
+def draft_state(snapshot: dict) -> str | None:
+    v = (snapshot or {}).get("state")
+    return v.strip().lower() if isinstance(v, str) else None
+
+
+def is_draft(snapshot: dict) -> bool:
+    """C51 — tillåtelselista: bara `state` i DRAFT_STATES räknas som utkast.
+    Saknas state → inte utkast (skrivningen nekas)."""
+    return draft_state(snapshot) in DRAFT_STATES and not is_definitely_not_draft(snapshot)
 
 
 def status_changed(before: dict, after: dict) -> list[str]:
@@ -292,7 +315,9 @@ def verify_new_draft(client, transaction_id, *, bill_line_id=None,
                      bill_line_id=bill_line_id, fields=fields, outcome="ok",
                      detail=f"post-read failed: {exc}", db=db)
         return {}
-    if is_definitely_not_draft(after):
+    left = is_definitely_not_draft(after) or (
+        draft_state(after) is not None and draft_state(after) not in DRAFT_STATES)
+    if left:
         record_write(operation=operation, transaction_id=transaction_id,
                      bill_line_id=bill_line_id, fields=fields, after=after,
                      outcome="status_changed", detail="new transaction is not a draft", db=db)
@@ -312,16 +337,19 @@ def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None) -> d
     check_fields(fields)
     ensure_writes_allowed(db)
     before = status_snapshot(client.get_transaction(transaction_id))
-    if is_definitely_not_draft(before):
+    if not is_draft(before):
         record_write(operation="put", transaction_id=transaction_id, fields=fields,
-                     before=before, outcome="blocked", detail="not a draft before PUT", db=db)
+                     before=before, outcome="blocked",
+                     detail=f"state {draft_state(before)!r} is not a draft state - PUT refused",
+                     db=db)
         raise BezalaWriteBlocked(
-            f"Bezala transaction {transaction_id} is not a draft - not writing to it."
+            f"Bezala transaction {transaction_id} is not a draft "
+            f"(state={draft_state(before)!r}, draft = {sorted(DRAFT_STATES)}) - not writing to it."
         )
     result = client._put_transaction_unchecked(transaction_id, fields)
     after = status_snapshot(client.get_transaction(transaction_id))
     changed = status_changed(before, after)
-    if changed or is_definitely_not_draft(after):
+    if changed or not is_draft(after):
         record_write(operation="put", transaction_id=transaction_id, fields=fields,
                      before=before, after=after, outcome="status_changed",
                      detail=f"changed: {changed}", db=db)

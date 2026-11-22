@@ -88,7 +88,7 @@ class UploadReceiptTest(unittest.TestCase):
         put_resp.status_code = 200
         put_resp.headers = {"content-type": "application/json"}
         put_resp.text = '{"id": 2804}'
-        put_resp.json = MagicMock(return_value={"id": 2804})
+        put_resp.json = MagicMock(return_value={"id": 2804, "state": "unapproved"})
 
         def fake_request(method, url, **kwargs):
             calls.append({
@@ -137,7 +137,7 @@ class UploadReceiptTest(unittest.TestCase):
         self.assertEqual(mime, "application/pdf")
         # FAS 5.28 (C21) — state="unapproved" skickas i CREATE-formen
         # så att Bezala aldrig defaultar nya drafter till "reviewing".
-        self.assertEqual(step1["data"], {"draft": "1", "state": "unapproved"})
+        self.assertEqual(step1["data"], {"draft": "1"})  # C51 — aldrig state
 
         # C50 — steg 2 är en LÄSNING (GET) som verifierar att utkastet
         # ligger kvar. Metadata-PUT är av (BEZALA_METADATA_PUT_ENABLED).
@@ -220,7 +220,7 @@ class UploadReceiptTest(unittest.TestCase):
         self.assertEqual(captured["method"], "POST")
         self.assertTrue(captured["url"].endswith("/attachments"))
         # FAS 5.28 (C21) — state="unapproved" i CREATE-formen.
-        self.assertEqual(captured["data"], {"draft": "1", "state": "unapproved"})
+        self.assertEqual(captured["data"], {"draft": "1"})  # C51 — aldrig state
         self.assertIn("file", captured["files"])
         fname, bytes_, mime = captured["files"]["file"]
         self.assertEqual(fname, "kvitto.pdf")

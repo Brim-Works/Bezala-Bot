@@ -545,6 +545,21 @@ async def list_bot_bezala_writes(days: int = 14) -> dict:
 
 
 @mcp.tool()
+async def inspect_bezala_transaction(transaction_id: str | None = None,
+                                     bill_line_id: str | None = None) -> dict:
+    """Read-only (GET only): a Bezala transaction's `state` and key fields, to
+    compare a draft with an expense waiting for approval. Give transaction_id, or
+    bill_line_id to find the transaction that references that card line. Draft =
+    state "unapproved"; waiting for approval = "reviewing" (docs/bezala_states.md).
+    Nothing is written to Bezala."""
+    import asyncio
+
+    from app.services.c51_bezala_inspect import inspect as _inspect
+
+    return await asyncio.to_thread(_inspect, transaction_id, bill_line_id)
+
+
+@mcp.tool()
 async def list_probably_handled_receipts() -> dict:
     """Read-only review list (not the swipe queue): receipts older than 14 days
     without an open company card line and without a match in Bezala - probably

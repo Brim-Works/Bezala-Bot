@@ -185,7 +185,8 @@ function QueueCard({ item, busy, onDecide }) {
         <div className="m-warning" role="alert" data-testid="queue-card-warning">⚠ {item.warning}</div>
       )}
       <CardBody item={item} />
-      {item.kind === 'receipt' && (item.account || item.description_to_paste) && (
+      {item.kind === 'receipt' && item.bezala_fill && <BezalaFill fill={item.bezala_fill} />}
+      {item.kind === 'receipt' && !item.bezala_fill && (item.account || item.description_to_paste) && (
         <div className="m-muted" data-testid="queue-card-bezala-fill">
           {item.account && !item.account.missing && (
             <div>Konto: {item.account.name || item.account.account_id}
@@ -208,6 +209,62 @@ function QueueCard({ item, busy, onDecide }) {
           {labels.yes || item.yes_label} →
         </button>
       </div>
+    </div>
+  );
+}
+
+/* C51 — konto → moms → kostnadsställe → beskrivning. Metadata skrivs inte
+ * till Bezala just nu, så Mikko kopierar varje fält själv. */
+const FILL_FIELDS = [
+  ['account', 'Konto'],
+  ['vat', 'Moms'],
+  ['cost_center', 'Kostnadsställe'],
+  ['description', 'Beskrivning'],
+];
+
+function CopyButton({ text, label }) {
+  const [done, setDone] = useState(false);
+  const copy = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      document.body.appendChild(ta);
+      ta.select();
+      try { document.execCommand('copy'); } catch { /* ignore */ }
+      document.body.removeChild(ta);
+    }
+    setDone(true);
+    setTimeout(() => setDone(false), 1500);
+  };
+  return (
+    <button type="button" className="m-btn m-btn--ghost m-copy" aria-label={`Kopiera ${label}`}
+      onPointerDown={(e) => e.stopPropagation()} onClick={copy}>
+      {done ? 'Kopierat' : 'Kopiera'}
+    </button>
+  );
+}
+
+function BezalaFill({ fill }) {
+  const copy = fill.copy || {};
+  return (
+    <div className="m-fill" data-testid="queue-card-bezala-fill">
+      <div className="m-muted">Fyll i Bezala (skrivs inte automatiskt):</div>
+      {FILL_FIELDS.map(([key, label]) => (
+        <div key={key} className="m-fill__row" data-testid={`fill-${key}`}>
+          <span className="m-fill__label">{label}</span>
+          <code className="m-fill__value">{copy[key] || '—'}</code>
+          {copy[key] ? <CopyButton text={copy[key]} label={label} /> : null}
+        </div>
+      ))}
+      {fill.vat_rule && <div className="m-muted m-fill__rule">Momsregel {fill.vat_rule}</div>}
+      {(fill.flags || []).length > 0 && (
+        <ul className="m-fill__flags" data-testid="fill-flags">
+          {fill.flags.map((f) => <li key={f}>⚠ {f}</li>)}
+        </ul>
+      )}
     </div>
   );
 }

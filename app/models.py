@@ -108,6 +108,8 @@ class ProcessedMessage(Base):
     waiting_since = Column(DateTime, nullable=True)
     # C47 Del 6 — t.ex. 'date_corrected' (AI-datum utanför rimligt fönster).
     review_flag = Column(String(64), nullable=True)
+    # C51 — momsen som den står på kvittot (rates, reverse charge, land, kortslip).
+    vat_info = Column(JSON, nullable=True)
 
 
 class SavedFile(Base):

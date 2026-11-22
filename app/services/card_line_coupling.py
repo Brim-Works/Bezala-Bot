@@ -206,6 +206,7 @@ def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
         "bezala_description_written": False,
         "description_to_paste": _description_to_paste(row, line),
         "account_suggestion": _account_suggestion(row, line),
+        "bezala_fill": _bezala_fill(row, line),
     }
 
 
@@ -220,7 +221,26 @@ def _account_suggestion(row: ProcessedMessage, line: CardLine | None) -> dict:
     from app.services.c50_accounts import suggest_account
 
     return suggest_account(row.vendor, row.sender, row.subject,
-                           line.description if line is not None else None)
+                           line.description if line is not None else None,
+                           row.ai_description_en, category=row.category)
+
+
+def _bezala_fill(row: ProcessedMessage, line: CardLine | None,
+                 account: dict | None = None) -> dict:
+    """C51 — konto, moms, kostnadsställe och beskrivning att klistra in i
+    Bezala (skrivs inte via API)."""
+    from app.services.c51_vat import bezala_fill
+
+    return bezala_fill(
+        account=account if account is not None else _account_suggestion(row, line),
+        category=row.category,
+        texts=[row.vendor, row.sender, row.subject, row.ai_description_en, row.file_name],
+        card_description=line.description if line is not None else row.bezala_payment_merchant,
+        card_amount=(line.amount if line is not None else row.bezala_payment_amount),
+        receipt_date=(line.txn_date if line is not None and line.txn_date else row.receipt_date),
+        vat_info=row.vat_info, flight_segments=row.flight_segments,
+        description=_description_to_paste(row, line),
+    )
 
 
 # ---------- get_card_line ----------
@@ -319,6 +339,15 @@ def get_card_line(db: Session, bill_line_id: str, scan_bezala: bool = True) -> d
             info["score_breakdown"] = s["breakdown"]
         receipts.append(info)
     out["coupled_receipts"] = receipts
+    if scan_bezala:
+        # C51 Del 1 — Bezala-transaktionen för kortraden och dess `state`
+        # (endast GET). "unapproved" = utkast, "reviewing" = väntar på attest.
+        try:
+            from app.services.c51_bezala_inspect import inspect
+
+            out["bezala_transaction"] = inspect(bill_line_id=bid)
+        except Exception as exc:  # noqa: BLE001
+            out["bezala_transaction"] = {"error": str(exc)[:300]}
     if line is not None and line.status == "missing":
         sugg = suggest_receipts(db, [line]).get(bid)
         out["suggested_receipt"] = sugg

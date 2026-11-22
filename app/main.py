@@ -302,6 +302,10 @@ async def lifespan(app: FastAPI):
     _run_c48_migrations()
     if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":
         _run_c50_rerun()
+        # C51 — läs momsen från öppna kvitton (en gång, i bakgrunden).
+        from app.services.c51_migrations import start_in_background as _c51_vat
+
+        _c51_vat()
     # C46 Del 4 — läs om jobb-Gmail 2026 (torrläge, sedan riktigt). En gång.
     if settings.scan_enabled and os.environ.get("C46_RESCAN_ENABLED", "true").lower() != "false":
         from app.services.c46_rescan import start_background as _c46_rescan
@@ -1575,6 +1579,7 @@ async def upload_manual_receipt(
         category=analysis.category if analysis else None,
         summary=analysis.summary if analysis else None,
         ai_description_en=analysis.description_en if analysis else None,
+        vat_info=getattr(analysis, "vat_info", None) if analysis else None,
         ai_confidence=analysis.confidence if analysis else None,
         bezala_upload_status="pending",
         payment_method="company_card",
@@ -3316,6 +3321,23 @@ def _do_match_to_bezala(
             "(fortsätter utan snapshot)",
             bill_line_id,
         )
+
+    # C51 regel 8 — ett köpkvitto (positivt belopp) kopplas aldrig mot en
+    # negativ kortrad (återbetalning). Hände med Finnair 134,48.
+    from app.services.c51_vat import refund_coupling_error
+
+    _line_amount = (bill_line_snapshot or {}).get("amount")
+    if _line_amount is None:
+        from app.models import CardLine as _CardLine
+
+        _cl = db.query(_CardLine).filter(_CardLine.bill_line_id == str(bill_line_id)).first()
+        _line_amount = _cl.amount if _cl is not None else None
+    _refund_err = refund_coupling_error(
+        _line_amount, row.amount, row.subject, row.file_name, row.ai_description_en, row.summary,
+    )
+    if _refund_err:
+        raise HTTPException(status_code=422, detail={"error": "refund_mismatch",
+                                                     "message": _refund_err})
 
     raw_bytes = drive.download_pdf(row.drive_file_id)
     logger.info(
