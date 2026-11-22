@@ -4,8 +4,9 @@ Kontoförslag (gissar aldrig):
 1. Mikkos fasta regel: AI-verktyg (Cursor, Lovable, Anthropic/Claude,
    Bolt/StackBlitz, OpenAI/ChatGPT, Midjourney) → "AI työkalut".
 2. Annars: konto, momskod och kostnadsställe från Mikkos SENASTE egna utlägg
-   för samma leverantör i Bezala (läses, cachas av kortradssynken).
-3. Annars: inget konto → flagga "Account missing" i svep-kön.
+   för SAMMA leverantör i Bezala (C52: bara samma leverantör).
+3. Annars: Mikkos kontoregler (resor, parkering, taxi, hotell, bil).
+4. Annars: inget konto → flagga "Account missing" i svep-kön.
 
 Metadata skrivs INTE till Bezala (Del 0: PUT är av) — förslaget visas i
 svep-kön så Mikko sätter det själv.
@@ -115,16 +116,6 @@ def account_by_id(accounts: Iterable[dict], acc_id) -> dict | None:
     return None
 
 
-def _vendor_words(*texts: str | None) -> set[str]:
-    words = set()
-    for t in texts:
-        for w in re.findall(r"[a-zåäö0-9]{4,}", (t or "").lower()):
-            if w not in {"mikko", "keinonen", "receipt", "invoice", "kuitti", "kvitto",
-                         "helsinki", "stockholm", "subscription", "payment"}:
-                words.add(w)
-    return words
-
-
 def _tx_date(tx: dict) -> str:
     return str(tx.get("date") or tx.get("created_at") or "")
 
@@ -137,41 +128,142 @@ def _tx_lines(tx: dict) -> list[dict]:
     return []
 
 
-def latest_own_expense(transactions: Iterable[dict], *vendor_texts: str | None) -> dict | None:
-    """Senaste utlägget i Bezala vars text innehåller leverantörens ord och
-    som har ett riktigt konto (inte standardkontot)."""
-    words = _vendor_words(*vendor_texts)
-    if not words:
+# C52 — Mikkos kontoregler per leverantör/typ (gäller när det inte finns ett
+# utlägg från SAMMA leverantör). Ordningen spelar roll: AI-verktyg hanteras
+# före (Bolt.new), Bolt-taxi fångas av taxiregeln.
+ACCOUNT_TICKETS = "Matkaliput"
+ACCOUNT_PARKING = "Paikoituskulut"
+ACCOUNT_TAXI = "Taksikulut"
+ACCOUNT_HOTEL = "Hotelli- ym. majoitus"
+ACCOUNT_CAR = "Muut ajoneuvokulut"
+# Får aldrig föreslås (Mikko 2026-11-22).
+NEVER_SUGGEST = frozenset({"tiliöimättömät ostolaskut"})
+
+VENDOR_RULES: tuple[tuple[re.Pattern, str], ...] = (
+    (re.compile(r"car ?wash|biltvätt|autopesu|tjänstebil|company car|työsuhdeauto", re.I),
+     ACCOUNT_CAR),
+    (re.compile(r"moovy|parking|parkering|pysäköinti|easypark|aimo ?park|europark|q-park|apcoa",
+                re.I), ACCOUNT_PARKING),
+    (re.compile(r"\btaxi|\btaksi|\buber\b|\bbolt\b|cabonline|yango|lähitaksi|taxi ?kurir",
+                re.I), ACCOUNT_TAXI),
+    (re.compile(r"flytoget|sk[aå]netrafiken|arlanda ?express|finnair|\bsas\b|norwegian|"
+                r"ryanair|lufthansa|airbaltic|\bklm\b|\bvy\b|\bsj\b|\bvr\b|flixbus|"
+                r"onnibus|v[aä]sttrafik|ruter|\bhsl\b|airline|\bflight|\btrain\b|"
+                r"\bbus\b|\bt[aå]g\b", re.I), ACCOUNT_TICKETS),
+    (re.compile(r"hotel|hotelli|scandic|clarion|radisson|hilton|marriott|sokos|\belite\b|"
+                r"comfort hotel|quality hotel|best western|nordic choice|strawberry|"
+                r"booking\.com|\bhostel", re.I), ACCOUNT_HOTEL),
+)
+
+_GENERIC_VENDOR_WORDS = frozenset({
+    "the", "www", "com", "oy", "oyj", "ab", "as", "asa", "ltd", "inc", "llc", "gmbh",
+    "mikko", "keinonen", "receipt", "invoice", "kuitti", "kvitto", "payment", "app",
+})
+
+
+def _norm(text: str | None) -> str:
+    import unicodedata
+
+    t = unicodedata.normalize("NFKD", (text or "").lower())
+    return "".join(ch for ch in t if not unicodedata.combining(ch))
+
+
+def vendor_key(vendor: str | None) -> str | None:
+    """Leverantörens nyckelord: första distinkta ordet i leverantörsnamnet
+    ("Skånetrafiken" → "skanetrafiken", "Scandic Oslo City" → "scandic")."""
+    for w in re.findall(r"[a-z0-9]+", _norm(vendor)):
+        if len(w) >= 3 and w not in _GENERIC_VENDOR_WORDS and not w.isdigit():
+            return w
+    return None
+
+
+def _tx_vendor_text(tx: dict) -> str:
+    """Utläggets leverantör: leverantörsfälten + de tre första orden i
+    beskrivningen ("Moovy parking at ..."). Ord längre in räknas inte
+    ("Parking for the Finnair flight" är inte ett Finnair-utlägg)."""
+    head = " ".join(re.findall(r"[a-z0-9.]+", _norm(str(tx.get("description") or "")))[:3])
+    fields = " ".join(str(tx.get(k) or "") for k in (
+        "vendor_name", "merchant", "bill_line_description"))
+    v = tx.get("vendor")
+    if isinstance(v, dict):
+        fields += " " + str(v.get("name") or "")
+    elif isinstance(v, str):
+        fields += " " + v
+    return head + " " + _norm(fields)
+
+
+def _never(name: str | None) -> bool:
+    return (name or "").strip().casefold() in NEVER_SUGGEST
+
+
+def latest_own_expense(transactions: Iterable[dict], vendor: str | None,
+                       accounts: Iterable[dict] | None = None) -> dict | None:
+    """C52 — senaste utlägget i Bezala från SAMMA leverantör (leverantörens
+    nyckelord som eget ord i utläggets text) med ett riktigt konto. Andra
+    leverantörer räknas aldrig (prod 2026-11-22: en Moovy-parkering blev
+    förslag för Flytoget, Finnair och Skånetrafiken)."""
+    key = vendor_key(vendor)
+    if not key:
         return None
+    pat = re.compile(r"\b" + re.escape(key) + r"\b")
     best = None
     for tx in transactions or []:
-        if not isinstance(tx, dict):
-            continue
-        text = " ".join(str(tx.get(k) or "") for k in ("description", "vendor", "merchant",
-                                                        "bill_line_description")).lower()
-        if not any(w in text for w in words):
+        if not isinstance(tx, dict) or not pat.search(_tx_vendor_text(tx)):
             continue
         lines = _tx_lines(tx)
         acc = (lines[0].get("expense_account_id") if lines else None) or tx.get("account_id")
         if not acc:
+            continue
+        a = account_by_id(accounts or [], acc)
+        if a is not None and _never(a.get("name")):
             continue
         if best is None or _tx_date(tx) > _tx_date(best):
             best = tx
     return best
 
 
+def rule_account(category: str | None, vendor_texts: Iterable[str | None],
+                 other_texts: Iterable[str | None] = ()) -> tuple[str | None, str | None]:
+    """(kontonamn, källa) enligt Mikkos regler: leverantör/kortrad först,
+    sedan kvittots kategori, sist övriga texter (ämne, beskrivning)."""
+    from app.services.c51_vat import CATEGORY_ACCOUNTS
+
+    hay = " ".join(t or "" for t in vendor_texts)
+    for rx, name in VENDOR_RULES:
+        if rx.search(hay):
+            return name, f"rule: {name} (vendor)"
+    if category and CATEGORY_ACCOUNTS.get(category):
+        name = CATEGORY_ACCOUNTS[category]
+        return name, f"rule: category {category}"
+    hay2 = " ".join(t or "" for t in other_texts)
+    for rx, name in VENDOR_RULES:
+        if rx.search(hay2):
+            return name, f"rule: {name} (receipt text)"
+    return None, None
+
+
 def suggest_account(*vendor_texts: str | None, accounts: list[dict] | None = None,
                     transactions: list[dict] | None = None,
-                    category: str | None = None) -> dict:
+                    category: str | None = None,
+                    card_description: str | None = None) -> dict:
+    """C52 — första texten är leverantören. Ordning:
+    1. AI-verktyg → "AI työkalut".
+    2. Senaste utlägg från SAMMA leverantör (aldrig "Tiliöimättömät ostolaskut").
+    3. Mikkos regler (leverantör/kortrad, kategori, övrig text).
+    4. "Account missing" - gissar aldrig."""
     if accounts is None or transactions is None:
         acc_c, tx_c = reference()
         accounts = acc_c if accounts is None else accounts
         transactions = tx_c if transactions is None else transactions
-    if is_ai_tool(*vendor_texts):
+    texts = [t for t in vendor_texts]
+    if is_ai_tool(*texts, card_description):
         a = account_by_name(accounts, AI_ACCOUNT_NAME)
         return {"account_id": (a or {}).get("id", AI_ACCOUNT_ID), "name": AI_ACCOUNT_NAME,
                 "source": "rule: AI tools", "missing": False}
-    tx = latest_own_expense(transactions, *vendor_texts)
+    vendor = next((t for t in texts if t and t.strip()), None) or card_description
+    tx = latest_own_expense(transactions, vendor, accounts)
+    if tx is None and card_description and vendor_key(card_description) != vendor_key(vendor):
+        tx = latest_own_expense(transactions, card_description, accounts)
     if tx is not None:
         line = (_tx_lines(tx) or [{}])[0]
         acc_id = line.get("expense_account_id") or tx.get("account_id")
@@ -180,16 +272,15 @@ def suggest_account(*vendor_texts: str | None, accounts: list[dict] | None = Non
             [tx["cost_center_id"]] if tx.get("cost_center_id") else None)
         return {"account_id": acc_id, "name": (a or {}).get("name"),
                 "vat_code_id": line.get("vat_code_id"), "cost_center_ids": cc,
-                "source": f"your latest expense {_tx_date(tx)[:10]} (id {tx.get('id')})",
+                "source": f"your latest expense from the same vendor ({vendor_key(vendor)}) "
+                          f"{_tx_date(tx)[:10]} (id {tx.get('id')})",
                 "missing": False}
-    # C51 Del 3 — reserv per kategori (Mikkos beslut), efter C50-regeln.
-    from app.services.c51_vat import category_account
-
-    name = category_account(category, *vendor_texts)
-    if name:
+    first = texts[:1] + [card_description]
+    name, source = rule_account(category, first, texts[1:])
+    if name and not _never(name):
         a = account_by_name(accounts, name)
-        return {"account_id": (a or {}).get("id"), "name": name,
-                "source": f"rule: category {category or 'company car'}", "missing": False}
+        return {"account_id": (a or {}).get("id"), "name": name, "source": source,
+                "missing": False}
     return {"account_id": None, "name": None, "source": None, "missing": True,
             "flag": ACCOUNT_MISSING}
 

@@ -66,6 +66,8 @@ STATUS_FIELDS = (
     "submitted", "is_submitted", "submitted_at", "sent_for_approval",
     "send_for_approval", "approved", "approved_at", "approver", "approver_id",
     "approvers", "current_approver", "current_approver_id", "draft", "is_draft",
+    # C52 — attestanter som Bezala faktiskt returnerar (GET 5579365).
+    "current_approvers_ids", "transaction_approvers", "approved_by", "approved_by_ids",
 )
 
 # Tillstånd som SÄKERT inte är utkast.
