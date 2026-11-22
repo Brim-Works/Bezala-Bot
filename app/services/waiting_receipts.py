@@ -277,19 +277,33 @@ def match_waiting_receipts(db: Session, *, couple=None) -> dict:
                         "score": p["score"]["total"]})
         logger.info("[c47-waiting] auto-kopplat %s ← %s (%s p)", bid, mid, p["score"]["total"])
 
-    # Ingen träff efter 14 dagar.
-    cutoff = datetime.utcnow() - timedelta(days=NO_TXN_DAYS)
-    flagged = 0
+    # C50 Del 3 — kvitto utan öppen kortrad: redan hanterat i Bezala?
+    # Ingen träff och äldre än 14 dagar → probably_handled_elsewhere
+    # (granskningslista, inte svep-kön). Yngre väntar som förut.
+    from app.services import c50_handled as handled
+
+    paired = {p["message"].message_id for p in pairs}
     ignored = ignore_private_source(db)
+    flagged = 0
+    already = 0
     for m in open_query(db).filter(ProcessedMessage.waiting_status == WAITING).all():
-        since = m.waiting_since or m.processed_at
-        if since is not None and since <= cutoff and not m.bezala_transaction_id:
-            m.waiting_status = NO_TRANSACTION
+        if m.bezala_transaction_id or m.duplicate_of or m.message_id in paired:
+            continue
+        if handled.apple_line_for(db, m, statuses=("missing",)) is not None:
+            continue
+        new, hit = handled.classify(db, m)
+        if new is None:
+            continue
+        m.waiting_status = new
+        if new == handled.ALREADY_HANDLED:
+            already += 1
+        else:
             flagged += 1
     db.commit()
     result = {"adopted": adopted, "waiting": len(receipts), "auto_coupled": coupled,
               "uncertain": len(uncertain), "failed": failed,
-              "flagged_no_transaction": flagged, "ignored_private_source": ignored,
+              "probably_handled_elsewhere": flagged, "already_handled_in_bezala": already,
+              "ignored_private_source": ignored,
               "auto_couple_enabled": auto_ok}
     logger.info("[c47-waiting] %s", {k: (len(v) if isinstance(v, list) else v)
                                      for k, v in result.items()})
@@ -321,6 +335,14 @@ def ignore_private_source(db: Session, now: datetime | None = None) -> int:
             bought = datetime.combine(rd, datetime.min.time())
             since = min(since, bought) if since else bought
         if m.waiting_status == WAITING and (since is None or since > cutoff):
+            continue
+        # C50 Del 2 — Apple-köp på företagskortet (APPLE.COM/BILL e.d.).
+        from app.services import c50_handled as handled
+
+        if handled.apple_line_for(db, m, statuses=("missing",)) is not None:
+            continue  # öppen kortrad finns → förslag i svep-kön
+        if handled.apple_line_for(db, m, statuses=("resolved",)) is not None:
+            m.waiting_status = handled.ALREADY_HANDLED
             continue
         before = m.waiting_status
         m.waiting_status = IGNORED_PRIVATE_SOURCE

@@ -255,6 +255,31 @@ def _run_c48_migrations() -> None:
         db.close()
 
 
+def _run_c50_rerun() -> None:
+    """C50 Del 2/3 — kör om ignored_private_source / no_transaction / väntande
+    kvitton med Apple- och redan-hanterat-reglerna. En gång, i bakgrunden
+    (valutakurser kan behöva hämtas). Skriver inget till Bezala."""
+    import threading
+
+    def work():
+        from app.db import SessionLocal
+        from app.services.c50_handled import rerun
+
+        db = SessionLocal()
+        try:
+            out = rerun(db)
+            if out is not None:
+                logger.info("C50 omkörning: före=%s efter=%s flyttade=%s",
+                            out["before"], out["after"], out["counts"])
+        except Exception:  # noqa: BLE001
+            db.rollback()
+            logger.exception("C50: omkörning misslyckades")
+        finally:
+            db.close()
+
+    threading.Thread(target=work, name="c50-rerun", daemon=True).start()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -275,6 +300,8 @@ async def lifespan(app: FastAPI):
     _run_c46_migrations()
     _run_c47_migrations()
     _run_c48_migrations()
+    if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":
+        _run_c50_rerun()
     # C46 Del 4 — läs om jobb-Gmail 2026 (torrläge, sedan riktigt). En gång.
     if settings.scan_enabled and os.environ.get("C46_RESCAN_ENABLED", "true").lower() != "false":
         from app.services.c46_rescan import start_background as _c46_rescan
@@ -3366,6 +3393,9 @@ def _do_match_to_bezala(
         vendor_mappings = []
 
     description_override = row.ai_description_en or row.summary
+    # C50 — beskrivningens datum kommer alltid från kortradens/kvittots datum.
+    from app.services.c50_accounts import fix_description_date
+    description_override = fix_description_date(description_override, effective_date)
 
     # C43 — privat utlägg: kommentaren i Bezala ska säga det (engelska).
     from app.services import bill_line_status as _bls

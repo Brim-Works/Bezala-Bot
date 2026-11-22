@@ -544,6 +544,43 @@ async def list_bot_bezala_writes(days: int = 14) -> dict:
     return await _run(_list, days)
 
 
+@mcp.tool()
+async def list_probably_handled_receipts() -> dict:
+    """Read-only review list (not the swipe queue): receipts older than 14 days
+    without an open company card line and without a match in Bezala - probably
+    handled elsewhere. Also counts receipts marked already_handled_in_bezala."""
+    from app.models import ProcessedMessage
+    from app.services.c50_handled import ALREADY_HANDLED, list_probably_handled
+
+    def work(db):
+        items = list_probably_handled(db)
+        already = (db.query(ProcessedMessage)
+                   .filter(ProcessedMessage.waiting_status == ALREADY_HANDLED).count())
+        return {"probably_handled_elsewhere": items, "count": len(items),
+                "already_handled_in_bezala": already}
+
+    return await _run(work)
+
+
+@mcp.tool()
+async def get_c50_rerun_report(run_again: bool = False) -> dict:
+    """Before/after report of the C50 re-run (Apple card lines, already handled
+    in Bezala). run_again=True runs it once more (changes only Bezala Bot's own
+    receipt statuses - nothing is written to Bezala)."""
+    from app.services.c50_handled import _counts, rerun
+    from app.services.cleanup_log import report
+
+    def work(db):
+        if run_again:
+            return rerun(db, force=True)
+        return {"now": _counts(db),
+                "log": {r: report(db, r) for r in
+                        ("back_to_waiting", "already_handled_in_bezala",
+                         "probably_handled_elsewhere")}}
+
+    return await _run(work)
+
+
 # ---------- C48 ----------
 
 
@@ -557,8 +594,9 @@ async def list_bezala_accounts() -> dict:
 
 
 @mcp.tool()
-async def set_subscription_account(subscription_id: int, account: int | None) -> dict:
-    """Set the Bezala account (numeric id from list_bezala_accounts) for a
+async def set_subscription_account(subscription_id: int, account: int | str | None) -> dict:
+    """Set the Bezala account (numeric id, or the exact account name as Bezala
+    shows it, e.g. 'AI työkalut', from list_bezala_accounts) for a
     subscription. ONLY with the account Mikko names - never guess. A
     subscription without account cannot be activated. account=None clears it."""
     from app.services.subscriptions import bezala_accounts, set_account

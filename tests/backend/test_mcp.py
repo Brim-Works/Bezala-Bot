@@ -287,7 +287,7 @@ def test_valid_token_works(env):
         # C49
         "get_netvisor_entry", "list_netvisor_status", "set_netvisor_status",
         # C50
-        "list_bot_bezala_writes",
+        "list_bot_bezala_writes", "list_probably_handled_receipts", "get_c50_rerun_report",
     }
 
 

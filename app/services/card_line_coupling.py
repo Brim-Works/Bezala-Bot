@@ -115,6 +115,18 @@ def suggest_receipts(db: Session, card_lines: list[CardLine],
             continue
         out[bid] = _brief(e)
         used.add(mid)
+    # C50 Del 2 — Apple-kortrader (APPLE.COM/BILL) ↔ Apple-kvitton på
+    # belopp + datum ±3 dagar; kvittots appnamn är leverantören.
+    try:
+        from app.services.c50_handled import apple_suggestions
+
+        open_lines = [c for c in card_lines if out.get(c.bill_line_id) is None]
+        for bid, m in apple_suggestions(db, open_lines, used, exclude_pairs).items():
+            out[bid] = {"message_id": m.message_id, "id": m.id, "vendor": m.vendor,
+                        "amount": m.amount, "currency": m.currency, "date": m.receipt_date,
+                        "kind": m.kind, "score": 90, "match": "apple_card_line"}
+    except Exception:  # noqa: BLE001
+        logger.exception("C50: Apple-förslag misslyckades")
     return out
 
 
@@ -192,8 +204,23 @@ def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
         # C50 — beskrivningen skrivs inte via API (kunde skicka för attest).
         # Mikko klistrar in den själv i Bezala.
         "bezala_description_written": False,
-        "description_to_paste": row.ai_description_en or row.summary,
+        "description_to_paste": _description_to_paste(row, line),
+        "account_suggestion": _account_suggestion(row, line),
     }
+
+
+def _description_to_paste(row: ProcessedMessage, line: CardLine | None) -> str | None:
+    from app.services.c50_accounts import fix_description_date
+
+    d = (line.txn_date if line is not None and line.txn_date else None) or row.receipt_date
+    return fix_description_date(row.ai_description_en or row.summary, d)
+
+
+def _account_suggestion(row: ProcessedMessage, line: CardLine | None) -> dict:
+    from app.services.c50_accounts import suggest_account
+
+    return suggest_account(row.vendor, row.sender, row.subject,
+                           line.description if line is not None else None)
 
 
 # ---------- get_card_line ----------

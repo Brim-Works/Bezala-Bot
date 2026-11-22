@@ -285,3 +285,166 @@ def test_list_bot_bezala_writes(bound_db):  # noqa: F811
     assert out["left_draft"] == ["5579031"]
     client.put.assert_not_called()
     client.delete_transaction.assert_not_called()
+
+
+# ================================================================ Del 1
+
+
+def test_ai_tool_rule():
+    from app.services.c50_accounts import is_ai_tool, suggest_account
+
+    for v in ("Cursor", "Lovable", "Anthropic", "Claude.ai", "Bolt.new Pro", "StackBlitz",
+              "OpenAI", "ChatGPT Plus", "Midjourney"):
+        assert is_ai_tool(v), v
+    assert not is_ai_tool("Bolt", "BOLT.EU/O/2611, TALLINN")  # Bolt-taxi
+    s = suggest_account("Bolt.new", accounts=[{"id": 166648, "name": "AI työkalut"}],
+                        transactions=[])
+    assert s["name"] == "AI työkalut" and s["account_id"] == 166648 and not s["missing"]
+
+
+def test_account_from_latest_own_expense_or_missing():
+    from app.services.c50_accounts import suggest_account
+
+    accounts = [{"id": 67101, "name": "Taksikulut"}, {"id": 67110, "name": "Muut matkakulut"}]
+    txs = [
+        {"id": 1, "date": "2026-09-01", "description": "Taxi Helsinki airport",
+         "vat_lines": [{"expense_account_id": 67110, "vat_code_id": 1}]},
+        {"id": 2, "date": "2026-10-20", "description": "Taxi Helsinki to office",
+         "vat_lines": [{"expense_account_id": 67101, "vat_code_id": 864,
+                        "cost_center_ids": [927151]}]},
+    ]
+    s = suggest_account("Taxi Helsinki", accounts=accounts, transactions=txs)
+    assert (s["account_id"], s["name"], s["vat_code_id"], s["cost_center_ids"]) == \
+        (67101, "Taksikulut", 864, [927151])
+    m = suggest_account("Unknown Shop Oy", accounts=accounts, transactions=txs)
+    assert m["missing"] and m["flag"] == "Account missing" and m["account_id"] is None
+
+
+def test_mapper_uses_ai_account_for_bolt_new():
+    from app.services.bezala_field_mapper import build_receipt_params
+
+    accounts = [{"id": 166648, "name": "AI työkalut", "default_vat_id": 864},
+                {"id": 67110, "name": "Muut matkakulut", "default_vat_id": 864}]
+    p = build_receipt_params(file_name="bolt.pdf", sender="billing@stripe.com",
+                             vendor="Bolt.new", category="annat", amount=23.30,
+                             currency="EUR", receipt_date="2026-11-05", accounts=accounts,
+                             cost_centers=[{"id": 927151, "name": "VIS128"}], vat_rates=[])
+    assert p["vat_lines_attributes"][0]["expense_account_id"] == 166648
+
+
+def test_description_date_from_corrected_date():
+    from app.services.c50_accounts import fix_description_date
+
+    assert fix_description_date("Taxi ride, Helsinki - 26 November 2018", "2026-11-03") == \
+        "Taxi ride, Helsinki - 3 November 2026"
+    ok = "Arlanda Express round trip ticket, Stockholm Arlanda Airport, 3 November 2026"
+    assert fix_description_date(ok, "2026-11-03") == ok
+    assert fix_description_date("Bolt.new Pro subscription - November 2018", "2026-11-05") == \
+        "Bolt.new Pro subscription - November 2026"
+
+
+def test_set_subscription_account_by_name(db):  # noqa: F811
+    from app.models import Subscription
+    from app.services.subscriptions import set_account
+
+    s = Subscription(name="Bolt", vendor_pattern="bolt.new")
+    db.add(s)
+    db.commit()
+    out = set_account(db, s.id, "AI työkalut",
+                      accounts=[{"id": 166648, "name": "AI työkalut"}])
+    db.refresh(s)
+    assert s.account == 166648 and out is not None
+
+
+# ================================================================ Del 2 + 3
+
+
+def _apple(db, day, amount, desc="ChatGPT Plus", private=True, **kw):  # noqa: F811
+    return _receipt(db, day, "Apple", amount, upload_source="gmail",
+                    source_account="private" if private else "visma",
+                    sender="Apple <no_reply@email.apple.com>", summary=desc, **kw)
+
+
+def test_apple_receipt_matches_closed_apple_line(db):  # noqa: F811
+    from app.models import Subscription
+    from app.services.c50_handled import rerun
+
+    d = date(2026, 10, 10)
+    r = _apple(db, d, 22.99, waiting=False)
+    r.waiting_status = "ignored_private_source"
+    db.commit()
+    _line(db, 2550000, d + timedelta(days=1), 22.99, desc="APPLE.COM/BILL, ITUNES.COM, IE",
+          status="resolved")
+    out = rerun(db, force=True, today=date(2026, 11, 22))
+    db.refresh(r)
+    assert r.waiting_status == "already_handled_in_bezala"
+    assert r.ai_description_en == "ChatGPT Plus subscription - Oct 2026"
+    assert out["before"]["ignored_private_source"] == 1
+    assert out["counts"]["already_handled_in_bezala"] == 1
+    sub = db.query(Subscription).filter(Subscription.vendor_pattern.contains("chatgpt")).one()
+    assert sub.review_status == "suggested" and sub.active is False and sub.account is None
+
+
+def test_apple_receipt_open_line_back_to_queue(db):  # noqa: F811
+    from app.services import decision_queue as q
+    from app.services.c50_handled import rerun
+
+    d = date.today() - timedelta(days=20)
+    r = _apple(db, d, 22.99, waiting=False)
+    r.waiting_status = "ignored_private_source"
+    db.commit()
+    _line(db, 2550001, d + timedelta(days=2), 22.99, desc="APPLE.COM/BILL, CORK, IE")
+    out = rerun(db, force=True)
+    db.refresh(r)
+    assert r.waiting_status == "waiting_for_transaction"
+    assert out["counts"]["back_to_waiting"] == 1
+    ids = [i["id"] for i in q.list_pending(db)["items"]]
+    assert f"receipt:2550001:{r.message_id}" in ids
+
+
+def test_private_apple_without_company_line_stays_ignored(db):  # noqa: F811
+    from app.services.c50_handled import rerun
+
+    r = _apple(db, date(2026, 9, 1), 6.99, desc="Crunchyroll", waiting=False)
+    r.waiting_status = "ignored_private_source"
+    db.commit()
+    rerun(db, force=True)
+    db.refresh(r)
+    assert r.waiting_status == "ignored_private_source"
+
+
+def test_arlanda_reread_receipt_already_handled(db):  # noqa: F811
+    from app.services.c50_handled import rerun
+
+    d = date(2026, 4, 30)
+    manual = _receipt(db, d, "Arlanda Express", 640.0, "SEK", waiting=False,
+                      upload_source="manual")
+    manual.bezala_transaction_id = "5000001"
+    manual.matched_at = datetime(2026, 5, 2)
+    reread = _receipt(db, d, "Arlanda Express", 640.0, "SEK", upload_source="gmail",
+                      since=datetime(2026, 11, 1))
+    db.commit()
+    out = rerun(db, force=True, today=date(2026, 11, 22))
+    db.refresh(reread)
+    assert reread.waiting_status == "already_handled_in_bezala"
+    assert out["counts"]["already_handled_in_bezala"] == 1
+
+
+def test_waiting_receipt_rules(db):  # noqa: F811
+    from app.services.c50_handled import list_probably_handled
+    from app.services.waiting_receipts import match_waiting_receipts
+
+    today = date.today()
+    old = _receipt(db, today - timedelta(days=20), "Kiosk", 7.90,
+                   since=datetime.utcnow() - timedelta(days=20))
+    young = _receipt(db, today - timedelta(days=3), "Kiosk", 4.50)
+    handled = _receipt(db, today - timedelta(days=3), "Taxi Helsinki", 31.20)
+    _line(db, 2550100, today - timedelta(days=2), 31.20, status="resolved")
+    out = match_waiting_receipts(db, couple=FakeCouple())
+    for r in (old, young, handled):
+        db.refresh(r)
+    assert old.waiting_status == "probably_handled_elsewhere"
+    assert young.waiting_status == "waiting_for_transaction"
+    assert handled.waiting_status == "already_handled_in_bezala"
+    assert out["already_handled_in_bezala"] == 1 and out["probably_handled_elsewhere"] == 1
+    assert [x["message_id"] for x in list_probably_handled(db)] == [old.message_id]

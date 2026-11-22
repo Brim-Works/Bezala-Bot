@@ -31,6 +31,13 @@ def _card_lines_job() -> None:
         with session_scope() as db:
             result = sync_card_lines_from_bezala(db)
             logger.info("C42 kortrader synkade: %s", result)
+            try:
+                # C50 — konton + egna utlägg för kontoförslag (endast läsning).
+                from app.services.c50_accounts import refresh_reference
+
+                logger.info("C50 referensdata: %s", refresh_reference())
+            except Exception:  # noqa: BLE001
+                logger.exception("C50 referensdata kunde inte läsas.")
             if result.get("status") == "ok":
                 # C47 — väntande kvitton, prenumerationer, återbetalningar.
                 from app.services.c47_sync import after_card_sync

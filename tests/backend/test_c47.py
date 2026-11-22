@@ -126,7 +126,12 @@ def test_no_match_after_14_days_is_flagged(db):  # noqa: F811
     r = _receipt(db, date.today() - timedelta(days=15), "Kiosk", 7.90, since=old)
     match_waiting_receipts(db, couple=FakeCouple())
     db.refresh(r)
-    assert r.waiting_status == "no_transaction"
+    # C50 Del 3 — ingen träff efter 14 dagar → granskningslista, inte kön.
+    assert r.waiting_status == "probably_handled_elsewhere"
+    assert f"notxn:{r.message_id}" not in [i["id"] for i in q.list_pending(db)["items"]]
+    # Äldre flaggade (no_transaction) syns fortfarande i kön.
+    r.waiting_status = "no_transaction"
+    db.commit()
     lm = list_missing(db, sync=False)
     assert [x["message_id"] for x in lm["receipts_without_transaction"]] == [r.message_id]
     items = q.list_pending(db)["items"]
