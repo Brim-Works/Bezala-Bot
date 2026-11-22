@@ -64,8 +64,45 @@ def _find_by_bill_line(client, bill_line_id: str) -> list[dict]:
     return hits
 
 
+def _amount_of(tx: dict) -> float | None:
+    t = guard._unwrap(tx)
+    for k in ("amount", "sum", "total", "total_amount", "bill_line_amount"):
+        try:
+            if t.get(k) is not None:
+                return abs(float(t[k]))
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
+def _find_by_amount_date(txs: list[dict], amount: float, day: str | None) -> list[dict]:
+    """Reserv när listan inte nämner kortraden: samma belopp (±0,01) och
+    datum inom ±3 dagar."""
+    from datetime import date as _d
+
+    want = abs(float(amount))
+    try:
+        d0 = _d.fromisoformat(day[:10]) if day else None
+    except ValueError:
+        d0 = None
+    hits = []
+    for tx in txs:
+        a = _amount_of(tx)
+        if a is None or abs(a - want) > 0.011:
+            continue
+        if d0 is not None:
+            raw = str(guard._unwrap(tx).get("date") or "")[:10]
+            try:
+                if abs((_d.fromisoformat(raw) - d0).days) > 3:
+                    continue
+            except ValueError:
+                pass
+        hits.append(tx)
+    return hits
+
+
 def inspect(transaction_id: str | None = None, bill_line_id: str | None = None,
-            client=None) -> dict:
+            client=None, *, amount: float | None = None, day: str | None = None) -> dict:
     """GET /transactions/{id}, eller hitta transaktionen för en kortrad via
     GET /transactions (listan). Skriver aldrig."""
     if not transaction_id and not bill_line_id:
@@ -79,14 +116,24 @@ def inspect(transaction_id: str | None = None, bill_line_id: str | None = None,
     try:
         ids: list[str] = [str(transaction_id)] if transaction_id else []
         found_via = "transaction_id"
+        listing: dict = {}
         if not ids:
+            txs = [t for t in (client.list_transactions() or []) if isinstance(t, dict)]
+            listing = {"count": len(txs),
+                       "sample_keys": sorted(guard._unwrap(txs[0]).keys()) if txs else [],
+                       "states": sorted({str(guard._unwrap(t).get("state")) for t in txs})}
+            pat = re.compile(rf"(?<!\d){re.escape(str(bill_line_id))}(?!\d)")
+            hits = [t for t in txs if pat.search(json.dumps(t, default=str))]
             found_via = "GET /transactions list (bill_line_id found in the transaction)"
-            for tx in _find_by_bill_line(client, str(bill_line_id)):
+            if not hits and amount is not None:
+                hits = _find_by_amount_date(txs, amount, day)
+                found_via = "GET /transactions list (same amount, date within 3 days)"
+            for tx in hits:
                 tid = guard._unwrap(tx).get("id")
                 if tid is not None:
                     ids.append(str(tid))
         if not ids:
-            return {"bill_line_id": bill_line_id, "transactions": [],
+            return {"bill_line_id": bill_line_id, "transactions": [], "listing": listing,
                     "note": "No Bezala transaction references this card line."}
         out = []
         for tid in ids[:5]:
@@ -96,7 +143,7 @@ def inspect(transaction_id: str | None = None, bill_line_id: str | None = None,
                 out.append({"transaction_id": tid, "error": str(exc)[:300]})
                 continue
             out.append({"transaction_id": tid, **describe(tx)})
-        return {"bill_line_id": bill_line_id, "found_via": found_via,
+        return {"bill_line_id": bill_line_id, "found_via": found_via, "listing": listing,
                 "draft_states": sorted(guard.DRAFT_STATES), "transactions": out,
                 "note": "Read-only (GET). Nothing was written to Bezala."}
     finally:

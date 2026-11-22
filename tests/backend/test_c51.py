@@ -363,3 +363,20 @@ def test_inspect_is_read_only():
     out2 = inspect(bill_line_id="2513372", client=c)
     assert out2["transactions"][0]["transaction_id"] == "5580000"
     assert all(m == "GET" for m, _ in c.calls)
+
+
+def test_inspect_falls_back_to_amount_and_date():
+    from app.services.c51_bezala_inspect import inspect
+
+    class C:
+        def list_transactions(self):
+            return [{"id": 1, "amount": "23.30", "date": "2026-11-16", "state": "unapproved"},
+                    {"id": 2, "amount": "23.30", "date": "2026-10-01", "state": "reviewing"}]
+
+        def get_transaction(self, tid):
+            return {"id": int(tid), "state": "unapproved"}
+
+    out = inspect(bill_line_id="2513372", client=C(), amount=23.3, day="2026-11-16")
+    assert [t["transaction_id"] for t in out["transactions"]] == ["1"]
+    assert out["transactions"][0]["is_draft"] is True
+    assert out["listing"]["count"] == 2
