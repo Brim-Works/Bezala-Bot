@@ -278,6 +278,9 @@ def test_valid_token_works(env):
         # C46
         "list_private_senders", "add_private_sender", "remove_private_sender",
         "reject_trip", "unreject_trip",
+        # C47
+        "list_pending_decisions", "decide", "undo_last_decision", "expect_refund",
+        "list_subscriptions",
     }
 
 

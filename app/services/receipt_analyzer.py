@@ -64,6 +64,9 @@ SYSTEM_PROMPT = (
     "- Inga specialtecken i filnamnet förutom bindestreck, mellanslag och punkt.\n"
     "- Filnamnet slutar alltid på .pdf.\n"
     "- Om belopp, valuta eller datum INTE kan utläsas säkert: sätt null.\n"
+    "- Tvåsiffrigt år (t.ex. 26.11.25) eller datum utan år: utgå från\n"
+    "  mailets mottagningsdatum — kvittot är nästan alltid från samma år\n"
+    "  eller månaderna strax före. Gissa aldrig ett år långt bakåt.\n"
     "- confidence speglar hur säker du är på att detta är ett kvitto/utläggsunderlag.\n\n"
     "Kategori-vägledning (välj EN — använd 'Annat' bara om inget annat passar):\n"
     "- Flyg: Finnair, SAS, Norwegian, KLM, Lufthansa etc.\n"
@@ -215,6 +218,8 @@ class ReceiptAnalysis:
     # FAS 5.9 — engelsk Bezala-beskrivning (vendor + plats/syfte + datum).
     # None om Claude inte kunde producera en meningsfull beskrivning.
     description_en: str | None = None
+    # C47 — datumet var orimligt mot mottagningsdatumet och har rättats.
+    date_corrected: bool = False
 
 
 def _sanitize_filename(name: str) -> str:
@@ -460,6 +465,17 @@ def _normalize(
     category = payload.get("category")
     category = _normalize_category(category)
 
+    # C47 — rimlighetskontroll mot mottagningsdatumet (fel år från AI:n).
+    date_corrected = False
+    if date and received_at is not None:
+        from app.services.receipt_dates import sanitize_receipt_date
+
+        fixed, date_corrected = sanitize_receipt_date(date, received_at, category)
+        if date_corrected:
+            logger.warning("C47: orimligt kvittodatum %s (mottaget %s) → %s",
+                           date, received_at.date(), fixed)
+            date = fixed
+
     summary = payload.get("summary")
     summary = str(summary).strip() if summary else None
     if summary and len(summary) > 1000:
@@ -486,6 +502,7 @@ def _normalize(
         category=category,
         summary=summary,
         description_en=description_en,
+        date_corrected=date_corrected,
     )
 
 

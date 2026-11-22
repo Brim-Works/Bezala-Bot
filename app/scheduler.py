@@ -31,6 +31,11 @@ def _card_lines_job() -> None:
         with session_scope() as db:
             result = sync_card_lines_from_bezala(db)
             logger.info("C42 kortrader synkade: %s", result)
+            if result.get("status") == "ok":
+                # C47 — väntande kvitton, prenumerationer, återbetalningar.
+                from app.services.c47_sync import after_card_sync
+
+                after_card_sync(db)
     except Exception:
         logger.exception("C42 kortrad-synk kraschade.")
 

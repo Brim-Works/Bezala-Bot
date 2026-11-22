@@ -82,9 +82,18 @@ def _brief(entry: dict) -> dict:
     }
 
 
-def suggest_receipts(db: Session, card_lines: list[CardLine]) -> dict[str, dict | None]:
+def suggest_receipts(db: Session, card_lines: list[CardLine],
+                     exclude_pairs: set[tuple[str, str]] | None = None) -> dict[str, dict | None]:
     """{bill_line_id: suggested_receipt | None}. Bästa par först (girigt), så
-    att ett kvitto bara föreslås för en kortrad."""
+    att ett kvitto bara föreslås för en kortrad. C47: par som Mikko sagt nej
+    till i svep-kön föreslås aldrig igen."""
+    if exclude_pairs is None:
+        try:
+            from app.services.decision_queue import rejected_receipt_pairs
+
+            exclude_pairs = rejected_receipt_pairs(db)
+        except Exception:  # noqa: BLE001
+            exclude_pairs = set()
     from app.services.currency_converter import make_db_rate_provider
     from app.services.receipt_matcher import find_matches
 
@@ -100,6 +109,8 @@ def suggest_receipts(db: Session, card_lines: list[CardLine]) -> dict[str, dict 
     used: set[str] = set()
     for _, bid, e in pairs:
         mid = e["message"].get("message_id")
+        if (bid, mid) in exclude_pairs:
+            continue
         if out.get(bid) is not None or mid in used:
             continue
         out[bid] = _brief(e)
@@ -162,7 +173,11 @@ def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
 
         line.status = "resolved"
         line.resolved_at = datetime.utcnow()
-        line.note = f"Coupled via MCP to {row.message_id}"
+        line.note = f"Coupled via Bezala Bot to {row.message_id}"
+        line.bezala_transaction_id = row.bezala_transaction_id
+        db.commit()
+    if row.waiting_status in ("waiting_for_transaction", "no_transaction"):
+        row.waiting_status = "coupled"
         db.commit()
     logger.info("[c44-couple] bill_line=%s ← message=%s (Bezala draft, unapproved)",
                 bid, row.message_id)

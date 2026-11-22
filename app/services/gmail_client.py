@@ -368,6 +368,20 @@ class GmailClient:
             "snippet": raw.get("snippet", ""),
         }
 
+    def fetch_headers(self, message_id: str, names: list[str]) -> dict[str, list[str]]:
+        """C47 — bara angivna headers (lower-case namn → alla värden)."""
+        self._assert_private_sender_allowed(message_id)
+        raw = (
+            self._service.users()
+            .messages()
+            .get(userId="me", id=message_id, format="metadata", metadataHeaders=names)
+            .execute()
+        )
+        out: dict[str, list[str]] = {}
+        for h in raw.get("payload", {}).get("headers", []) or []:
+            out.setdefault((h.get("name") or "").lower(), []).append(h.get("value") or "")
+        return out
+
     # ---------- Fetching ----------
 
     def fetch_messages(self, message_ids: Iterable[str]) -> Iterator[GmailMessage]:
