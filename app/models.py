@@ -101,6 +101,13 @@ class ProcessedMessage(Base):
     source_account = Column(String(16), nullable=True, default="visma")
     # C46 — 'forwarded' när bara Mikkos vidarebefordran fanns (Del 4)
     source_note = Column(String(32), nullable=True)
+    # C47 — kvitto utan korttransaktion ännu. 'waiting_for_transaction'
+    # (väntar), 'no_transaction' (ingen träff efter 14 dagar), 'private'
+    # (Mikko: privat/annat kort), 'closed' (sluta vänta). NULL = inte i kön.
+    waiting_status = Column(String(24), nullable=True)
+    waiting_since = Column(DateTime, nullable=True)
+    # C47 Del 6 — t.ex. 'date_corrected' (AI-datum utanför rimligt fönster).
+    review_flag = Column(String(64), nullable=True)
 
 
 class SavedFile(Base):
@@ -761,3 +768,68 @@ class PrivateGmailSender(Base):
     last_scan_at = Column(DateTime, nullable=True)
     backfill_status = Column(String(16), nullable=True)
     backfill_at = Column(DateTime, nullable=True)
+
+
+class QueueDecision(Base):
+    """C47 — beslut i svep-kön (Travel Tinder). item_id är kö-postens id
+    (t.ex. 'receipt:2513379:msg-1'). decision = yes | no | later.
+    'no' på ett kvitto/kortrad-par = föreslå inte paret igen. undo_data
+    räcker för att ångra beslutet; undone_at sätts vid ångra."""
+
+    __tablename__ = "queue_decisions"
+
+    id = Column(Integer, primary_key=True)
+    item_id = Column(String(255), nullable=False, index=True)
+    kind = Column(String(32), nullable=False)
+    decision = Column(String(8), nullable=False)
+    source = Column(String(8), nullable=False, default="ui")
+    undo_data = Column(JSON, nullable=True)
+    result = Column(JSON, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    undone_at = Column(DateTime, nullable=True)
+
+
+class Subscription(Base):
+    """C47 Del 4 — prenumerationer på autopilot. Nya förslag är inactive
+    tills Mikko bekräftar i svep-kön. account = Bezala-konto som Mikko valt
+    tidigare för leverantören (aldrig gissat; NULL = flaggas)."""
+
+    __tablename__ = "subscriptions"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(100), nullable=False)
+    vendor_pattern = Column(String(200), nullable=False)
+    sender = Column(String(255), nullable=True)
+    expected_amount = Column(Float, nullable=True)
+    currency = Column(String(3), nullable=True)
+    cadence = Column(String(16), nullable=False, default="monthly")
+    description_template = Column(String(200), nullable=True)
+    account = Column(Integer, nullable=True)
+    active = Column(Boolean, nullable=False, default=False)
+    # seed | detected | ui | mcp
+    origin = Column(String(16), nullable=False, default="detected")
+    # suggested (väntar på Mikko) | confirmed | dismissed
+    review_status = Column(String(16), nullable=False, default="suggested")
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
+class ExpectedRefund(Base):
+    """C47 Del 5 — väntad återbetalning för en kortrad (t.ex. avbokad resa).
+    status: open | matched | closed."""
+
+    __tablename__ = "expected_refunds"
+
+    id = Column(Integer, primary_key=True)
+    bill_line_id = Column(String(64), nullable=False, index=True)
+    vendor = Column(String(255), nullable=True)
+    amount = Column(Float, nullable=True)
+    currency = Column(String(16), nullable=True)
+    txn_date = Column(Date, nullable=True)
+    note = Column(Text, nullable=True)
+    status = Column(String(16), nullable=False, default="open")
+    refund_bill_line_id = Column(String(64), nullable=True)
+    matched_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)

@@ -1059,13 +1059,30 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
         if "domestic_unconfirmed" in (t.flags or []) and t.status != "rejected"
     ]
     with_sugg = sum(1 for c in cards if c.get("suggested_receipt"))
+    # C47 — kvitton utan korttransaktion (14 dagar) + väntade återbetalningar.
+    try:
+        from app.services.refunds import overdue_refunds
+        from app.services.waiting_receipts import list_waiting
+
+        waiting = list_waiting(db)
+        no_txn = [r for r in waiting if r["waiting_status"] == "no_transaction"]
+        refunds = overdue_refunds(db)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("C47: väntande kvitton/återbetalningar misslyckades")
+        waiting, no_txn, refunds = [], [], []
     return {
         "older_than_days": older_than_days,
         "bezala_sync": sync_result,
         "trip_items_missing": trip_items,
         "card_lines_without_receipt": cards,
         "unconfirmed_trips": unconfirmed,
+        "receipts_without_transaction": no_txn,
+        "overdue_refunds": refunds,
         "counts": {"trip_items": len(trip_items), "card_lines": len(cards),
+                   "receipts_without_transaction": len(no_txn),
+                   "receipts_waiting_for_transaction": len(waiting) - len(no_txn),
+                   "overdue_refunds": len(refunds),
                    "card_lines_with_suggested_receipt": with_sugg,
                    "card_lines_without_candidate": len(cards) - with_sugg,
                    "unconfirmed_trips": len(unconfirmed)},

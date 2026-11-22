@@ -57,7 +57,13 @@ INSTRUCTIONS = (
     "are never recalculated — get_trip shows 'suggestions' instead. list_missing gives "
     "a suggested_receipt per card line; couple_receipt couples it (Bezala draft, never "
     "submitted) ONLY when Mikko explicitly asks. 'domestic_unconfirmed' = hotel "
-    "without flight: ask Mikko whether it was a business trip."
+    "without flight: ask Mikko whether it was a business trip. "
+    "Decision queue (Travel Tinder): list_pending_decisions gives one card per "
+    "pending decision (receipt <-> card line, trips to approve, subscriptions, "
+    "duplicate charges, receipts without card payment, overdue refunds) with a "
+    "yes_label/no_label; decide(item_id, 'yes'|'no'|'later') acts on it - ask Mikko "
+    "first and use his answer; undo_last_decision reverts the latest one. "
+    "expect_refund marks a card line whose money should come back (e.g. cancelled trip)."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -450,6 +456,65 @@ async def remove_private_sender(address: str) -> dict:
             raise _sender_error(exc) from exc
 
     return await _run(work)
+
+
+# ---------- C47: svep-kön, prenumerationer, återbetalningar ----------
+
+
+@mcp.tool()
+async def list_pending_decisions(limit: int = 20) -> dict:
+    """The decision queue (same as the Travel Tinder swipe view), one card per
+    pending decision, most urgent first: 'receipt' (couple this receipt to this
+    card line?), 'trip' (approve the trip?), 'sub' (is this a subscription to
+    auto-handle?), 'subdev' (subscription amount changed), 'subnr' (subscription
+    without receipt), 'dup' (more card charges than receipts), 'notxn' (receipt
+    without card payment after 14 days), 'refund' (expected refund not seen).
+    Each card has item_id, title, subtitle, yes_label and no_label. Read-only."""
+    from app.services.decision_queue import list_pending
+
+    return await _run(list_pending, limit=max(1, min(int(limit or 20), 100)))
+
+
+@mcp.tool()
+async def decide(item_id: str, decision: str) -> dict:
+    """Act on one card from list_pending_decisions. decision: 'yes' (the card's
+    yes_label, e.g. couple the receipt = Bezala DRAFT, never submitted; approve the
+    trip), 'no' (no_label, e.g. never suggest this pair again; reject the trip) or
+    'later' (skip for now). Only on Mikko's word. undo_last_decision reverts."""
+    from app.services.decision_queue import decide as _decide
+
+    return await _run(_decide, item_id, decision, source="mcp")
+
+
+@mcp.tool()
+async def undo_last_decision() -> dict:
+    """Undo the latest queue decision (uncouples a coupled receipt - deletes the
+    Bezala draft - un-approves/un-rejects a trip, restores a subscription …)."""
+    from app.services.decision_queue import undo_last
+
+    return await _run(undo_last)
+
+
+@mcp.tool()
+async def expect_refund(bill_line_id: str, note: str | None = None) -> dict:
+    """Mark a Bezala card line whose money should come back (e.g. cancelled
+    trip). A later card line with a negative amount from the same vendor (same
+    absolute amount ±1 %) is linked to it automatically; after 30 days without a
+    refund it shows up in list_missing and the decision queue. Bezala Bot only."""
+    from app.services.refunds import expect_refund as _expect
+
+    return await _run(_expect, bill_line_id, note)
+
+
+@mcp.tool()
+async def list_subscriptions() -> dict:
+    """Read-only: subscriptions on autopilot (vendor, expected amount, account Mikko
+    chose earlier, active/suggested). Active subscriptions are coupled automatically
+    when receipt and card line match, with description e.g. 'Cursor subscription -
+    Nov 2026'. Suggestions are confirmed via the decision queue."""
+    from app.services.subscriptions import list_subscriptions as _list
+
+    return await _run(lambda db: {"subscriptions": _list(db)})
 
 
 # ---------- ASGI: auth + Streamable HTTP ----------

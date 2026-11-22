@@ -228,6 +228,19 @@ def _run_c46_migrations() -> None:
         db.close()
 
 
+def _run_c47_migrations() -> None:
+    from app.db import SessionLocal
+    from app.services.c47_migrations import run_all
+
+    db = SessionLocal()
+    try:
+        logger.info("C47: startjobb %s", run_all(db))
+    except Exception:  # noqa: BLE001
+        logger.exception("C47: startjobb misslyckades")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -246,6 +259,7 @@ async def lifespan(app: FastAPI):
     _run_c43_migrations()
     _run_c45_migrations()
     _run_c46_migrations()
+    _run_c47_migrations()
     # C46 Del 4 — läs om jobb-Gmail 2026 (torrläge, sedan riktigt). En gång.
     if settings.scan_enabled and os.environ.get("C46_RESCAN_ENABLED", "true").lower() != "false":
         from app.services.c46_rescan import start_background as _c46_rescan
@@ -283,6 +297,10 @@ app.add_middleware(
 )
 
 app.include_router(bezala_config_router)
+# C47 — mobilsida, svep-kö, prenumerationer, återbetalningar.
+from app.routers.c47 import router as c47_router  # noqa: E402
+
+app.include_router(c47_router)
 # C40 — MCP-connector för Claude-chatten: OAuth + /mcp (Streamable HTTP).
 app.include_router(mcp_oauth_router)
 app.add_route("/mcp", McpEndpoint(), methods=["GET", "POST", "DELETE"])

@@ -101,6 +101,13 @@ _PROCESSED_MESSAGES_ADDITIONS.update({
     "duplicate_of": "VARCHAR(255)",
 })
 
+# C47 — kvitton som väntar på korttransaktion + granskningsflagga.
+_PROCESSED_MESSAGES_ADDITIONS.update({
+    "waiting_status": "VARCHAR(24)",
+    "waiting_since": "TIMESTAMP",
+    "review_flag": "VARCHAR(64)",
+})
+
 _AI_FEEDBACK_ADDITIONS = {
     # FAS 8.1.1 — subject sparas på not_a_receipt-rader så AI:n kan
     # skilja olika mail-typer från samma avsändare.

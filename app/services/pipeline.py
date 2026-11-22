@@ -355,6 +355,15 @@ def run_scan(max_results: int = 50) -> ScanResult:
             "html-only-query: %s", html_only_gmail_query,
         )
 
+    # C47 Del 2 — +kvitto-mail (före standardpasset, så samma mail inte
+    # bearbetas två gånger: id:t finns då redan i processed_messages).
+    try:
+        from app.services.kvitto_mail import run_kvitto_pass
+
+        run_kvitto_pass(gmail, drive=drive, analyzer=analyzer)
+    except Exception:  # noqa: BLE001
+        logger.exception("[c47-kvitto] passet kraschade")
+
     for mid in list(message_ids) + html_only_ids:
         try:
             _process_one_message(
@@ -1119,6 +1128,11 @@ def _process_one_message(
                         source_account=_acct(msg),
                         booking_ref=identity.get("booking_ref"),
                         ticket_number=identity.get("ticket_number"),
+                        review_flag=(
+                            "date_corrected"
+                            if analysis is not None and getattr(analysis, "date_corrected", False)
+                            else None
+                        ),
                     )
                 )
                 db.add(
