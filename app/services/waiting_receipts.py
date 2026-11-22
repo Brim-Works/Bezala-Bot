@@ -304,7 +304,13 @@ def ignore_private_source(db: Session, now: datetime | None = None) -> int:
     for m in open_query(db).filter(ProcessedMessage.bezala_transaction_id.is_(None)).all():
         if not is_private_source(m):
             continue
+        # Räkna från kvittots datum (köpet), inte från när boten sparade det:
+        # omläsningen 2026 sparade gamla Apple-kvitton nyligen.
         since = m.waiting_since or m.processed_at
+        rd = receipt_day(m)
+        if rd is not None:
+            bought = datetime.combine(rd, datetime.min.time())
+            since = min(since, bought) if since else bought
         if m.waiting_status == WAITING and (since is None or since > cutoff):
             continue
         before = m.waiting_status

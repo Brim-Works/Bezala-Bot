@@ -356,17 +356,21 @@ def test_private_apple_receipt_without_card_line_ignored_after_14_days(db):  # n
                     upload_source="gmail", since=old)
     fresh = _receipt(db, date.today(), "HBO Max", 11.99, upload_source="gmail",
                      source_account="private")
+    # Gammalt köp som boten sparade nyss (omläsningen) → räknas från kvittodatum.
+    rescanned = _receipt(db, date(2026, 4, 30), "SkyShowtime", 9.99, upload_source="gmail",
+                         source_account="private", since=datetime.utcnow())
     out = match_waiting_receipts(db, couple=FakeCouple())
-    assert out["ignored_private_source"] == 1
+    assert out["ignored_private_source"] == 2
     get = lambda m: db.query(ProcessedMessage).get(m.id).waiting_status  # noqa: E731
     assert get(priv) == "ignored_private_source"
+    assert get(rescanned) == "ignored_private_source"
     assert get(work) == "no_transaction"  # jobbkvitton flaggas som förut
     assert get(fresh) == "waiting_for_transaction"
     ids = _ids(db)
     assert f"notxn:{priv.message_id}" not in ids and f"notxn:{work.message_id}" in ids
     from app.services.cleanup_log import report
 
-    assert report(db, "ignored_private_source")["counts"]["ignored_private_source"] == 1
+    assert report(db, "ignored_private_source")["counts"]["ignored_private_source"] == 2
 
 
 def test_private_apple_receipt_with_card_line_coupled(db):  # noqa: F811
