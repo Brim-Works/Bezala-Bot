@@ -131,6 +131,7 @@ export const api = {
   expectRefund: (billLineId, note) =>
     request('/api/refunds', { method: 'POST', body: { bill_line_id: String(billLineId), note } }),
   overview: () => request('/api/overview'),
+  receiptInbox: () => request('/api/receipt-inbox'),
   stats: () => request('/api/stats'),
   messages: (limit = 50) => request(`/api/messages?limit=${limit}`),
   runs: (limit = 20) => request(`/api/runs?limit=${limit}`),

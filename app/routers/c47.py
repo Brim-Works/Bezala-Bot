@@ -373,3 +373,41 @@ def get_overview(db: Session = Depends(get_db)):
             "processed": last.messages_processed, "errors": last.errors,
         } if last else None),
     }
+
+
+# ---------- C48 ----------
+
+
+class AccountPayload(BaseModel):
+    account: int | None = None
+
+
+@router.post("/api/subscriptions/{subscription_id}/account")
+def post_subscription_account(subscription_id: int, payload: AccountPayload,
+                              db: Session = Depends(get_db)):
+    """Mikkos val av Bezala-konto för en prenumeration (gissas aldrig)."""
+    from app.services.subscriptions import bezala_accounts, set_account
+
+    try:
+        accounts = (bezala_accounts(db).get("accounts")
+                    if payload.account is not None else None)
+        return set_account(db, subscription_id, payload.account, accounts=accounts)
+    except TripEditError as exc:
+        db.rollback()
+        raise _err(exc) from exc
+
+
+@router.get("/api/receipt-inbox")
+def get_receipt_inbox(db: Session = Depends(get_db)):
+    """C48 Del 5: +kvitto-adressen, godkända avsändare, senaste mail."""
+    from app.services.kvitto_mail import inbox_info
+
+    return inbox_info(db)
+
+
+@router.get("/api/cleanup-report")
+def get_cleanup_report(rule: str | None = None, limit: int = 50,
+                       db: Session = Depends(get_db)):
+    from app.services.cleanup_log import report
+
+    return report(db, rule, limit)

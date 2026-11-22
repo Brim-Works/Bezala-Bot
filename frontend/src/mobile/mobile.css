@@ -139,3 +139,16 @@
 .overview-numbers .stat-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .overview-tile { text-align: left; cursor: pointer; font: inherit; color: inherit; }
 .overview-last { margin: 8px 0 16px; }
+
+/* C48 — varning på svepkort (t.ex. belopp saknas, konto saknas) */
+.m-warning {
+  margin: 8px 0; padding: 8px 10px; border-radius: 8px;
+  background: var(--warn-bg, #fff4e5); color: var(--warn-fg, #7a4b00);
+  font-size: 14px; font-weight: 600;
+}
+.m-footer {
+  max-width: 640px; margin: 0 auto; padding: 8px 16px 24px;
+  font-size: 13px; color: var(--muted, #6b6b6b); text-align: center;
+  overflow-wrap: anywhere;
+}
+.m-footer a { color: inherit; }

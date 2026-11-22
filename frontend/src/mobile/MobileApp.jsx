@@ -1,4 +1,5 @@
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
+import { api } from '../api/client.js';
 import { useRouter } from '../router/useRouter.jsx';
 import UploadView from './UploadView.jsx';
 import DecisionTabs from './DecisionTabs.jsx';
@@ -9,6 +10,13 @@ import './mobile.css';
 export default function MobileApp() {
   const { path, navigate } = useRouter();
   const onSwipe = path.startsWith('/m/swipe');
+  const [inbox, setInbox] = useState(null);
+
+  useEffect(() => {
+    let alive = true;
+    api.receiptInbox().then((r) => { if (alive) setInbox(r?.address || null); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   useEffect(() => {
     document.title = onSwipe ? 'Travel Tinder' : 'Kvitton';
@@ -28,6 +36,11 @@ export default function MobileApp() {
         <a className="m-desktop-link" href="/">Desktop</a>
       </header>
       <main className="m-main">{onSwipe ? <DecisionTabs /> : <UploadView />}</main>
+      {inbox && (
+        <footer className="m-footer" data-testid="m-inbox-footer">
+          Mail a receipt to: <a href={`mailto:${inbox}`}>{inbox}</a>
+        </footer>
+      )}
     </div>
   );
 }

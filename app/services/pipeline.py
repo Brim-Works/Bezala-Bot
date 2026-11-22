@@ -1535,6 +1535,7 @@ def force_process_message_ids(
     *,
     remove_done_label: bool = True,
     delete_existing_row: bool = True,
+    auto_upload: bool | None = None,
 ) -> dict:
     """Kör pipelinens orkestrering på en explicit lista message_id, helt
     förbi Gmail-queryns filter (has:attachment / Bezala-Klar / Promotions
@@ -1600,7 +1601,10 @@ def force_process_message_ids(
         app_settings = load_settings(db)
         excluded_subjects = list(app_settings.exclude_subjects or [])
         ai_enabled = bool(app_settings.ai_naming_enabled)
-        auto_upload = bool(app_settings.auto_upload_enabled)
+        # C48: anroparen kan stänga av auto-upload (omläsning skapar inga
+        # Bezala-utkast).
+        auto_upload = (bool(app_settings.auto_upload_enabled)
+                       if auto_upload is None else bool(auto_upload))
         confidence_threshold = int(app_settings.confidence_threshold or 0)
         ai_min_confidence = int(app_settings.ai_min_confidence_to_save or 0)
         link_fetch_senders = list(app_settings.link_fetch_senders or [])

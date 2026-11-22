@@ -281,6 +281,9 @@ def test_valid_token_works(env):
         # C47
         "list_pending_decisions", "decide", "undo_last_decision", "expect_refund",
         "list_subscriptions",
+        # C48
+        "list_bezala_accounts", "set_subscription_account", "get_receipt_inbox_info",
+        "get_cleanup_report", "investigate_vendor", "list_receipts_without_amount",
     }
 
 

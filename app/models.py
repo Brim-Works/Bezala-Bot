@@ -808,8 +808,14 @@ class Subscription(Base):
     active = Column(Boolean, nullable=False, default=False)
     # seed | detected | ui | mcp
     origin = Column(String(16), nullable=False, default="detected")
-    # suggested (väntar på Mikko) | confirmed | dismissed
+    # suggested (väntar på Mikko) | confirmed | dismissed | private (C48:
+    # Mikko: privat - kortrader markeras private_expense) | merged (C48)
     review_status = Column(String(16), nullable=False, default="suggested")
+    # C48 — None (vanlig) | 'likely_private' (strömning/spel, se
+    # SUBSCRIPTIONS_LIKELY_PRIVATE). Bara när leverantören har kortrader.
+    kind = Column(String(24), nullable=True)
+    # C48 — varför förslaget avfärdats automatiskt (t.ex. 'no_card_lines').
+    note = Column(String(200), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
@@ -832,4 +838,42 @@ class ExpectedRefund(Base):
     status = Column(String(16), nullable=False, default="open")
     refund_bill_line_id = Column(String(64), nullable=True)
     matched_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class CleanupLog(Base):
+    """C48 Del 6 — vad datastädningen gjort (eller skulle göra i torrläge).
+
+    run = körningens namn (t.ex. 'c47_backfill_v1'), rule = regel
+    ('empty_error', 'pre_2026', 'date_corrected', 'finnair_duplicate',
+    'hotel_duplicate', 'amount_missing', 'ignored_private_source', …).
+    before/after = fältvärden före/efter. Läses av MCP get_cleanup_report.
+    """
+
+    __tablename__ = "cleanup_log"
+
+    id = Column(Integer, primary_key=True)
+    run = Column(String(64), nullable=False, index=True)
+    rule = Column(String(40), nullable=False, index=True)
+    message_id = Column(String(255), nullable=True, index=True)
+    before = Column(JSON, nullable=True)
+    after = Column(JSON, nullable=True)
+    reason = Column(Text, nullable=True)
+    dry_run = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class KvittoMailLog(Base):
+    """C48 Del 5 — senaste mail till +kvitto-adressen (godkänt/avvisat)."""
+
+    __tablename__ = "kvitto_mail_log"
+
+    id = Column(Integer, primary_key=True)
+    message_id = Column(String(255), nullable=False, index=True)
+    sender = Column(String(512), nullable=True)
+    received_at = Column(DateTime, nullable=True)
+    attachments = Column(Integer, nullable=True)
+    # accepted | rejected | no_attachment
+    outcome = Column(String(20), nullable=False)
+    reason = Column(String(200), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

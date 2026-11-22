@@ -33,6 +33,10 @@ NO_TRANSACTION = "no_transaction"
 PRIVATE = "private"
 CLOSED = "closed"
 COUPLED = "coupled"
+# C48 Del 3b — kvitto från PRIVATA Gmail utan kortrad på företagskortet
+# efter 14 dagar: privat köp (Apple skickar kvitton för alla App Store-
+# köp). Ingen notxn-flagga, inget svepkort, inget Bezala-utkast.
+IGNORED_PRIVATE_SOURCE = "ignored_private_source"
 OPEN_STATUSES = (WAITING, NO_TRANSACTION)
 
 WINDOW_DAYS = 5
@@ -268,6 +272,7 @@ def match_waiting_receipts(db: Session, *, couple=None) -> dict:
     # Ingen träff efter 14 dagar.
     cutoff = datetime.utcnow() - timedelta(days=NO_TXN_DAYS)
     flagged = 0
+    ignored = ignore_private_source(db)
     for m in open_query(db).filter(ProcessedMessage.waiting_status == WAITING).all():
         since = m.waiting_since or m.processed_at
         if since is not None and since <= cutoff and not m.bezala_transaction_id:
@@ -276,10 +281,42 @@ def match_waiting_receipts(db: Session, *, couple=None) -> dict:
     db.commit()
     result = {"adopted": adopted, "waiting": len(receipts), "auto_coupled": coupled,
               "uncertain": len(uncertain), "failed": failed,
-              "flagged_no_transaction": flagged}
+              "flagged_no_transaction": flagged, "ignored_private_source": ignored}
     logger.info("[c47-waiting] %s", {k: (len(v) if isinstance(v, list) else v)
                                      for k, v in result.items()})
     return result
+
+
+def is_private_source(m: ProcessedMessage) -> bool:
+    from app.services.private_gmail import ACCOUNT_PRIVATE
+
+    return (m.source_account or "visma") == ACCOUNT_PRIVATE
+
+
+def ignore_private_source(db: Session, now: datetime | None = None) -> int:
+    """Privata Gmail-kvitton som väntat ≥14 dagar utan kortrad (även de som
+    redan flaggats no_transaction) → ignored_private_source. Loggas i
+    cleanup_log (regel ignored_private_source). Committar inte."""
+    from app.services.cleanup_log import log
+
+    cutoff = (now or datetime.utcnow()) - timedelta(days=NO_TXN_DAYS)
+    n = 0
+    for m in open_query(db).filter(ProcessedMessage.bezala_transaction_id.is_(None)).all():
+        if not is_private_source(m):
+            continue
+        since = m.waiting_since or m.processed_at
+        if m.waiting_status == WAITING and (since is None or since > cutoff):
+            continue
+        before = m.waiting_status
+        m.waiting_status = IGNORED_PRIVATE_SOURCE
+        n += 1
+        log(db, "waiting_receipts", "ignored_private_source", m.message_id,
+            before={"waiting_status": before, "vendor": m.vendor, "amount": m.amount,
+                    "currency": m.currency, "date": m.receipt_date, "sender": m.sender},
+            after={"waiting_status": IGNORED_PRIVATE_SOURCE},
+            reason="private Gmail receipt without a company card charge after 14 days")
+    db.flush()
+    return n
 
 
 def receipt_brief(m: ProcessedMessage, today: date | None = None) -> dict:

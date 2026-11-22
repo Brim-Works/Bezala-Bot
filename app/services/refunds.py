@@ -163,29 +163,65 @@ def overdue_refunds(db: Session, today: date | None = None) -> list[dict]:
 # ---------- dubbletter ----------
 
 
-def _receipt_count(receipts: list[ProcessedMessage], description: str, d: date,
-                   amount: float, currency: str | None) -> int:
-    from app.services.receipt_matcher import vendor_similarity
+DUP_WINDOW_DAYS = 5
+DUP_AMOUNT_TOLERANCE = 0.10  # samma som valutaomräkningen i matchningen
+
+
+def _receipt_amount_matches(m: ProcessedMessage, line: CardLine, rate) -> bool:
+    """Kvittots belopp ≈ kortradens (samma valuta ±2 %, annars via ECB-kurs
+    ±10 %, eller kortradens EUR-belopp). Kopplad snapshot räknas också."""
+    from app.services.receipt_matcher import _amount_matches_via_conversion
+
+    amount = float(line.amount)
+    if (m.bezala_payment_amount is not None
+            and abs(float(m.bezala_payment_amount) - amount) < 0.02):
+        return True
+    if m.amount is None:
+        return False
+    cur = (line.currency or "").upper()
+    mcur = (m.currency or "").upper()
+    if not cur or not mcur or cur == mcur:
+        return abs(float(m.amount) - amount) <= 0.02 * max(amount, 0.01)
+    ok, _, _ = _amount_matches_via_conversion(
+        amount, cur, float(m.amount), mcur,
+        line.txn_date.isoformat() if line.txn_date else None, rate)
+    return bool(ok)
+
+
+def _receipt_days(m: ProcessedMessage) -> list[date]:
     from app.services.trip_completeness import _parse_day
 
-    n = 0
+    return [d for d in (_parse_day(m.bezala_payment_date), _parse_day(m.receipt_date),
+                        _parse_day(m.received_at)) if d]
+
+
+def matching_receipts(receipts: list[ProcessedMessage], line: CardLine, rate) -> list:
+    """Alla kvitton (kopplade eller inte) för kortraden: leverantör +
+    belopp (med valutaomräkning) + datum ±5 dagar."""
+    from app.services.receipt_matcher import vendor_similarity
+
+    out = []
     for m in receipts:
-        snap_ok = (m.bezala_payment_amount is not None
-                   and abs(float(m.bezala_payment_amount) - amount) < 0.02
-                   and _parse_day(m.bezala_payment_date) == d)
-        rd = _parse_day(m.receipt_date)
-        same_cur = not currency or not m.currency or m.currency.upper() == currency.upper()
-        own_ok = (m.amount is not None and same_cur and abs(float(m.amount) - amount) < 0.02
-                  and rd == d)
-        if not (snap_ok or own_ok):
+        days = _receipt_days(m)
+        if not days or min(abs((d - line.txn_date).days) for d in days) > DUP_WINDOW_DAYS:
             continue
-        if vendor_similarity(description, m.vendor, m.sender) >= 0.6:
-            n += 1
-    return n
+        if not _receipt_amount_matches(m, line, rate):
+            continue
+        text = line.description or line.vendor or ""
+        if (vendor_similarity(text, m.vendor, m.sender) < 0.6
+                and vendor_similarity(text, m.bezala_payment_merchant, None) < 0.6):
+            continue
+        out.append(m)
+    return out
 
 
 def duplicate_charges(db: Session) -> list[dict]:
-    """Samma leverantör + belopp + dag med fler kortrader än kvitton."""
+    """C48: samma leverantör + belopp + dag med FLER kortrader än kvitton.
+    Alla kvitton räknas (kopplade eller inte, valutaomräknade, ±5 dagar);
+    papperskorg och dubblett-markerade räknas inte. Grupper där ingen
+    kortrad längre saknar kvitto i Bezala flaggas aldrig."""
+    from app.services.currency_converter import make_db_rate_provider
+
     groups: dict[tuple, list[CardLine]] = defaultdict(list)
     for c in db.query(CardLine).all():
         if c.txn_date is None or not c.amount or c.amount <= 0:
@@ -200,16 +236,44 @@ def duplicate_charges(db: Session) -> list[dict]:
                 .filter(ProcessedMessage.deleted_at.is_(None))
                 .filter(ProcessedMessage.status == "saved")
                 .filter(ProcessedMessage.duplicate_of.is_(None)).all())
+    rate = make_db_rate_provider(db)
+    keys = sorted(multi, key=lambda k: (k[1], k[0]))
+    # Varje kvitto räknas för högst en grupp (närmaste dag först) och en
+    # grupp tar högst lika många kvitton som den har kortrader.
+    pairs = []
+    for gi, key in enumerate(keys):
+        line = multi[key][0]
+        for m in matching_receipts(receipts, line, rate):
+            dist = min(abs((d - line.txn_date).days) for d in _receipt_days(m))
+            pairs.append((dist, gi, m.id, m))
+    pairs.sort(key=lambda p: (p[0], p[1], p[2]))
+    found: dict[int, list] = defaultdict(list)
+    used: set[int] = set()
+    for _, gi, mid, m in pairs:
+        if mid in used or len(found[gi]) >= len(multi[keys[gi]]):
+            continue
+        used.add(mid)
+        found[gi].append(m)
     out = []
-    for (vendor, d, amount, cur), lines in sorted(multi.items(), key=lambda kv: kv[0][1]):
-        n = _receipt_count(receipts, lines[0].description or vendor, d, amount, cur)
-        if n < len(lines):
+    for gi, (vendor, d, amount, cur) in enumerate(keys):
+        lines = multi[keys[gi]]
+        if not any(c.status == "missing" for c in lines):
+            continue
+        got = found[gi]
+        if len(lines) > len(got):
             out.append({
                 "id": f"dup:{d.isoformat()}:{amount:.2f}:{vendor[:40]}",
                 "vendor": lines[0].vendor or lines[0].description,
                 "date": d.isoformat(), "amount": amount, "currency": cur,
-                "card_lines": len(lines), "receipts": n,
+                "card_lines": len(lines), "receipts": len(got),
                 "bill_line_ids": sorted(c.bill_line_id for c in lines),
+                "charges": [{"bill_line_id": c.bill_line_id, "status": c.status,
+                             "description": c.description} for c in
+                            sorted(lines, key=lambda c: c.bill_line_id)],
+                "receipt_list": [{"id": m.id, "message_id": m.message_id,
+                                  "vendor": m.vendor, "amount": m.amount,
+                                  "currency": m.currency, "date": m.receipt_date,
+                                  "coupled": bool(m.bezala_transaction_id)}
+                                 for m in got],
             })
     return out
-
