@@ -94,11 +94,86 @@ def _private_profile_email() -> str | None:
     return email or None
 
 
+_last_config: list[KvittoConfig] = []
+
+
 def build_config(gmail) -> KvittoConfig:
     work = gmail.get_profile_email()
     own = [work, _private_profile_email() or ""]
     own += [a for a in os.environ.get("KVITTO_ALLOWED_SENDERS", "").split(",") if a.strip()]
-    return KvittoConfig(work, own)
+    cfg = KvittoConfig(work, own)
+    cfg.own_addresses = [a.strip().lower() for a in own if a and "@" in a]
+    _last_config[:] = [cfg]
+    return cfg
+
+
+def plus_address(cfg: KvittoConfig) -> str | None:
+    """Adressen Mikko mailar kvitton till (inte hemlig)."""
+    if cfg.explicit:
+        return cfg.explicit
+    local, _, domain = cfg.work_address.partition("@")
+    if not local or not domain:
+        return None
+    return f"{local.split('+', 1)[0]}+{TAG}@{domain}"
+
+
+def _variants(cfg: KvittoConfig) -> list[str]:
+    """Alla stavningar som godkänns (med och utan punkt i namnet)."""
+    if cfg.explicit:
+        return [cfg.explicit]
+    local, _, domain = cfg.work_address.partition("@")
+    local = local.split("+", 1)[0]
+    return sorted({f"{v}+{TAG}@{domain}" for v in (local, local.replace(".", ""))})
+
+
+def _log_mail(mid: str, sender: str | None, received_at, attachments: int | None,
+              outcome: str, reason: str | None = None) -> None:
+    from app.models import KvittoMailLog
+
+    try:
+        with session_scope() as db:
+            if db.query(KvittoMailLog.id).filter(KvittoMailLog.message_id == mid).first():
+                return
+            db.add(KvittoMailLog(message_id=mid, sender=(sender or "")[:512] or None,
+                                 received_at=received_at, attachments=attachments,
+                                 outcome=outcome, reason=(reason or None) and reason[:200]))
+    except Exception:  # noqa: BLE001 — loggen får aldrig fälla passet
+        logger.exception("[c48-kvitto] kunde inte logga %s", mid)
+
+
+def inbox_info(db, *, gmail=None, limit: int = 10) -> dict:
+    """C48 Del 5: +kvitto-adressen, godkända avsändare och senaste mail."""
+    from app.models import KvittoMailLog
+
+    cfg = _last_config[0] if _last_config else None
+    error = None
+    if cfg is None:
+        try:
+            if gmail is None:
+                from app.services.gmail_client import GmailClient
+
+                gmail = GmailClient()
+            cfg = build_config(gmail)
+        except Exception as exc:  # noqa: BLE001
+            error = f"Gmail not reachable: {exc}"[:300]
+    rows = (db.query(KvittoMailLog).order_by(KvittoMailLog.id.desc())
+            .limit(max(1, min(int(limit or 10), 50))).all())
+    out = {
+        "address": plus_address(cfg) if cfg else None,
+        "also_accepted": _variants(cfg) if cfg else [],
+        "allowed_senders": list(getattr(cfg, "own_addresses", []) or []) if cfg else [],
+        "note": ("Mail with a photo or PDF to this address from one of the allowed "
+                 "senders becomes a receipt (one per attachment). Other senders are "
+                 "only logged as rejected."),
+        "recent": [{
+            "at": (r.received_at or r.created_at).isoformat() if (r.received_at or r.created_at) else None,
+            "sender": r.sender, "attachments": r.attachments, "outcome": r.outcome,
+            "reason": r.reason,
+        } for r in rows],
+    }
+    if error:
+        out["error"] = error
+    return out
 
 
 def addressed_to_plus(cfg: KvittoConfig, headers: dict[str, list[str]]) -> bool:
@@ -153,6 +228,9 @@ def run_kvitto_pass(gmail, *, drive=None, analyzer=None, max_results: int = 25,
         frm = (headers.get("from") or [""])[0]
         if not cfg.is_own_sender(frm) or auth_failed(headers):
             out["rejected"] += 1
+            _log_mail(mid, parseaddr(frm)[1] or frm, None, None, "rejected",
+                      "sender authentication failed" if cfg.is_own_sender(frm)
+                      else "sender is not one of Mikko's own addresses")
             if mid not in _rejected_logged:
                 _rejected_logged.add(mid)
                 logger.info("[c47-kvitto] avvisat mail %s (avsändaren är inte Mikkos egen)", mid)
@@ -162,7 +240,10 @@ def run_kvitto_pass(gmail, *, drive=None, analyzer=None, max_results: int = 25,
         if not atts:
             logger.info("[c47-kvitto] %s saknar bild/PDF-bilaga - hoppar", mid)
             out["skipped"] += 1
+            _log_mail(mid, msg.sender, msg.received_at, 0, "no_attachment",
+                      "no photo or PDF attachment")
             continue
+        _log_mail(mid, msg.sender, msg.received_at, len(atts), "accepted")
         for i, att in enumerate(atts):
             rid = mid if i == 0 else f"{mid}#{i + 1}"
             try:

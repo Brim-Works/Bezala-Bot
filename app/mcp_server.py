@@ -63,7 +63,12 @@ INSTRUCTIONS = (
     "duplicate charges, receipts without card payment, overdue refunds) with a "
     "yes_label/no_label; decide(item_id, 'yes'|'no'|'later') acts on it - ask Mikko "
     "first and use his answer; undo_last_decision reverts the latest one. "
-    "expect_refund marks a card line whose money should come back (e.g. cancelled trip)."
+    "expect_refund marks a card line whose money should come back (e.g. cancelled trip). "
+    "Subscriptions need an account Mikko chooses (list_bezala_accounts, "
+    "set_subscription_account) before they can be activated - never guess accounts. "
+    "Receipts without amount are never coupled automatically. Private Gmail receipts "
+    "without a company card charge after 14 days are ignored (ignored_private_source). "
+    "get_cleanup_report and investigate_vendor are read-only diagnostics."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -462,17 +467,22 @@ async def remove_private_sender(address: str) -> dict:
 
 
 @mcp.tool()
-async def list_pending_decisions(limit: int = 20) -> dict:
+async def list_pending_decisions(limit: int = 20, offset: int = 0) -> dict:
     """The decision queue (same as the Travel Tinder swipe view), one card per
     pending decision, most urgent first: 'receipt' (couple this receipt to this
     card line?), 'trip' (approve the trip?), 'sub' (is this a subscription to
     auto-handle?), 'subdev' (subscription amount changed), 'subnr' (subscription
     without receipt), 'dup' (more card charges than receipts), 'notxn' (receipt
     without card payment after 14 days), 'refund' (expected refund not seen).
-    Each card has item_id, title, subtitle, yes_label and no_label. Read-only."""
+    'subpriv' (likely private subscription), trip cards carry completeness
+    ('3/4 found, missing: hotel') and free_meals.
+    Each card has item_id, title, subtitle, yes_label and no_label (and 'warning'
+    when something must be checked first). Paging: total = all cards, use
+    offset (next_offset) to get the next page. Read-only."""
     from app.services.decision_queue import list_pending
 
-    return await _run(list_pending, limit=max(1, min(int(limit or 20), 100)))
+    return await _run(list_pending, limit=max(1, min(int(limit or 20), 100)),
+                      offset=max(0, int(offset or 0)))
 
 
 @mcp.tool()
@@ -515,6 +525,75 @@ async def list_subscriptions() -> dict:
     from app.services.subscriptions import list_subscriptions as _list
 
     return await _run(lambda db: {"subscriptions": _list(db)})
+
+
+# ---------- C48 ----------
+
+
+@mcp.tool()
+async def list_bezala_accounts() -> dict:
+    """Read-only: Bezala's account list (id, name) and the accounts Mikko chose
+    earlier per vendor. Use it before set_subscription_account."""
+    from app.services.subscriptions import bezala_accounts
+
+    return await _run(bezala_accounts)
+
+
+@mcp.tool()
+async def set_subscription_account(subscription_id: int, account: int | None) -> dict:
+    """Set the Bezala account (numeric id from list_bezala_accounts) for a
+    subscription. ONLY with the account Mikko names - never guess. A
+    subscription without account cannot be activated. account=None clears it."""
+    from app.services.subscriptions import bezala_accounts, set_account
+
+    def work(db):
+        accounts = bezala_accounts(db).get("accounts") if account is not None else None
+        return set_account(db, subscription_id, account, accounts=accounts)
+
+    return await _run(work)
+
+
+@mcp.tool()
+async def get_receipt_inbox_info() -> dict:
+    """Read-only: the +kvitto address receipts can be mailed to, which senders
+    are accepted, and the latest mails to it (time, attachments, accepted /
+    rejected). The addresses are not secret."""
+    from app.services.kvitto_mail import inbox_info
+
+    return await _run(inbox_info)
+
+
+@mcp.tool()
+async def get_cleanup_report(rule: str | None = None, limit: int = 50) -> dict:
+    """Read-only: what the data cleanup did (saved in the database instead of
+    only in Railway logs). counts per rule + rows. Rules: empty_error (error rows
+    without mail context - reason = the error), pre_2026 (receipts moved to the
+    trash), date_corrected, finnair_duplicate, hotel_duplicate, duplicate,
+    amount_missing (2026 receipts without amount, re-read result),
+    ignored_private_source, purpose_fixed, purpose_report,
+    subscription_dismissed, subscription_merged."""
+    from app.services.cleanup_log import report
+
+    return await _run(report, rule, limit)
+
+
+@mcp.tool()
+async def investigate_vendor(query: str, limit: int = 50) -> dict:
+    """Read-only: where do a vendor's rows come from? Company card lines (all
+    statuses), card charges seen on coupled receipts, and receipts with source
+    (work/private Gmail, mobile, +kvitto, manual), sender and waiting status."""
+    from app.services.c48_migrations import investigate_vendor as _inv
+
+    return await _run(_inv, query, limit)
+
+
+@mcp.tool()
+async def list_receipts_without_amount() -> dict:
+    """Read-only: processed 2026 receipts whose amount is missing, and whether
+    they can be re-read. Such receipts are never coupled automatically."""
+    from app.services.amount_missing import list_without_amount
+
+    return await _run(list_without_amount)
 
 
 # ---------- ASGI: auth + Streamable HTTP ----------

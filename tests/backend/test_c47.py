@@ -337,14 +337,21 @@ def test_seeded_subscriptions_are_inactive_until_confirmed(db):  # noqa: F811
     _line(db, 2600030, date(2026, 10, 3), 20.0, desc="CURSOR, NEW YORK, US 20.00 EUR",
           status="resolved")
     item = f"sub:{cursor.id}"
-    assert item in [i["id"] for i in q.list_pending(db)["items"]]
+    card = next(i for i in q.list_pending(db)["items"] if i["id"] == item)
+    # C48: kontot gissas aldrig (vendor-mappningen visas bara som förslag)
+    # och utan konto kan prenumerationen inte aktiveras.
+    assert card["warning"] == "Account missing - set it first"
+    assert card["subscription"]["suggested_account"] == 6820
+    with pytest.raises(Exception, match="Account missing"):
+        q.decide(db, item, "yes")
+    db.refresh(cursor)
+    assert not cursor.active and cursor.account is None
+    from app.services.subscriptions import set_account
+
+    set_account(db, cursor.id, 6820)
     q.decide(db, item, "yes")
     db.refresh(cursor)
     assert cursor.active and cursor.account == 6820 and cursor.expected_amount == 20.0
-    lov = next(s for s in subs if s.name == "Lovable")
-    q.decide(db, f"sub:{lov.id}", "yes")
-    db.refresh(lov)
-    assert lov.account is None  # aldrig gissat
 
 
 def test_subscription_autocouple_with_description_and_flags(db):  # noqa: F811
@@ -375,10 +382,18 @@ def test_subscription_autocouple_with_description_and_flags(db):  # noqa: F811
 def test_detect_subscription_two_months_similar_amount(db):  # noqa: F811
     from app.services.subscriptions import detect_subscriptions
 
-    _receipt(db, date(2026, 9, 5), "Notion Labs", 10.0, waiting=False, category="Mjukvara")
-    _receipt(db, date(2026, 10, 5), "Notion Labs", 10.5, waiting=False, category="Mjukvara")
+    # C48: bara kortrader på företagskortet räknas.
+    _line(db, 2600070, date(2026, 9, 5), 10.0, desc="NOTION LABS, SAN FRANCISCO, US 10.00 EUR",
+          status="resolved")
+    _line(db, 2600071, date(2026, 10, 5), 10.5, desc="NOTION LABS, SAN FRANCISCO, US 10.50 EUR")
     _receipt(db, date(2026, 9, 21), "Flytoget", 24.0, waiting=False, category="Kollektivtrafik")
     _receipt(db, date(2026, 10, 21), "Flytoget", 24.0, waiting=False, category="Kollektivtrafik")
+    _line(db, 2600072, date(2026, 9, 21), 24.0, desc="FLYTOGET AS, OSLO, NO 24.00 EUR",
+          status="resolved")
+    _line(db, 2600073, date(2026, 10, 21), 24.0, desc="FLYTOGET AS, OSLO, NO 24.00 EUR",
+          status="resolved")
+    _receipt(db, date(2026, 9, 11), "Crunchyroll", 6.99, waiting=False, category="Mjukvara")
+    _receipt(db, date(2026, 10, 11), "Crunchyroll", 6.99, waiting=False, category="Mjukvara")
     new = detect_subscriptions(db)
     assert [s.vendor_pattern for s in new] == ["notion"]
     assert not new[0].active and new[0].review_status == "suggested"

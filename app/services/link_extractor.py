@@ -23,7 +23,9 @@ _URL_RE = re.compile(r"https?://[^\s<>\"'\\]+", re.IGNORECASE)
 # <a href="...">visible text</a>-extraktion: vi behöver text-innehållet
 # för att ranka kvitto-länkar med "Ladda ner kvitto"-anchors högst.
 _A_HREF_RE = re.compile(
-    r"""<a\b[^>]*?\bhref=(["'])(https?://[^"']+)\1[^>]*>(.*?)</a>""",
+    # C48: Arlanda Express nya mail skriver "</a\n>" — tillåt blanksteg
+    # före '>' i sluttaggen (annars hittades ingen länk alls).
+    r"""<a\b[^>]*?\bhref=(["'])(https?://[^"']+)\1[^>]*>(.*?)</a\s*>""",
     re.IGNORECASE | re.DOTALL,
 )
 _TAG_STRIP_RE = re.compile(r"<[^>]+>")

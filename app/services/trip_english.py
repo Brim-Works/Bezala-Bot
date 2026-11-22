@@ -197,15 +197,60 @@ def generate_purpose(
     return head
 
 
-def combine_purposes(day_purposes: list[str | None]) -> str | None:
-    """Resans syfte ur dagarnas: unika, i ordning, högst två."""
+def _purpose_core(part: str, cities: Iterable[str] = ()) -> str:
+    """Posten utan ort ('…, Oslo office' / '…, Oslo'), gemener, utan skiljetecken."""
+    text = _fold(part).strip()
+    for city in sorted({_fold(c) for c in cities if c}, key=len, reverse=True):
+        text = re.sub(rf",?\s*{re.escape(city)}(\s+office)?\s*$", "", text)
+    text = re.sub(r",\s*[a-z .\-]+ office\s*$", "", text)
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
+
+
+def normalize_purpose(purpose: str | None, cities: Iterable[str] = ()) -> str | None:
+    """C48 Del 4 — dela på ';', ta bort poster som redan ingår i en annan
+    post (gemener, orten ignoreras), behåll ordningen.
+
+    'Workshop and team syncs, Oslo office; Team syncs, Oslo office'
+    → 'Workshop and team syncs, Oslo office'."""
+    if not purpose:
+        return purpose
+    parts = [p.strip() for p in purpose.split(";") if p.strip()]
+    if len(parts) <= 1:
+        return purpose.strip()
+    cores = [_purpose_core(p, cities) for p in parts]
+    keep: list[str] = []
+    for i, (part, core) in enumerate(zip(parts, cores)):
+        dup = False
+        for j, other in enumerate(cores):
+            if i == j or not core:
+                continue
+            contained = re.search(rf"(?<![a-z0-9]){re.escape(core)}(?![a-z0-9])", other)
+            if core == other and j < i:
+                dup = True  # exakt samma — behåll den första
+            elif core != other and contained:
+                dup = True  # ingår i en längre post
+            if dup:
+                break
+        if not dup:
+            keep.append(part)
+    return "; ".join(keep) if keep else parts[0]
+
+
+def combine_purposes(day_purposes: list[str | None],
+                     cities: Iterable[str] = ()) -> str | None:
+    """Resans syfte ur dagarnas: unika, i ordning, högst två. C48: poster
+    som redan ingår i en annan tas bort."""
     seen: list[str] = []
     for p in day_purposes:
         if p and p not in seen:
             seen.append(p)
     if not seen:
         return None
-    return "; ".join(seen[:2])
+    return normalize_purpose("; ".join(seen[:2]), cities)
+
+
+def is_repeated_purpose(purpose: str | None, cities: Iterable[str] = ()) -> bool:
+    return bool(purpose) and normalize_purpose(purpose, cities) != purpose.strip()
 
 
 # ---------- Netvisor ----------

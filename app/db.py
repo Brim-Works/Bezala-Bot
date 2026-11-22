@@ -301,6 +301,19 @@ def _apply_schema_migrations() -> None:
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 
+    # C48 — prenumerationer: kind (likely_private) + note.
+    if "subscriptions" in tables:
+        existing = {col["name"] for col in insp.get_columns("subscriptions")}
+        with engine.begin() as conn:
+            for name, col_type in {"kind": "VARCHAR(24)", "note": "VARCHAR(200)"}.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(text(f"ALTER TABLE subscriptions ADD COLUMN {name} {col_type}"))
+                    logger.info("Lade till kolumn subscriptions.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
     if "ai_feedback" in tables:
         existing = {col["name"] for col in insp.get_columns("ai_feedback")}
         with engine.begin() as conn:

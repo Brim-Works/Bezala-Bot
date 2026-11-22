@@ -961,7 +961,7 @@ def _build_trip(
         "travel_end_at": _iso(travel_end),
         "destination": " → ".join(dests) if dests else None,
         "country": ",".join(countries) if countries else None,
-        "purpose": combine_purposes([d["purpose"] for d in days]),
+        "purpose": combine_purposes([d["purpose"] for d in days], dests),
         "open_return": FLAG_MISSING_RETURN in flags,
         "flags": flags,
         "flights": [_flight_dict(f) for f in flights],

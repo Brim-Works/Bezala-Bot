@@ -440,7 +440,7 @@ def _same_purchase(a: ProcessedMessage, b: ProcessedMessage) -> bool:
     return False
 
 
-def mark_duplicates(db: Session) -> dict:
+def mark_duplicates(db: Session, marked_rows: list | None = None) -> dict:
     """Sätt duplicate_of på dubbletterna (Bezala rörs aldrig). Idempotent.
     Committar. Returnerar rapport."""
     rows = (
@@ -463,9 +463,14 @@ def mark_duplicates(db: Session) -> dict:
         if rid not in want and keep not in dupe_mids:
             want[rid] = keep
     cleared = 0
+    if marked_rows is None:
+        marked_rows = []  # C48: anroparen kan få de nymarkerade raderna
     for m in rows:
         target = want.get(m.id)
         if target and m.duplicate_of != target:
+            marked_rows.append({"id": m.id, "message_id": m.message_id,
+                                "vendor": m.vendor, "before": m.duplicate_of,
+                                "duplicate_of": target})
             m.duplicate_of = target
             marked += 1
         elif not target and m.duplicate_of:

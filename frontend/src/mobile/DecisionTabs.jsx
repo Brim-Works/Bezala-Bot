@@ -19,6 +19,7 @@ const KIND_LABELS = {
   receipt: { tag: 'Kvitto ↔ kortrad', yes: 'Koppla', no: 'Inte detta par' },
   trip: { tag: 'Resa', yes: 'Godkänn resan', no: 'Ingen tjänsteresa' },
   sub: { tag: 'Prenumeration?', yes: 'Ja, sköt automatiskt', no: 'Ingen prenumeration' },
+  subpriv: { tag: 'Privat prenumeration?', yes: 'Privat – markera som privat utlägg', no: 'Företagsprenumeration' },
   subdev: { tag: 'Prenumeration – nytt belopp', yes: 'OK, nytt pris', no: 'Hantera själv' },
   subnr: { tag: 'Prenumeration – inget kvitto', yes: 'Kvitto kommer inte', no: 'Vänta mer' },
   dup: { tag: 'Dubbeldragning?', yes: 'Alla är riktiga köp', no: 'Dubbel – väntar återbetalning' },
@@ -180,6 +181,9 @@ function QueueCard({ item, busy, onDecide }) {
       <div className="m-tag">{labels.tag || item.kind}{item.later ? ' · senare' : ''}</div>
       <div className="m-card__title">{item.title}</div>
       <div className="m-muted">{item.subtitle}</div>
+      {item.warning && (
+        <div className="m-warning" role="alert" data-testid="queue-card-warning">⚠ {item.warning}</div>
+      )}
       <CardBody item={item} />
       <div className="m-actions m-actions--decide">
         <button type="button" className="m-btn m-btn--no" disabled={busy} onClick={() => onDecide('no')}>
@@ -188,7 +192,8 @@ function QueueCard({ item, busy, onDecide }) {
         <button type="button" className="m-btn m-btn--ghost" disabled={busy} onClick={() => onDecide('later')}>
           ↑ Senare
         </button>
-        <button type="button" className="m-btn m-btn--yes" disabled={busy} onClick={() => onDecide('yes')}>
+        <button type="button" className="m-btn m-btn--yes" disabled={busy || item.blocked}
+          title={item.blocked ? item.warning : undefined} onClick={() => onDecide('yes')}>
           {labels.yes || item.yes_label} →
         </button>
       </div>

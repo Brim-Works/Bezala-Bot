@@ -212,6 +212,8 @@ def _receipt_info(m: ProcessedMessage) -> dict:
         "bezala_upload_status": m.bezala_upload_status,
         "matched_at": m.matched_at.isoformat() if m.matched_at else None,
         "upload_source": m.upload_source,
+        "source_account": m.source_account or "visma",
+        "waiting_status": m.waiting_status,
         "bill_line_snapshot": {
             "merchant": m.bezala_payment_merchant,
             "amount": m.bezala_payment_amount,

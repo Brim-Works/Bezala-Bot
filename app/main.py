@@ -241,6 +241,20 @@ def _run_c47_migrations() -> None:
         db.close()
 
 
+def _run_c48_migrations() -> None:
+    from app.db import SessionLocal
+    from app.services.c48_migrations import run_all
+
+    db = SessionLocal()
+    try:
+        # Omläsning av kvitton utan belopp kräver Gmail → bara när skanning är på.
+        logger.info("C48: startjobb %s", run_all(db, background=bool(settings.scan_enabled)))
+    except Exception:  # noqa: BLE001
+        logger.exception("C48: startjobb misslyckades")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("Startar Bezala Bot...")
@@ -260,6 +274,7 @@ async def lifespan(app: FastAPI):
     _run_c45_migrations()
     _run_c46_migrations()
     _run_c47_migrations()
+    _run_c48_migrations()
     # C46 Del 4 — läs om jobb-Gmail 2026 (torrläge, sedan riktigt). En gång.
     if settings.scan_enabled and os.environ.get("C46_RESCAN_ENABLED", "true").lower() != "false":
         from app.services.c46_rescan import start_background as _c46_rescan
