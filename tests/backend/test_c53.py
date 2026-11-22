@@ -440,3 +440,13 @@ def test_confirmation_dry_run(db):  # noqa: F811
     item = out["by_vendor"]["Finnair"]["receipts"][0]
     assert item["message_id"] == "1a1e47fc363f2a8b"
     assert item["original_coupled_to"] == "5575527"
+
+
+def test_shared_refund_beats_weak_suggestion_with_other_amount(db):  # noqa: F811
+    from app.services.card_line_coupling import suggest_receipts
+
+    _, _, line = _finnair(db)
+    _receipt(db, date(2026, 11, 18), "Finnair", 732.57, waiting=False, message_id="744",
+             category="Flyg", subject="Finnair receipt", upload_source="gmail")
+    out = suggest_receipts(db, [line], exclude_pairs=set())
+    assert out["2513379"]["message_id"] == "1a1e47fcf0f086b3"
