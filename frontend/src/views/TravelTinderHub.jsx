@@ -2,6 +2,7 @@ import { useState } from 'react';
 import DecisionTabs from '../mobile/DecisionTabs.jsx';
 import ClassicTravelTinder from './TravelTinder.jsx';
 import Review from './Review.jsx';
+import Match from './Match.jsx';
 import '../mobile/mobile.css';
 
 /* C47 Del 6 — EN sida "Travel Tinder" som ersätter Granska, Kortmatchning
@@ -12,12 +13,14 @@ import '../mobile/mobile.css';
  *   Manuell koppling — gamla Travel Tinder/Kortmatchning (välj kortrad +
  *                      kvitto, ladda upp, privat utlägg, matchade par)
  *   Granska          — gamla Granska (redigera fält + ladda upp till Bezala)
+ *   Kortmatchning    — gamla listan kortrad → förslag (Koppla ihop)
  */
 
 const MODES = [
   { key: 'queue', label: 'Svep-kö' },
   { key: 'manual', label: 'Manuell koppling' },
   { key: 'review', label: 'Granska (Bezala-uppladdning)' },
+  { key: 'match', label: 'Kortmatchning (lista)' },
 ];
 
 export default function TravelTinderHub() {
@@ -49,6 +52,7 @@ export default function TravelTinderHub() {
           {mode === 'queue' && <DecisionTabs key="q" initialTab="decide" variant="desktop" hideTabs />}
           {mode === 'manual' && <ClassicTravelTinder />}
           {mode === 'review' && <Review />}
+          {mode === 'match' && <Match />}
         </>
       )}
       {tab === 'matched' && <DecisionTabs key="m" initialTab="matched" variant="desktop" hideTabs />}

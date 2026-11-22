@@ -66,30 +66,7 @@ test('Timestamp — naiv UTC-iso (utan Z) parsas som UTC, inte local time', asyn
   expect(rendered).not.toMatch(/dag|day|månad|month|år|year/);
 });
 
-test('Dashboard — "Total denna vecka" exkluderar skipped-rader', async ({
-  page,
-}) => {
-  const msgs = buildMessages();
-  // Fem bearbetade + två skipped inom 7 dagar.
-  msgs.push(skippedRow({ id: 100, message_id: 'skip-100' }));
-  msgs.push(
-    skippedRow({
-      id: 101,
-      message_id: 'skip-101',
-      status: 'skipped:excluded_subject',
-    }),
-  );
-  await setupApiMocks(page, { messages: msgs });
-
-  await page.goto('/');
-  await expect(page.locator('tr[data-row-id="1"]')).toBeVisible();
-
-  // "Total denna vecka" ska visa 5, inte 7.
-  const card = page
-    .locator('.stat', { hasText: 'Total denna vecka' })
-    .first();
-  await expect(card.locator('.stat__value')).toHaveText('5');
-});
+// C47 Del 6.3 — måttet "Total denna vecka" är borttaget från Översikt.
 
 test('Dashboard — filter-tab "Alla" räknar ej-skipped + tabellen matchar', async ({
   page,

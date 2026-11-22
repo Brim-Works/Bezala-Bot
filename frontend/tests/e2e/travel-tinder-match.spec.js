@@ -133,7 +133,7 @@ async function setupTinderMocks(page, suggestions = sampleSuggestions()) {
 test('Klick på rad i Other Receipts visar Card B — ingen modal', async ({ page }) => {
   await setupTinderMocks(page);
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-payments')).toBeVisible();
   await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
 
@@ -179,7 +179,7 @@ test('Klick på Couple-knapp i Card A kopplar AI-förslaget', async ({ page }) =
     },
   );
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
 
   const reqPromise = page.waitForRequest((req) =>
@@ -219,7 +219,7 @@ test('Couple via Card B kopplar användarens val', async ({ page }) => {
     },
   );
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await page.getByTestId(`tt-receipt-${OTHER_MESSAGE_ID}`).click();
   await expect(page.getByTestId('tt-candidate-user')).toBeVisible();
 
@@ -240,7 +240,7 @@ test('Couple via Card B kopplar användarens val', async ({ page }) => {
 test('× på Card B rensar valet', async ({ page }) => {
   await setupTinderMocks(page);
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await page.getByTestId(`tt-receipt-${OTHER_MESSAGE_ID}`).click();
   await expect(page.getByTestId('tt-candidate-user')).toBeVisible();
 
@@ -251,7 +251,7 @@ test('× på Card B rensar valet', async ({ page }) => {
 test('Klick på samma rad igen avmarkerar', async ({ page }) => {
   await setupTinderMocks(page);
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await page.getByTestId(`tt-receipt-${OTHER_MESSAGE_ID}`).click();
   await expect(page.getByTestId('tt-candidate-user')).toBeVisible();
 
@@ -262,7 +262,7 @@ test('Klick på samma rad igen avmarkerar', async ({ page }) => {
 test('Open in Drawer öppnar Drawer', async ({ page }) => {
   await setupTinderMocks(page);
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
 
   await page
@@ -310,7 +310,7 @@ test('C14 — payment-rad deemfasas med "kopplar…"-indikator under POST', asyn
     },
   );
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
 
   await page
@@ -380,7 +380,7 @@ test('C14 — payment-raden tas bort omedelbart vid lyckad match', async ({ page
     },
   );
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toBeVisible();
 
   await page
@@ -430,7 +430,7 @@ test('C14 — 409 Conflict visar "Redan kopplad" och tar bort raden', async ({ p
     },
   );
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId(`tt-payment-${MISSING_ID}`)).toBeVisible();
   await page
     .getByTestId('tt-candidate-ai')
@@ -514,7 +514,7 @@ test('C20 — Couple skickar bill_line_id för aktuellt vald payment, inte stale
     },
   );
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   // Default-auto-välj = första raden = Finnair
   await expect(
     page.getByTestId(`tt-payment-${MISSING_FINNAIR}`),
@@ -571,7 +571,7 @@ test('C14 — fel återställer UI så användaren kan försöka igen', async ({
     },
   );
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
 
   await page

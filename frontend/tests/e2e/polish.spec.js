@@ -80,7 +80,7 @@ test('Toast-stack — flera toastar samtidigt (via två error-routes)', async ({
   await expect(page.getByText(/Scanning startad|Scan started/i)).toBeVisible();
 
   // Navigera till Log och trigga rensa-fel → andra toast
-  await page.getByRole('button', { name: 'Logg', exact: true }).click();
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
   await page.getByTestId('clear-errors').click();
   // Två toastar samtidigt — minst en av varje kind
   await expect(page.getByTestId('toast-ok').first()).toBeVisible();

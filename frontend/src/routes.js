@@ -14,7 +14,7 @@ export const ROUTES = {
 /* C47 Del 6 — gamla URL:er pekar vidare till de sammanslagna sidorna. */
 export const REDIRECTS = {
   '/review': '/travel-tinder?mode=review',
-  '/match': '/travel-tinder?mode=manual',
+  '/match': '/travel-tinder?mode=match',
   '/log': '/status',
   '/match-health': '/status?tab=match-health',
 };

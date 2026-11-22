@@ -122,7 +122,7 @@ async function setupMatchedMocks(page, { pairs = SAMPLE_PAIRS, stats = STATS_DEF
 async function gotoTravelTinder(page) {
   // Playwright kör varje test i en fräsch context → localStorage är
   // tomt så vi behöver inte rensa explicit.
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-payments')).toBeVisible();
 }
 

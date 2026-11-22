@@ -5,15 +5,16 @@ test.beforeEach(async ({ page }) => {
   await setupApiMocks(page);
 });
 
-test('Navigation — sidebar navigerar mellan alla 4 vyer', async ({ page }) => {
+test('Navigation — sidebar navigerar mellan vyerna', async ({ page }) => {
   await page.goto('/');
   await expect(page).toHaveURL(/\/$/);
 
-  await page.getByRole('button', { name: 'Granska', exact: true }).click();
-  await expect(page).toHaveURL(/\/review$/);
+  // C47 — Granska/Kortmatchning/Travel Tinder är en sida, Logg+Match Health = Status.
+  await page.getByRole('button', { name: 'Travel Tinder', exact: true }).click();
+  await expect(page).toHaveURL(/\/travel-tinder$/);
 
-  await page.getByRole('button', { name: 'Logg', exact: true }).click();
-  await expect(page).toHaveURL(/\/log$/);
+  await page.getByRole('button', { name: 'Status', exact: true }).click();
+  await expect(page).toHaveURL(/\/status$/);
 
   await page.getByRole('button', { name: 'Inställningar', exact: true }).click();
   await expect(page).toHaveURL(/\/settings$/);

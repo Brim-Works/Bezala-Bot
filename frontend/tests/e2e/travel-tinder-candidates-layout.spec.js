@@ -126,7 +126,7 @@ test.describe('MatchCandidates layout', () => {
     page,
   }) => {
     await setupMocks(page);
-    await page.goto('/travel-tinder');
+    await page.goto('/travel-tinder?mode=manual');
 
     const card = page.getByTestId('tt-candidate-ai');
     await expect(card).toBeVisible();
@@ -146,7 +146,7 @@ test.describe('MatchCandidates layout', () => {
     page,
   }) => {
     await setupMocks(page);
-    await page.goto('/travel-tinder');
+    await page.goto('/travel-tinder?mode=manual');
 
     await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
     await page.getByTestId(`tt-receipt-${OTHER_MESSAGE_ID}`).click();
@@ -169,7 +169,7 @@ test.describe('MatchCandidates layout', () => {
     page,
   }) => {
     await setupMocks(page, sampleSuggestions({ file_name: LONG_FILE_NAME }));
-    await page.goto('/travel-tinder');
+    await page.goto('/travel-tinder?mode=manual');
 
     const card = page.getByTestId('tt-candidate-ai');
     await expect(card).toBeVisible();
@@ -193,7 +193,7 @@ test.describe('MatchCandidates layout', () => {
   }) => {
     await page.setViewportSize({ width: 1200, height: 1000 });
     await setupMocks(page);
-    await page.goto('/travel-tinder');
+    await page.goto('/travel-tinder?mode=manual');
 
     await expect(page.getByTestId('tt-candidate-ai')).toBeVisible();
     await page.getByTestId(`tt-receipt-${OTHER_MESSAGE_ID}`).click();

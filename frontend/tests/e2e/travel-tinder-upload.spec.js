@@ -57,7 +57,7 @@ async function setupTinderMocks(page) {
 test('upload-card renderas med företagskort som default + private stub disabled', async ({ page }) => {
   await setupTinderMocks(page);
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-payments')).toBeVisible();
 
   // Korttransaktionen är auto-vald → upload-kortet visas under "Andra kvitton"
@@ -106,7 +106,7 @@ test('upload skickar payment_method=company_card och bill_line_id', async ({ pag
     });
   });
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-upload-card')).toBeVisible();
   // C44: vänta tills korttransen är vald (kameraknappen syns bara då).
   // Annars monteras kortet om efter att filen valts och filvalet tappas.
@@ -149,7 +149,7 @@ test('C43 — kameraknapp laddar upp och kopplar direkt', async ({ page }) => {
     });
   });
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   const camera = page.getByTestId('tt-upload-camera-input');
   await expect(camera).toHaveAttribute('capture', 'environment');
   await expect(page.getByTestId('tt-upload-camera')).toBeVisible();
@@ -177,7 +177,7 @@ test('C43 — markera kortrad som privat utlägg', async ({ page }) => {
     });
   });
 
-  await page.goto('/travel-tinder');
+  await page.goto('/travel-tinder?mode=manual');
   await expect(page.getByTestId('tt-private-expense')).toBeVisible();
   await page.getByTestId('tt-private-mark').click();
   await expect.poll(() => body).not.toBeNull();
