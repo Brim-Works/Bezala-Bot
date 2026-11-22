@@ -64,7 +64,11 @@ def _candidates(db: Session) -> list[dict]:
         .filter(ProcessedMessage.duplicate_of.is_(None))
         .all()
     )
-    return [_serialize(m) for m in rows if m.bezala_upload_status != "success"]
+    from app.services.c53_receipts import filter_candidates
+
+    # C53 Del 0b — e-ticket före bokningsbekräftelse vid samma booking_ref.
+    return filter_candidates(db, [_serialize(m) for m in rows
+                                  if m.bezala_upload_status != "success"])
 
 
 def _brief(entry: dict) -> dict:
@@ -127,6 +131,18 @@ def suggest_receipts(db: Session, card_lines: list[CardLine],
                         "kind": m.kind, "score": 90, "match": "apple_card_line"}
     except Exception:  # noqa: BLE001
         logger.exception("C50: Apple-förslag misslyckades")
+    # C53 Del 0b — köprad vars kvitto redan används för återbetalningen
+    # (samma belopp, samma booking_ref): föreslå originalet, märkt.
+    try:
+        from app.services.c53_receipts import shared_refund_receipt
+
+        for c in card_lines:
+            if out.get(c.bill_line_id) is None:
+                s = shared_refund_receipt(db, c)
+                if s and (c.bill_line_id, s["message_id"]) not in exclude_pairs:
+                    out[c.bill_line_id] = s
+    except Exception:  # noqa: BLE001
+        logger.exception("C53: återbetalningsförslag misslyckades")
     return out
 
 
@@ -158,6 +174,16 @@ def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
     if row.duplicate_of:
         raise CouplingError(
             f"Receipt {row.message_id} is a duplicate of {row.duplicate_of} — couple that one."
+        )
+    if row.matched_at is not None and row.bezala_transaction_id \
+            and str(row.bezala_transaction_id) != bid:
+        # C53 Del 0b — kvittoraden bär bara en Bezala-koppling. Ladda inte upp
+        # igen (skulle skriva över kopplingen till t.ex. återbetalningen).
+        raise CouplingError(
+            f"Receipt {row.message_id} is already coupled to Bezala "
+            f"{row.bezala_transaction_id}. Bezala Bot does not upload it again - download "
+            f"the PDF from {row.drive_link or 'Drive'} and add it to card line {bid} in "
+            "Bezala yourself."
         )
     if not row.drive_file_id or not row.file_name:
         raise CouplingError("The receipt has no Drive file — cannot couple it to Bezala.")

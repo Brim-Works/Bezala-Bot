@@ -26,6 +26,35 @@ from app.services import bezala_write_guard as guard
 
 logger = logging.getLogger(__name__)
 
+# C53 Del 0 — när C51-skyddet (endast state "draft", `state` skickas aldrig)
+# gick live. Merge av C51 (#102, a08ebef) 2026-11-22 12:04:19 Helsingfors =
+# 10:04:19 UTC; Railway deployar efter merge, så merge-tiden är den tidigaste
+# möjliga tidpunkten (konservativt: allt efter den räknas som "efter").
+# written_at i rapporten är UTC (datetime.utcnow).
+C51_GUARD_LIVE_AT_UTC_DEFAULT = "2026-11-22T10:04:19"
+
+
+def guard_live_at() -> datetime:
+    import os
+
+    raw = (os.environ.get("C51_GUARD_LIVE_AT_UTC") or "").strip()
+    try:
+        return datetime.fromisoformat((raw or C51_GUARD_LIVE_AT_UTC_DEFAULT).replace("Z", ""))
+    except ValueError:
+        return datetime.fromisoformat(C51_GUARD_LIVE_AT_UTC_DEFAULT)
+
+
+def written_after_guard(written_at: str | None) -> bool | None:
+    if not written_at:
+        return None
+    try:
+        when = datetime.fromisoformat(str(written_at).replace("Z", ""))
+    except ValueError:
+        return None
+    if when.tzinfo is not None:
+        when = when.replace(tzinfo=None)
+    return when >= guard_live_at()
+
 
 def _iso(d) -> str | None:
     return d.isoformat() if d else None
@@ -170,6 +199,7 @@ def list_bot_bezala_writes(db: Session, days: int = 14, *, client=None,
         out = sorted(items.values(), key=lambda i: i.get("written_at") or "", reverse=True)
         for it in out:
             tx = it.get("transaction_id")
+            it["written_after_guard"] = written_after_guard(it.get("written_at"))
             it["bezala_now"] = _live(client, tx) if (tx and read_live) else {"status": "not read"}
     finally:
         if own_client and client is not None:
@@ -179,6 +209,8 @@ def list_bot_bezala_writes(db: Session, days: int = 14, *, client=None,
         "count": len(out),
         "left_draft": [i["transaction_id"] for i in out if i["bezala_now"].get("left_draft")],
         "kill_switch": guard.kill_switch_status(db),
+        "guard_live_at_utc": guard_live_at().isoformat(),
+        "written_after_guard": [i["transaction_id"] for i in out if i.get("written_after_guard")],
         "note": "Read-only. Bezala Bot never withdraws anything - Mikko decides.",
         "items": out,
     }

@@ -71,7 +71,11 @@ INSTRUCTIONS = (
     "get_cleanup_report and investigate_vendor are read-only diagnostics. "
     "C50: automatic coupling is OFF unless AUTO_COUPLE_ENABLED; couplings never write "
     "the description to Bezala - couple_receipt returns description_to_paste for Mikko. "
-    "list_bot_bezala_writes(days) is a read-only report of what the bot wrote to Bezala."
+    "list_bot_bezala_writes(days) is a read-only report of what the bot wrote to Bezala. "
+    "C53 emissions data: get_trip shows 'legs' (km per leg and mode); "
+    "get_emissions_summary(year) sums km/kWh/litres; update_trip_leg/add_trip_leg "
+    "correct legs; export_trip_legs gives CSV/JSON. km_missing = ask Mikko, never guess. "
+    "No kg CO2e - Admin applies own factors."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -132,8 +136,20 @@ async def get_trip(trip_id: int) -> dict:
     (flight_departure/flight_arrival), every day with travel times (UTC + Helsinki),
     arrival airport, work city (destination) and where it came from
     (destination_source), country + English name, hotel, meetings, purpose,
-    linked receipts, flight options and the prepared Netvisor line description."""
-    return await _run(edit.get_trip, trip_id)
+    linked receipts, flight options and the prepared Netvisor line description.
+    C53: `legs` = one row per leg (flight/train/taxi/bus/car_phev) with km, energy
+    (kWh or litres), source and is_estimate; `legs_flags` (km_missing,
+    home_transport_unknown, return_flight_missing) and `legs_totals`."""
+
+    def work(db, tid):
+        from app.services import trip_legs
+
+        detail = edit.get_trip(db, tid)
+        trip = edit._get(db, tid)
+        detail.update(trip_legs.trip_legs_view(db, trip))
+        return detail
+
+    return await _run(work, trip_id)
 
 
 @mcp.tool()
@@ -531,6 +547,100 @@ async def list_subscriptions() -> dict:
 
 
 # ---------- C50 ----------
+
+
+@mcp.tool()
+async def get_emissions_summary(year: int = 2026) -> dict:
+    """C53 - activity data for emissions reporting: total km per mode (flight,
+    train, taxi, bus, car_phev), kWh and litres, per trip and for the year, plus
+    how many legs miss km. No kg CO2e - Admin applies own factors. Car legs
+    (home - HEL in the company plug-in hybrid) are estimates (source=assumption)."""
+    from app.services import trip_legs
+
+    return await _run(trip_legs.get_emissions_summary, year)
+
+
+@mcp.tool()
+async def update_trip_leg(
+    leg_id: int,
+    km: float | None = None,
+    mode: str | None = None,
+    date: str | None = None,
+    from_place: str | None = None,
+    to_place: str | None = None,
+    energy_type: str | None = None,
+    energy_amount: float | None = None,
+    energy_unit: str | None = None,
+    source: str | None = None,
+    is_estimate: bool | None = None,
+    note: str | None = None,
+    flight_category: str | None = None,
+    excluded: bool | None = None,
+) -> dict:
+    """C53 - correct one leg (leg_id from get_trip 'legs'). Only Bezala Bot's own
+    table changes. mode: flight|train|taxi|bus|car_phev; energy_type:
+    jet_fuel|electricity|petrol|none; energy_unit: kWh|l; source:
+    receipt|airport_table|assumption|manual. Setting km on a car_phev leg
+    recalculates kWh/litres unless energy_amount is given. excluded=true drops
+    the leg (e.g. Mikko got a lift instead of driving). Edited legs are locked
+    (never recalculated). Ask Mikko for the value - never guess."""
+    from app.services import trip_legs
+
+    return await _run(trip_legs.update_trip_leg, leg_id, km=km, mode=mode, date_=date,
+                      from_place=from_place, to_place=to_place, energy_type=energy_type,
+                      energy_amount=energy_amount, energy_unit=energy_unit, source=source,
+                      is_estimate=is_estimate, note=note, flight_category=flight_category,
+                      excluded=excluded)
+
+
+@mcp.tool()
+async def add_trip_leg(
+    trip_id: int,
+    mode: str,
+    date: str,
+    km: float | None = None,
+    from_place: str | None = None,
+    to_place: str | None = None,
+    energy_type: str = "none",
+    energy_amount: float | None = None,
+    energy_unit: str | None = None,
+    is_estimate: bool = False,
+    note: str | None = None,
+) -> dict:
+    """C53 - add a leg Mikko tells you about (source=manual), e.g. a train
+    without receipt. Bezala Bot's own table only."""
+    from app.services import trip_legs
+
+    return await _run(trip_legs.add_trip_leg, trip_id, mode=mode, date_=date, km=km,
+                      from_place=from_place, to_place=to_place, energy_type=energy_type,
+                      energy_amount=energy_amount, energy_unit=energy_unit,
+                      is_estimate=is_estimate, note=note)
+
+
+@mcp.tool()
+async def export_trip_legs(year: int = 2026, format: str = "json") -> dict:
+    """C53 - export one row per leg for Admin (trip_id, date, mode, from, to, km,
+    energy, estimate yes/no, source). format: 'json' (rows) or 'csv' (text)."""
+    from app.services import trip_legs
+
+    def work(db, y, fmt):
+        if fmt == "csv":
+            return {"year": y, "format": "csv", "csv": trip_legs.export_csv(db, y)}
+        rows = trip_legs.export_rows(db, y)
+        return {"year": y, "format": "json", "count": len(rows), "rows": rows}
+
+    return await _run(work, year, (format or "json").lower())
+
+
+@mcp.tool()
+async def list_suggestable_booking_confirmations() -> dict:
+    """C53 Del 0b dry run (read-only): booking confirmations / duplicates
+    (duplicate_of set, or a non e-ticket with the same booking_ref as an e-ticket)
+    that could be suggested before C53, per vendor, with the original and where it
+    is coupled. Since C53 only the original e-ticket receipt is suggested."""
+    from app.services.c53_receipts import confirmation_dry_run
+
+    return await _run(confirmation_dry_run)
 
 
 @mcp.tool()

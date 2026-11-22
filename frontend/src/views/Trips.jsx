@@ -13,6 +13,7 @@ import TripFeedbackModal from '../components/trips/TripFeedbackModal.jsx';
 import AddReceiptToTripModal from '../components/trips/AddReceiptToTripModal.jsx';
 import PerDiemModal from '../components/per-diem/PerDiemModal.jsx';
 import NetvisorOverview from '../components/netvisor/NetvisorOverview.jsx';
+import EmissionsOverview from '../components/emissions/EmissionsOverview.jsx';
 
 /* FAS 11.1 — Resor.
  *
@@ -299,6 +300,9 @@ export default function Trips() {
 
       {/* C49 — Netvisor-översikt 2026 */}
       <NetvisorOverview year={2026} />
+
+      {/* C53 — km per resa och färdsätt (utsläppsunderlag) */}
+      <EmissionsOverview year={2026} />
 
       <section className="trips-view__section" data-testid="trips-calendar">
         <div className="cal-trips__head">

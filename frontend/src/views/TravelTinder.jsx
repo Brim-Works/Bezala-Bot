@@ -687,6 +687,25 @@ export default function TravelTinder() {
             setSortDir={setSortDir}
             tinderCard={
               selected ? (
+                <>
+                {/* C53 Del 0b — originalet redan kopplat / samma kvitto som återbetalningen */}
+                {(selected.already_coupled || []).map((n) => (
+                  <div key={n.bezala_transaction_id} className="card card-pad pill" data-testid="already-coupled">
+                    {n.text}
+                  </div>
+                ))}
+                {selected.shared_refund_receipt ? (
+                  <div className="card card-pad" data-testid="shared-refund-receipt">
+                    <strong>{selected.shared_refund_receipt.vendor}</strong>{' '}
+                    {selected.shared_refund_receipt.amount} {selected.shared_refund_receipt.currency}
+                    {' - '}{selected.shared_refund_receipt.note_sv}.{' '}
+                    {selected.shared_refund_receipt.drive_link ? (
+                      <a href={selected.shared_refund_receipt.drive_link} target="_blank" rel="noreferrer">
+                        PDF (Drive) - ladda upp själv i Bezala
+                      </a>
+                    ) : null}
+                  </div>
+                ) : null}
                 <MatchCandidates
                   aiSuggestion={activeSuggestion}
                   userPickMessage={userPickMessage}
@@ -698,6 +717,7 @@ export default function TravelTinder() {
                   }
                   coupling={matching}
                 />
+                </>
               ) : null
             }
             uploadCard={
