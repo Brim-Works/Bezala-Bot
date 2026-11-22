@@ -611,6 +611,11 @@ def process_lines(db: Session, *, couple=None) -> dict:
     from app.services.card_line_coupling import suggest_receipts
 
     if couple is None:
+        from app.services.bezala_write_guard import auto_couple_enabled
+
+        # C50 — automatisk koppling bara med AUTO_COUPLE_ENABLED.
+        if not auto_couple_enabled(db):
+            return {"coupled": [], "skipped": "AUTO_COUPLE_ENABLED is off"}
         from app.services.card_line_coupling import couple_receipt as couple
     subs = [s for s in db.query(Subscription).all() if s.active]
     if not subs:

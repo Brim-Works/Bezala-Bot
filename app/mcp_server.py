@@ -68,7 +68,10 @@ INSTRUCTIONS = (
     "set_subscription_account) before they can be activated - never guess accounts. "
     "Receipts without amount are never coupled automatically. Private Gmail receipts "
     "without a company card charge after 14 days are ignored (ignored_private_source). "
-    "get_cleanup_report and investigate_vendor are read-only diagnostics."
+    "get_cleanup_report and investigate_vendor are read-only diagnostics. "
+    "C50: automatic coupling is OFF unless AUTO_COUPLE_ENABLED; couplings never write "
+    "the description to Bezala - couple_receipt returns description_to_paste for Mikko. "
+    "list_bot_bezala_writes(days) is a read-only report of what the bot wrote to Bezala."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -525,6 +528,20 @@ async def list_subscriptions() -> dict:
     from app.services.subscriptions import list_subscriptions as _list
 
     return await _run(lambda db: {"subscriptions": _list(db)})
+
+
+# ---------- C50 ----------
+
+
+@mcp.tool()
+async def list_bot_bezala_writes(days: int = 14) -> dict:
+    """Read-only: every Bezala transaction Bezala Bot wrote to in the last `days`
+    days (id, vendor, amount, what was written, current status in Bezala read
+    live) plus the kill switch status. Nothing is changed or withdrawn - Mikko
+    decides himself what to do with transactions that left draft state."""
+    from app.services.bezala_writes_report import list_bot_bezala_writes as _list
+
+    return await _run(_list, days)
 
 
 # ---------- C48 ----------

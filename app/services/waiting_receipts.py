@@ -205,6 +205,10 @@ def _close_coupled(db: Session) -> int:
 def match_waiting_receipts(db: Session, *, couple=None) -> dict:
     """Körs efter varje Bezala-synk. couple(db, bill_line_id, message_id)
     kopplar (default card_line_coupling.couple_receipt → Bezala-utkast)."""
+    from app.services.bezala_write_guard import auto_couple_enabled
+
+    # C50 — automatisk koppling (Bezala-skrivning) bara med AUTO_COUPLE_ENABLED.
+    auto_ok = couple is not None or auto_couple_enabled(db)
     if couple is None:
         from app.services.card_line_coupling import couple_receipt as couple
 
@@ -253,6 +257,10 @@ def match_waiting_receipts(db: Session, *, couple=None) -> dict:
         if not p["safe"] or by_line.get(bid, 0) > 1 or by_receipt.get(mid, 0) > 1:
             uncertain.append((bid, mid))
             continue
+        if not auto_ok:
+            # Ligger kvar som förslag i svep-kön — Mikko säger ja själv.
+            uncertain.append((bid, mid))
+            continue
         try:
             couple(db, bid, mid)
         except Exception as exc:  # noqa: BLE001 — en rad får aldrig fälla synken
@@ -281,7 +289,8 @@ def match_waiting_receipts(db: Session, *, couple=None) -> dict:
     db.commit()
     result = {"adopted": adopted, "waiting": len(receipts), "auto_coupled": coupled,
               "uncertain": len(uncertain), "failed": failed,
-              "flagged_no_transaction": flagged, "ignored_private_source": ignored}
+              "flagged_no_transaction": flagged, "ignored_private_source": ignored,
+              "auto_couple_enabled": auto_ok}
     logger.info("[c47-waiting] %s", {k: (len(v) if isinstance(v, list) else v)
                                      for k, v in result.items()})
     return result

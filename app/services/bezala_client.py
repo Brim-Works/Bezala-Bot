@@ -24,7 +24,6 @@ loglevel till ERROR så felet inte drunknar i INFO-strömmen.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import time
@@ -373,6 +372,12 @@ class BezalaClient:
         # bezala-flöden och drafterna hamnar ändå i "Väntar på andras
         # attestering". Att inkludera state-flaggan i POST /attachments
         # hindrar promotion-by-default redan vid skapelsen.
+        from app.services import bezala_write_guard as guard
+
+        try:
+            guard.ensure_writes_allowed()
+        except guard.BezalaWriteBlocked as exc:
+            raise BezalaError(str(exc)) from exc
         logger.info(
             "upload_file_as_draft: POST /attachments filename=%r bytes=%d",
             filename, len(pdf_bytes),
@@ -414,6 +419,14 @@ class BezalaClient:
             raise BezalaError(
                 f"Bezala upload_file_as_draft: saknar transaction_id i svar ({data})"
             )
+        try:
+            guard.verify_new_draft(
+                self, transaction_id,
+                fields={"attachment": filename, "draft": "1", "state": "unapproved"},
+                operation="upload_file_as_draft",
+            )
+        except guard.BezalaWriteBlocked as exc:
+            raise BezalaError(str(exc)) from exc
         logger.info(
             "Bezala: draft-upload klar — attachment_id=%s transaction_id=%s",
             attachment_id, transaction_id,
@@ -435,161 +448,110 @@ class BezalaClient:
         transaction_id: str,
         *,
         description: str,
-        date: str,
+        date: str | None = None,
         credit_account_id: int | str | None = None,
         vat_lines_attributes: list[dict] | None = None,
         extra_fields: dict[str, Any] | None = None,
     ) -> BezalaTransaction:
-        """Steg 2: PUT /api/transactions/{tx_id} med metadata enligt
-        API-docs:
+        """C50 — PUT /transactions/{tx_id} med BARA tillåtna fält
+        (description, konto, kostnadsställe, moms, kostnadsrader) via
+        skyddsfunktionen (läsning före/efter, kill switch).
 
-          {"transaction": {
-            "description": "...",
-            "date": "YYYY-MM-DD",
-            "credit_account_id": 67100,
-            "vat_lines_attributes": [{...}],
-            "draft": true,
-            "state": "draft",
-            "status": "draft",
-            "is_draft": true
-          }}
+        Prod 2026-11-22: den gamla PUT:en skickade `state: "unapproved"`
+        + date + bill_id/bill_line_id/connected_to_bill_line och tre utlägg
+        hamnade i "Väntar på andras attestering". `state` och övriga
+        icke-tillåtna fält skickas aldrig mer.
 
-        FAS 5.25 (C16) försökte med endast `draft: true` men live-testet
-        (Finnair O87UJ3J, 28 april) visade att Bezala fortfarande
-        promotade drafter till "Väntar på andras attestering". Fältet
-        `draft: true` är troligen inte det Bezala läser på transaction-
-        nivå (det är bara form-flaggan som POST /attachments använder).
+        Metadata-PUT är AV (`BEZALA_METADATA_PUT_ENABLED`, default false)
+        tills det verifierats att Bezala inte skickar för attest när
+        description sätts. När den är av görs ingen skrivning — förslaget
+        ligger kvar i boten (ai_description_en) så Mikko klistrar in själv."""
+        from app.services import bezala_write_guard as guard
 
-        FAS 5.26 (C17) — skickar ALLA troliga Rails-konventioner
-        samtidigt: `draft`, `state`, `status`, `is_draft`. Operatören
-        kan justera via env-var `BEZALA_DRAFT_GUARD_FIELDS_JSON` utan
-        kod-deploy. extra_fields kan INTE överstyra guard-flaggorna
-        eller smyga in submit-kodande fält (`submitted`, `action` etc).
-
-        Returnerar BezalaTransaction — bekräftat ID från svaret
-        (eller tillbaka samma som skickades)."""
         if not transaction_id:
             raise BezalaError("update_transaction: transaction_id saknas")
-        if not description:
-            raise BezalaError("update_transaction: description saknas")
-        if not date:
-            raise BezalaError("update_transaction: date saknas (ÅÅÅÅ-MM-DD)")
 
-        # Bygg draft-guard från env (eller default). dict-copy så vi inte
-        # muterar default-globalen om operatören vill addera fler fält
-        # via env i framtiden.
-        draft_guard = _load_draft_guard_fields()
-
-        payload: dict[str, Any] = {
-            "description": description,
-            "date": date,
-        }
-        # Lägg guard-fält FÖRST så att senare assignments (credit_account_id,
-        # vat_lines, extra_fields) inte råkar överskriva dem.
-        payload.update(draft_guard)
-
+        fields: dict[str, Any] = {}
+        if description:
+            fields["description"] = description
         if credit_account_id is not None:
-            payload["credit_account_id"] = credit_account_id
+            fields["credit_account_id"] = credit_account_id
         if vat_lines_attributes:
-            payload["vat_lines_attributes"] = vat_lines_attributes
-        if extra_fields:
-            for k, v in extra_fields.items():
-                if v is None:
-                    continue
-                if k in draft_guard:
-                    # Skydda guard-fält. Logga och ignorera.
-                    logger.warning(
-                        "update_transaction: extra_fields försökte sätta "
-                        "guard-fält %s=%r — ignoreras, behåller %s=%r",
-                        k, v, k, draft_guard[k],
-                    )
-                    continue
-                if k in self._BLOCKED_SUBMIT_FIELDS:
-                    # Submit-kodade fält tystas hårt — vi vill aldrig
-                    # auto-submitta från koden.
-                    logger.warning(
-                        "update_transaction: extra_fields försökte sätta "
-                        "submit-kodat fält %s=%r — IGNORERAS",
-                        k, v,
-                    )
-                    continue
-                payload[k] = v
+            fields["vat_lines_attributes"] = vat_lines_attributes
+        for k, v in (extra_fields or {}).items():
+            if v is None:
+                continue
+            if k not in guard.ALLOWED_TRANSACTION_FIELDS:
+                logger.warning(
+                    "update_transaction: fält %s nekas av skyddsfunktionen (C50) — skickas inte", k,
+                )
+                continue
+            fields[k] = v
 
-        wrapped = {"transaction": payload}
+        if not guard.metadata_put_enabled():
+            logger.info(
+                "update_transaction: metadata-PUT AV (C50) — tx_id=%s skrivs inte "
+                "(fält som INTE skickades: %s)", transaction_id, sorted(fields),
+            )
+            guard.record_write(
+                operation="put_skipped", transaction_id=transaction_id,
+                fields=fields, outcome="blocked",
+                detail="BEZALA_METADATA_PUT_ENABLED=false - suggestion kept in Bezala Bot",
+            )
+            return BezalaTransaction(transaction_id=str(transaction_id))
+        if not fields:
+            return BezalaTransaction(transaction_id=str(transaction_id))
+        try:
+            guard.guarded_put(self, transaction_id, fields)
+        except guard.BezalaWriteBlocked as exc:
+            raise BezalaError(str(exc)) from exc
         logger.info(
-            "update_transaction: PUT /transactions/%s body=%s",
-            transaction_id,
-            json.dumps(wrapped, ensure_ascii=False, default=str),
+            "Bezala: uppdaterade (skyddat) transaction_id=%s fält=%s",
+            transaction_id, sorted(fields),
         )
-        resp = self._request(
-            "PUT", f"/transactions/{transaction_id}", json=wrapped,
-        )
-        # FAS 5.26 — logga ALLTID response-body på PUT (inte bara vid 4xx)
-        # så vi kan korrelera draft-guard-fälten mot Bezalas faktiska
-        # state-svar.
+        return BezalaTransaction(transaction_id=str(transaction_id))
+
+    def _put_transaction_unchecked(
+        self, transaction_id: str | int, fields: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Själva HTTP-PUT:en. Anropas ENDAST av
+        bezala_write_guard.guarded_put (som kontrollerat fälten)."""
+        wrapped = {"transaction": dict(fields)}
         logger.info(
-            "BEZALA RESPONSE update_transaction: tx_id=%s status=%s body=%s",
+            "PUT /transactions/%s fält=%s", transaction_id, sorted(fields),
+        )
+        resp = self._request("PUT", f"/transactions/{transaction_id}", json=wrapped)
+        logger.info(
+            "BEZALA RESPONSE PUT /transactions/%s: status=%s body=%s",
             transaction_id, resp.status_code, _safe_body_snippet(resp),
         )
         if resp.status_code >= 400:
             raise BezalaError(
-                f"Bezala update_transaction: {resp.status_code}",
+                f"Bezala PUT transaction: {resp.status_code}",
                 status_code=resp.status_code,
                 body=_safe_body_snippet(resp),
             )
         try:
-            data = resp.json()
+            body: Any = resp.json()
         except ValueError:
-            data = {}
-
-        confirmed_id = (
-            data.get("id")
-            or (data.get("transaction") or {}).get("id")
-            or transaction_id
-        )
-        url = data.get("url") or data.get("web_url") or (data.get("transaction") or {}).get("url")
-        logger.info(
-            "Bezala: uppdaterade transaction_id=%s description=%r",
-            confirmed_id, description,
-        )
-        return BezalaTransaction(transaction_id=str(confirmed_id), url=url)
+            body = _safe_body_snippet(resp)
+        return {"status_code": resp.status_code, "body": body}
 
     def raw_put_transaction(
         self,
         transaction_id: str | int,
         fields: dict[str, Any],
     ) -> dict[str, Any]:
-        """FAS 5.27 — debug-only raw PUT /transactions/{tx_id}.
+        """Debug-PUT. C50: går genom skyddsfunktionen — bara tillåtna fält,
+        läsning före/efter, kill switch. Nekade fält → BezalaError."""
+        from app.services import bezala_write_guard as guard
 
-        Skickar `{"transaction": fields}` utan att injicera draft-guard,
-        utan att validera description/date, och utan att filtrera mot
-        _BLOCKED_SUBMIT_FIELDS. Callern (debug-endpointen) ansvarar för
-        att grindvakta input.
-
-        Returnerar `{"status_code": int, "body": <json|text>}`. Höjer
-        INTE BezalaError på 4xx/5xx — vi vill kunna inspektera Bezalas
-        svar även när det är ett fel (det är hela poängen med
-        endpointen). Höjer endast om transaction_id saknas."""
         if not transaction_id:
             raise BezalaError("raw_put_transaction: transaction_id saknas")
-        wrapped = {"transaction": dict(fields)}
-        logger.info(
-            "raw_put_transaction: PUT /transactions/%s body=%s",
-            transaction_id,
-            json.dumps(wrapped, ensure_ascii=False, default=str),
-        )
-        resp = self._request(
-            "PUT", f"/transactions/{transaction_id}", json=wrapped,
-        )
-        logger.info(
-            "BEZALA RESPONSE raw_put_transaction: tx_id=%s status=%s body=%s",
-            transaction_id, resp.status_code, _safe_body_snippet(resp),
-        )
         try:
-            body: Any = resp.json()
-        except ValueError:
-            body = _safe_body_snippet(resp)
-        return {"status_code": resp.status_code, "body": body}
+            return guard.guarded_put(self, transaction_id, dict(fields))
+        except guard.BezalaWriteBlocked as exc:
+            raise BezalaError(str(exc)) from exc
 
     def get_transaction(self, transaction_id: str | int) -> dict[str, Any]:
         """GET /transactions/{tx_id} — läser nuvarande state för en
@@ -631,7 +593,14 @@ class BezalaClient:
         if not transaction_id:
             raise BezalaError("delete_transaction: transaction_id saknas")
 
+        from app.services import bezala_write_guard as guard
+
+        try:
+            guard.ensure_writes_allowed()
+        except guard.BezalaWriteBlocked as exc:
+            raise BezalaError(str(exc)) from exc
         path = f"/transactions/{transaction_id}"
+        guard.record_write(operation="delete", transaction_id=transaction_id)
         logger.info("delete_transaction: DELETE %s", path)
         resp = self._request("DELETE", path)
 
@@ -759,13 +728,21 @@ class BezalaClient:
         # går igenom — drafterna blir då stuck i "reviewing" utan att
         # vi får tillbaka en felmarkering. Att skicka state-flaggan
         # redan i form-datan är "fixen ligger i CREATE-flödet, inte PUT".
+        from app.services import bezala_write_guard as guard
+
+        try:
+            guard.ensure_writes_allowed()
+        except guard.BezalaWriteBlocked as exc:
+            raise BezalaError(str(exc)) from exc
+        # C50 — exakt samma formulär som Bolt-kopplingen (låg kvar som
+        # utkast), men UTAN description: beskrivningen skrivs inte via API
+        # förrän det verifierats säkert. Förslaget ligger kvar i boten.
         form: dict[str, Any] = {
             "draft": "1",
             "state": "unapproved",
             "bill_line_id": str(bill_line_id),
         }
-        if description:
-            form["description"] = description
+        guard.check_fields(form, guard.ALLOWED_ATTACHMENT_FORM_FIELDS)
 
         logger.info(
             "attach_file: POST /attachments bill_line_id=%s filename=%r "
@@ -811,6 +788,21 @@ class BezalaClient:
         if not transaction_id and isinstance(data.get("transaction"), dict):
             transaction_id = data["transaction"].get("id")
 
+        if transaction_id:
+            try:
+                guard.verify_new_draft(
+                    self, transaction_id, bill_line_id=bill_line_id,
+                    fields={"attachment": filename, **form}, operation="attach_file",
+                )
+            except guard.BezalaWriteBlocked as exc:
+                raise BezalaError(str(exc)) from exc
+        else:
+            guard.record_write(
+                operation="attach_file", bill_line_id=bill_line_id,
+                fields={"attachment": filename, **form},
+                detail="no transaction_id in response",
+            )
+
         # Steg 2: om belopp/datum/konto-metadata skickats in OCH vi fick en
         # transaction_id → PUT /transactions/{tx_id} med fullständig payload.
         # Detta sätter belopp/valuta/konto/moms explicit och garanterar att
@@ -827,34 +819,9 @@ class BezalaClient:
             )
         )
         if wants_metadata_put and transaction_id:
-            # FAS 5.27 — säkerställ att draften är knuten till bill_line
-            # på transaction-nivå. C18 GET /transactions/5005475 visade
-            # `bill_id: null` och `connected_to_bill_line: false` trots
-            # att POST /attachments hade fått `bill_line_id` i form-
-            # datan. Det räcker tydligen INTE för Bezala att sätta
-            # länken — vi injicerar därför `bill_id` i transaction-
-            # payloaden så att kortrad-kopplingen verkligen blir aktiv
-            # (= 💳-ikonen blir grön i UI:t).
-            #
-            # Caller's extra_fields får INTE överskriva detta — vi
-            # bygger en ny dict där våra defaultar läggs först och
-            # caller-värden kommer på topp (förutom bill_id, som vi
-            # hårdsätter sist från bill_line_id-input).
-            merged_extra: dict[str, Any] = {}
-            if extra_fields:
-                merged_extra.update(extra_fields)
-            # C19: bill_id är fältet GET /transactions/{id} visar.
-            # C21: cross-currency (SEK-kvitto + EUR-bankrad) gav 0/2 i
-            # test-sessionen 2026-05-18 — bill_id sätts i PUT-bodyn men
-            # `connected_to_bill_line` förblir false och Bezalas UI visar
-            # ingen 💳-ikon. Vi sätter därför explicit både bill_id OCH
-            # bill_line_id (Rails-konvention för fk-id) samt
-            # connected_to_bill_line=True, så att kopplingen aktiveras
-            # oavsett vilket fält Bezalas modell faktiskt läser av vid
-            # cross-currency.
-            merged_extra["bill_id"] = bill_line_id
-            merged_extra["bill_line_id"] = bill_line_id
-            merged_extra["connected_to_bill_line"] = True
+            # C50 — bill_id/bill_line_id/connected_to_bill_line/state/date
+            # skickas inte längre (nekas av skyddsfunktionen).
+            merged_extra: dict[str, Any] = dict(extra_fields or {})
             try:
                 self.update_transaction(
                     str(transaction_id),

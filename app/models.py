@@ -877,3 +877,37 @@ class KvittoMailLog(Base):
     outcome = Column(String(20), nullable=False)
     reason = Column(String(200), nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)
+
+
+class BotFlag(Base):
+    """C50 — beständiga flaggor (överlever omstart). Används som kill switch:
+    `auto_couple_enabled=false` och `bezala_writes_halted=true` sätts av
+    skyddsfunktionen om en Bezala-transaktion lämnar utkastläget."""
+
+    __tablename__ = "bot_flags"
+
+    key = Column(String(64), primary_key=True)
+    value = Column(String(64), nullable=False)
+    reason = Column(Text, nullable=True)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
+
+
+class BezalaWriteLog(Base):
+    """C50 — varje skrivning boten gör mot Bezala (POST/PUT/DELETE), med
+    status före/efter. Läses av list_bot_bezala_writes."""
+
+    __tablename__ = "bezala_write_log"
+
+    id = Column(Integer, primary_key=True)
+    transaction_id = Column(String(64), nullable=True, index=True)
+    bill_line_id = Column(String(64), nullable=True)
+    operation = Column(String(40), nullable=False)
+    fields = Column(JSON, nullable=True)
+    state_before = Column(JSON, nullable=True)
+    state_after = Column(JSON, nullable=True)
+    # ok | blocked | status_changed | error
+    outcome = Column(String(20), nullable=False, default="ok")
+    detail = Column(Text, nullable=True)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)

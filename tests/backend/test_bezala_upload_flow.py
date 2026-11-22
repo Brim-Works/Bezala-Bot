@@ -139,25 +139,12 @@ class UploadReceiptTest(unittest.TestCase):
         # så att Bezala aldrig defaultar nya drafter till "reviewing".
         self.assertEqual(step1["data"], {"draft": "1", "state": "unapproved"})
 
-        # Steg 2: PUT /transactions/{tx_id} med metadata
+        # C50 — steg 2 är en LÄSNING (GET) som verifierar att utkastet
+        # ligger kvar. Metadata-PUT är av (BEZALA_METADATA_PUT_ENABLED).
         step2 = calls[1]
-        self.assertEqual(step2["method"], "PUT")
+        self.assertEqual(step2["method"], "GET")
         self.assertTrue(step2["url"].endswith("/transactions/2804"))
-        self.assertIsNone(step2["files"])
-        wrapped = step2["json"]
-        self.assertIn("transaction", wrapped)
-        body = wrapped["transaction"]
-        self.assertEqual(body["description"], "20260422 Finnair HEL-CPH")
-        self.assertEqual(body["date"], "2026-04-22")
-        self.assertEqual(body["credit_account_id"], 67100)
-        self.assertEqual(body["vat_lines_attributes"], [{
-            "taxable": "503.00",
-            "tax_percentage": "0.255",
-            "currency": "EUR",
-            "expense_account_id": 67100,
-            "cost_center_ids": [927151],
-            "vat_code_id": 1355,
-        }])
+        self.assertNotIn("PUT", [c["method"] for c in calls])
 
         # Returnerat attachment_id = transaction_id (används för deep-link)
         self.assertEqual(result.attachment_id, "2804")
@@ -215,6 +202,8 @@ class UploadReceiptTest(unittest.TestCase):
         )
 
         def fake_request(method, url, **kwargs):
+            if method != "POST":
+                return resp
             captured["method"] = method
             captured["url"] = url
             captured["files"] = kwargs.get("files")
@@ -267,7 +256,8 @@ class UploadReceiptTest(unittest.TestCase):
 
         client._client.request = fake_request
 
-        with self.assertLogs("app.services.bezala_client", level="ERROR") as cm:
+        with patch.dict(os.environ, {"BEZALA_METADATA_PUT_ENABLED": "true"}), \
+                self.assertLogs("app.services.bezala_client", level="ERROR") as cm:
             with self.assertRaises(BezalaError) as ctx:
                 client.upload_receipt(
                     filename="x.pdf",
@@ -415,6 +405,15 @@ class DeleteTransactionTest(unittest.TestCase):
 
 class PipelineAutoUploadTest(unittest.TestCase):
     """_attempt_bezala_upload använder metadata + field-mapper."""
+
+    def setUp(self):
+        # C50 — automatisk uppladdning kräver AUTO_COUPLE_ENABLED=true.
+        import os
+        from unittest.mock import patch as _patch
+
+        p = _patch.dict(os.environ, {"AUTO_COUPLE_ENABLED": "true"})
+        p.start()
+        self.addCleanup(p.stop)
 
     def test_happy_path_calls_upload_receipt(self):
         from app.services.pipeline import _attempt_bezala_upload
