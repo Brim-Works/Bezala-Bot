@@ -66,7 +66,7 @@ class FakeBezala:
 def test_guard_refuses_status_and_other_fields(bound_db, field):
     from app.services import bezala_write_guard as guard
 
-    client = FakeBezala(["unapproved"])
+    client = FakeBezala(["draft"])
     with pytest.raises(guard.BezalaWriteBlocked):
         guard.guarded_put(client, "5579031", {"description": "x", field: "anything"})
     assert client.puts == []
@@ -75,7 +75,7 @@ def test_guard_refuses_status_and_other_fields(bound_db, field):
 def test_guard_allows_description_account_vat(bound_db):
     from app.services import bezala_write_guard as guard
 
-    client = FakeBezala(["unapproved", "unapproved"])
+    client = FakeBezala(["draft", "draft"])
     guard.guarded_put(client, "1", {"description": "x", "credit_account_id": 1,
                                     "vat_lines_attributes": [{}], "cost_center_id": 2})
     assert len(client.puts) == 1
@@ -88,7 +88,7 @@ def test_update_transaction_never_sends_state(bound_db, monkeypatch):
     monkeypatch.setenv("BEZALA_METADATA_PUT_ENABLED", "true")
     client = BezalaClient.__new__(BezalaClient)
     sent = []
-    client.get_transaction = lambda tx: {"id": tx, "state": "unapproved"}
+    client.get_transaction = lambda tx: {"id": tx, "state": "draft"}
     client._put_transaction_unchecked = lambda tx, f: sent.append(f) or {}
     client.update_transaction("9", description="D", date="2026-11-01", credit_account_id=5,
                               extra_fields={"state": "reviewing", "bill_id": 1,
@@ -115,14 +115,14 @@ def test_status_change_after_write_trips_kill_switch(bound_db, monkeypatch):
 
     monkeypatch.setenv("AUTO_COUPLE_ENABLED", "true")
     assert guard.auto_couple_enabled(bound_db)
-    client = FakeBezala(["unapproved", "reviewing"])
+    client = FakeBezala(["draft", "reviewing"])
     with pytest.raises(guard.BezalaWriteBlocked):
         guard.guarded_put(client, "5579319", {"description": "Arlanda Express"})
     assert guard.writes_halted(bound_db)
     # Överlever omstart: ligger i databasen, env är fortfarande true.
     assert not guard.auto_couple_enabled(bound_db)
     with pytest.raises(guard.BezalaWriteBlocked):
-        guard.guarded_put(FakeBezala(["unapproved"]), "2", {"description": "y"})
+        guard.guarded_put(FakeBezala(["draft"]), "2", {"description": "y"})
     from app.models import BezalaWriteLog
 
     log = bound_db.query(BezalaWriteLog).filter(BezalaWriteLog.outcome == "status_changed").one()
@@ -138,7 +138,7 @@ def test_any_status_field_change_trips(bound_db):
 
         def get_transaction(self, tx_id):
             self.n += 1
-            return {"state": "unapproved", "approver_id": None if self.n == 1 else 77}
+            return {"state": "draft", "approver_id": None if self.n == 1 else 77}
 
     with pytest.raises(guard.BezalaWriteBlocked):
         guard.guarded_put(C([]), "1", {"description": "x"})
@@ -189,7 +189,7 @@ def test_attach_file_with_metadata_makes_no_put(bound_db, monkeypatch):
         r.status_code = 200
         r.headers = {}
         r.text = ""
-        r.json = MagicMock(return_value={"id": 1, "transaction_id": 7, "state": "unapproved"})
+        r.json = MagicMock(return_value={"id": 1, "transaction_id": 7, "state": "draft"})
         return r
 
     client._request = fake_request

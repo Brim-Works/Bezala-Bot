@@ -88,7 +88,7 @@ class UploadReceiptTest(unittest.TestCase):
         put_resp.status_code = 200
         put_resp.headers = {"content-type": "application/json"}
         put_resp.text = '{"id": 2804}'
-        put_resp.json = MagicMock(return_value={"id": 2804, "state": "unapproved"})
+        put_resp.json = MagicMock(return_value={"id": 2804, "state": "draft"})
 
         def fake_request(method, url, **kwargs):
             calls.append({

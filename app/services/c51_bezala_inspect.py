@@ -18,7 +18,10 @@ logger = logging.getLogger(__name__)
 
 # Fält som är intressanta att jämföra mellan utkast och attest.
 _COMPARE_KEYS = (
-    "id", "state", "status", "date", "description", "amount", "currency", "sum",
+    "id", "state", "status", "type", "date", "description", "billed_amount",
+    "billed_amount_currency", "original_amount", "original_amount_currency",
+    "amount", "currency", "sum", "credit_account_name", "tax_percentage",
+    "current_approvers_ids", "approved_by", "transaction_approvers", "not_connected_to_card",
     "total", "account_id", "credit_account_id", "cost_center_id", "cost_center_ids",
     "bill_id", "bill_line_id", "connected_to_bill_line", "approvers", "approver_id",
     "current_approver", "submitted_at", "sent_at", "created_at", "updated_at",
@@ -66,7 +69,7 @@ def _find_by_bill_line(client, bill_line_id: str) -> list[dict]:
 
 def _amount_of(tx: dict) -> float | None:
     t = guard._unwrap(tx)
-    for k in ("amount", "sum", "total", "total_amount", "bill_line_amount"):
+    for k in ("billed_amount", "original_amount", "amount", "sum", "total", "total_amount"):
         try:
             if t.get(k) is not None:
                 return abs(float(t[k]))
