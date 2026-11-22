@@ -1289,7 +1289,7 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         put_resp.headers = {"content-type": "application/json"}
         put_resp.text = '{"id": 444, "state": "draft"}'
         put_resp.json = MagicMock(
-            return_value={"id": 444, "state": "unapproved"},
+            return_value={"id": 444, "state": "draft"},
         )
 
         def fake_request(method, url, **kwargs):

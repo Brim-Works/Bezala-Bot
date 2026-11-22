@@ -49,12 +49,16 @@ ALLOWED_ATTACHMENT_FORM_FIELDS = frozenset({"draft", "bill_line_id", "transactio
 FORBIDDEN_WRITE_FIELDS = frozenset({"state", "status", "workflow_state", "approval_status",
                                     "approval_state", "submit", "submitted"})
 
-# C51 — Bezalas `state` (se docs/bezala_states.md). Läst med GET 2026-11-22:
-#   "unapproved" = Utkast (inte skickat för attest)
-#   "reviewing"  = Väntar på (andras) attestering
-# Skrivning tillåts BARA när transaktionen har ett utkast-state. Saknas
+# C51 — Bezalas `state` (se docs/bezala_states.md). Läst med GET 2026-11-22
+# på alla 421 utlägg i GET /transactions: bara "draft", "reviewing" och
+# "accounted" förekommer.
+#   "draft"     = Utkast (inte skickat för attest)
+#   "reviewing" = Väntar på (andras) attestering
+#   "accounted" = Bokfört
+# "unapproved" (som gammal kod skickade) förekommer aldrig och räknas INTE
+# som utkast. Skrivning tillåts BARA när state är "draft"; saknas
 # state-fältet, eller är värdet något annat, nekas skrivningen.
-DRAFT_STATES = frozenset({"unapproved"})
+DRAFT_STATES = frozenset({"draft"})
 
 # Statusrelaterade fält vi jämför före/efter.
 STATUS_FIELDS = (
@@ -69,7 +73,7 @@ NON_DRAFT_STATES = frozenset({
     "reviewing", "in_review", "review", "pending", "pending_approval",
     "waiting_for_approval", "awaiting_approval", "submitted", "sent",
     "approved", "accepted", "paid", "processing", "processed", "rejected",
-    "invoiced", "exported",
+    "invoiced", "exported", "accounted", "unapproved",
 })
 
 FLAG_AUTO_COUPLE = "auto_couple_enabled"

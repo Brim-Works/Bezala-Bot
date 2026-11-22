@@ -6,8 +6,19 @@ Read-only investigation, 2026-11-22. Only `GET` was used. Nothing was written to
 
 | Bezala UI | `state` value | Source |
 |---|---|---|
-| Utkast (draft, not sent for approval) | `unapproved` | C18 GET on live draft tx 5005475; the Bolt draft (card line 2513372) is checked with `get_card_line` / `inspect_bezala_transaction` after the C51 deploy - see "Verification" below |
+| Utkast (draft, not sent for approval) | `draft` | `GET /transactions` (all 421 expenses, read via `get_card_line` after the C51 deploy): the only states are `draft`, `reviewing`, `accounted` |
 | Väntar på attest (waiting for approval) | `reviewing` | GET on 5579319 (Arlanda Express), 5579032 (Scandic), 5579031 (Anthropic), 5575542, 5575527, 5575526, 5575521, 5575507 - all `state: "reviewing"` with `approvers: ["Kytömäki Riikka"]` |
+| Bokförd (accounted) | `accounted` | same list |
+
+**`unapproved` never occurs.** Old code (C18-C21) assumed `unapproved` = draft and *sent*
+`state: "unapproved"`. That value is not a Bezala state; the expenses that got it ended in
+`reviewing`.
+
+Fields in a transaction (from the list): `state`, `type`, `date`, `description`,
+`billed_amount`, `billed_amount_currency`, `original_amount`, `original_amount_currency`,
+`credit_account_id`, `credit_account_name`, `debit_account_id`, `cost_center_id(s)`,
+`vat_lines`, `tax_percentage`, `approvers`, `current_approvers_ids`, `transaction_approvers`,
+`approved_by`, `bill_id`, `connected_to_bill_line`, `not_connected_to_card`, `paid_at`, ...
 
 Other fields seen on an expense waiting for approval: `approvers` (list of names). A draft
 has no approver.
@@ -38,7 +49,8 @@ Known endpoints (base `https://app.bezala.com/api`):
 - **`state` is never sent** in any Bezala write (POST form or PUT body). `bezala_write_guard`
   refuses the field everywhere (`FORBIDDEN_WRITE_FIELDS`).
 - Before a PUT the transaction is read. The write is allowed **only** when `state` is in
-  `DRAFT_STATES = {"unapproved"}`. Missing `state`, `reviewing` or anything else → refused.
+  `DRAFT_STATES = {"draft"}`. Missing `state`, `unapproved`, `reviewing`, `accounted` or
+  anything else → refused.
 - After the PUT the transaction is read again. Any change in the status fields, or a state
   outside `DRAFT_STATES` → CRITICAL, kill switch in the database, all Bezala writes stopped.
 - After `POST /attachments`, a new transaction with a state outside `DRAFT_STATES` trips the
@@ -55,7 +67,7 @@ After the C51 deploy, `get_card_line("2513372")` (MCP, read-only) and the new
 Goal: see whether a PUT with only `description` (no `state`) keeps the Bolt draft a draft.
 
 Preconditions (checked by the guard, stops otherwise):
-1. `GET /transactions/<BOLT_TX_ID>` returns `state: "unapproved"`.
+1. `GET /transactions/<BOLT_TX_ID>` returns `state: "draft"`.
 2. Kill switch is off (`writes_halted=false`).
 
 Exact call (one request, body has only `description`):
@@ -73,7 +85,7 @@ followed by
 GET https://app.bezala.com/api/transactions/<BOLT_TX_ID>
 ```
 
-Expected: `state` still `"unapproved"`, no `approvers`, description updated.
+Expected: `state` still `"draft"`, no `approvers`, description updated.
 If `state` is anything else: the guard trips the kill switch and Mikko withdraws the expense
 in Bezala by hand.
 

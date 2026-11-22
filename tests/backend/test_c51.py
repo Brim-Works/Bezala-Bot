@@ -300,10 +300,11 @@ def test_analyzer_normalizes_vat_info():
 # ---------------------------------------------------------------- Del 1 utkast-skydd
 
 
-def test_put_refused_unless_state_is_unapproved(bound_db):  # noqa: F811
+def test_put_refused_unless_state_is_draft(bound_db):  # noqa: F811
     from app.services import bezala_write_guard as guard
 
-    for state in ("reviewing", None, "draft", "approved"):
+    # Bezala har bara draft/reviewing/accounted; "unapproved" är INTE utkast.
+    for state in ("reviewing", None, "unapproved", "accounted", "approved"):
         b = FakeBezala([state])
         with pytest.raises(guard.BezalaWriteBlocked):
             guard.guarded_put(b, 5579319, {"description": "x"}, db=bound_db)
@@ -311,10 +312,10 @@ def test_put_refused_unless_state_is_unapproved(bound_db):  # noqa: F811
     assert not guard.writes_halted(bound_db)
 
 
-def test_put_allowed_on_unapproved_draft(bound_db):  # noqa: F811
+def test_put_allowed_on_draft(bound_db):  # noqa: F811
     from app.services import bezala_write_guard as guard
 
-    b = FakeBezala(["unapproved", "unapproved"])
+    b = FakeBezala(["draft", "draft"])
     guard.guarded_put(b, 1, {"description": "x"}, db=bound_db)
     assert b.puts == [(1, {"description": "x"})]
 
@@ -322,7 +323,7 @@ def test_put_allowed_on_unapproved_draft(bound_db):  # noqa: F811
 def test_put_that_moves_draft_to_reviewing_trips_kill_switch(bound_db):  # noqa: F811
     from app.services import bezala_write_guard as guard
 
-    b = FakeBezala(["unapproved", "reviewing"])
+    b = FakeBezala(["draft", "reviewing"])
     with pytest.raises(guard.BezalaWriteBlocked):
         guard.guarded_put(b, 1, {"description": "x"}, db=bound_db)
     assert guard.writes_halted(bound_db)
@@ -351,7 +352,7 @@ def test_inspect_is_read_only():
 
         def list_transactions(self):
             self.calls.append(("GET", "list"))
-            return [{"id": 5580000, "bill_line_id": 2513372, "state": "unapproved"}]
+            return [{"id": 5580000, "bill_line_id": 2513372, "state": "draft"}]
 
         def __getattr__(self, name):  # any write method would blow up
             raise AssertionError(f"unexpected call {name}")
@@ -370,13 +371,24 @@ def test_inspect_falls_back_to_amount_and_date():
 
     class C:
         def list_transactions(self):
-            return [{"id": 1, "amount": "23.30", "date": "2026-11-16", "state": "unapproved"},
+            return [{"id": 1, "billed_amount": "23.30", "date": "2026-11-16", "state": "draft"},
                     {"id": 2, "amount": "23.30", "date": "2026-10-01", "state": "reviewing"}]
 
         def get_transaction(self, tid):
-            return {"id": int(tid), "state": "unapproved"}
+            return {"id": int(tid), "state": "draft"}
 
     out = inspect(bill_line_id="2513372", client=C(), amount=23.3, day="2026-11-16")
     assert [t["transaction_id"] for t in out["transactions"]] == ["1"]
     assert out["transactions"][0]["is_draft"] is True
     assert out["listing"]["count"] == 2
+
+
+def test_attach_creating_draft_state_does_not_trip_kill_switch(bound_db):  # noqa: F811
+    from app.services import bezala_write_guard as guard
+
+    class C:
+        def get_transaction(self, tid):
+            return {"id": tid, "state": "draft"}
+
+    guard.verify_new_draft(C(), 1, operation="attach_file", db=bound_db)
+    assert not guard.writes_halted(bound_db)
