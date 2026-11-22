@@ -18,7 +18,8 @@ import Settings from './views/Settings.jsx';
 import Trash from './views/Trash.jsx';
 import NotFound from './views/NotFound.jsx';
 import { TrashCountProvider } from './hooks/TrashCountProvider.jsx';
-import { api, ApiError, setUnauthorizedHandler } from './api/client.js';
+import { api, ApiError, loginUrl, setUnauthorizedHandler } from './api/client.js';
+import MobileApp from './mobile/MobileApp.jsx';
 import { viewForPath } from './routes.js';
 
 function ViewForRoute() {
@@ -100,7 +101,7 @@ function AuthedApp() {
     let cancelled = false;
     setUnauthorizedHandler(() => {
       if (window.location.pathname !== '/login') {
-        window.location.href = '/login';
+        window.location.href = loginUrl();
       }
     });
     api
@@ -121,6 +122,11 @@ function AuthedApp() {
 
   if (status !== 'ready') {
     return <LoadingScreen />;
+  }
+
+  // C47 — mobilvyn (/m, /m/swipe) har eget skal utan sidomeny.
+  if (window.location.pathname === '/m' || window.location.pathname.startsWith('/m/')) {
+    return <MobileApp />;
   }
 
   return (

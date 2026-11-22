@@ -7,9 +7,14 @@
 
 const BASE = import.meta.env.VITE_API_BASE || '';
 
+export function loginUrl() {
+  const next = `${window.location.pathname}${window.location.search}`;
+  return next && next !== '/' ? `/login?next=${encodeURIComponent(next)}` : '/login';
+}
+
 let unauthorizedHandler = () => {
   if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
-    window.location.href = '/login';
+    window.location.href = loginUrl();
   }
 };
 
@@ -82,8 +87,50 @@ async function request(path, options = {}) {
   return data;
 }
 
+const enc = encodeURIComponent;
+
 export const api = {
   me: () => request('/api/me'),
+  // C47 — mobilsida, svep-kö, översikt
+  mobileUpload: (file, comment) => {
+    const fd = new FormData();
+    fd.append('file', file, file.name || 'kvitto.jpg');
+    if (comment) fd.append('comment', comment);
+    return request('/api/m/receipts', { method: 'POST', body: fd });
+  },
+  mobileReceipt: (mid) => request(`/api/m/receipts/${enc(mid)}`),
+  mobileCardLines: (mid) =>
+    request(`/api/m/card-lines${mid ? `?message_id=${enc(mid)}` : ''}`),
+  mobileCouple: (mid, billLineId) =>
+    request(`/api/m/receipts/${enc(mid)}/couple`, {
+      method: 'POST', body: { bill_line_id: String(billLineId) },
+    }),
+  mobilePrivate: (mid, billLineId) =>
+    request(`/api/m/receipts/${enc(mid)}/private`, {
+      method: 'POST', body: { bill_line_id: billLineId ? String(billLineId) : null },
+    }),
+  mobileKeep: (mid, billLineId) =>
+    request(`/api/m/receipts/${enc(mid)}/keep`, {
+      method: 'POST', body: { bill_line_id: billLineId ? String(billLineId) : null },
+    }),
+  receiptFileUrl: (mid) => `${BASE}/api/receipts/${enc(mid)}/file`,
+  queue: () => request('/api/queue'),
+  queueDecide: (itemId, decision) =>
+    request('/api/queue/decide', { method: 'POST', body: { item_id: itemId, decision } }),
+  queueUndo: () => request('/api/queue/undo', { method: 'POST' }),
+  queueWaiting: () => request('/api/queue/waiting'),
+  queueMatched: ({ month = '', tripId = '' } = {}) => {
+    const q = new URLSearchParams();
+    if (month) q.set('month', month);
+    if (tripId) q.set('trip_id', tripId);
+    const qs = q.toString();
+    return request(`/api/queue/matched${qs ? `?${qs}` : ''}`);
+  },
+  queueUnmatch: (mid) => request(`/api/queue/unmatch/${enc(mid)}`, { method: 'POST' }),
+  queueUnapproveTrip: (id) => request(`/api/queue/trips/${id}/unapprove`, { method: 'POST' }),
+  expectRefund: (billLineId, note) =>
+    request('/api/refunds', { method: 'POST', body: { bill_line_id: String(billLineId), note } }),
+  overview: () => request('/api/overview'),
   stats: () => request('/api/stats'),
   messages: (limit = 50) => request(`/api/messages?limit=${limit}`),
   runs: (limit = 20) => request(`/api/runs?limit=${limit}`),

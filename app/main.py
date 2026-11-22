@@ -5462,10 +5462,22 @@ def get_per_diem_rates(
 # /api/*, /health) matchas före. Returnerar index.html för alla client-side
 # routes (/review, /log m.fl.) så browser-reload och deep-linking fungerar.
 # Okända /api/*- och /assets/*-paths 404-ar som vanligt.
+_DIST_ROOT_FILES = {
+    "manifest.webmanifest", "icon-192.png", "icon-512.png", "apple-touch-icon.png",
+}
+
+
 @app.get("/{spa_path:path}")
 def spa_fallback(spa_path: str):
     if spa_path.startswith("api/") or spa_path.startswith("assets/"):
         raise HTTPException(status_code=404, detail="Not Found")
     if not FRONTEND_DIST.exists():
         raise HTTPException(status_code=404, detail="Not Found")
+    # C47 — PWA-filer i dist-roten (manifest, ikoner). Bara filer direkt i
+    # dist/, inga undermappar (skydd mot path traversal).
+    if spa_path in _DIST_ROOT_FILES:
+        f = FRONTEND_DIST / spa_path
+        if f.is_file():
+            media = "application/manifest+json" if spa_path.endswith(".webmanifest") else None
+            return FileResponse(f, media_type=media)
     return FileResponse(FRONTEND_DIST / "index.html")
