@@ -356,6 +356,10 @@ from app import mcp_netvisor as _c49_mcp_netvisor  # noqa: E402,F401
 from app.routers.netvisor import router as netvisor_router  # noqa: E402
 
 app.include_router(netvisor_router)
+# C53 - km och energi per resa (utsläppsunderlag).
+from app.routers.emissions import router as emissions_router  # noqa: E402
+
+app.include_router(emissions_router)
 
 
 def require_auth(request: Request) -> None:
@@ -2406,6 +2410,10 @@ def _serialize_message(r: ProcessedMessage) -> dict:
         "manual_comment": r.manual_comment,
         # C43 — 'change_fee' för Finnair-ombokningar, annars None.
         "kind": getattr(r, "kind", None),
+        # C53 Del 0b — dubblett/bokningsref för förslagsreglerna.
+        "duplicate_of": getattr(r, "duplicate_of", None),
+        "booking_ref": getattr(r, "booking_ref", None),
+        "ticket_number": getattr(r, "ticket_number", None),
     }
 
 
@@ -2945,6 +2953,7 @@ def get_match_suggestions(
             if r.bezala_upload_status != "success"
             and r.bezala_transaction_id is None
         ]
+        all_candidate_rows = all_q.all()
     else:
         # Bakåtkompatibel shape: ingen all_messages, candidates filtreras strikt.
         candidates_q = (
@@ -2957,7 +2966,18 @@ def get_match_suggestions(
             .limit(500)
         )
         candidate_dicts = [_serialize_message(r) for r in candidates_q.all()]
+        all_candidate_rows = None
 
+    # C53 Del 0b — föreslå aldrig dubbletter (duplicate_of) eller en
+    # bokningsbekräftelse när e-ticket-kvittot med samma booking_ref finns.
+    from app.services import c53_receipts
+
+    excluded_dicts = [c for c in candidate_dicts if c.get("duplicate_of")]
+    candidate_dicts = c53_receipts.filter_candidates(db, candidate_dicts)
+    kept_ids = {c.get("message_id") for c in candidate_dicts}
+    excluded_dicts += [c for c in (_serialize_message(r) for r in (all_candidate_rows or []))
+                       if c.get("message_id") not in kept_ids and not c.get("duplicate_of")
+                       and c.get("booking_ref")]
     rate_provider = make_db_rate_provider(db)
 
     missing_out: list[dict] = []
@@ -2981,7 +3001,33 @@ def get_match_suggestions(
         suggestions = find_matches(
             missing, candidate_dicts, rate_provider=rate_provider,
         )
-        missing_out.append({"missing_receipt": missing, "suggestions": suggestions})
+        entry = {"missing_receipt": missing, "suggestions": suggestions}
+        if not suggestions:
+            # C53 — originalet redan kopplat: visa det i stället för dubbletten.
+            notes = []
+            for e in find_matches(missing, excluded_dicts, rate_provider=rate_provider):
+                note = c53_receipts.already_coupled_note(db, e["message"])
+                if note and note["bezala_transaction_id"] not in {n["bezala_transaction_id"] for n in notes}:
+                    notes.append(note)
+            if notes:
+                entry["already_coupled"] = notes
+            from datetime import date as _date
+
+            from app.models import CardLine as _CL
+
+            line = db.query(_CL).filter(_CL.bill_line_id == str(missing.get("id"))).first()
+            if line is None:
+                try:
+                    _d = _date.fromisoformat(str(missing.get("date"))[:10])
+                except ValueError:
+                    _d = None
+                line = _CL(bill_line_id=str(missing.get("id")), amount=missing.get("amount"),
+                           currency=missing.get("currency"), txn_date=_d,
+                           description=missing.get("description"))
+            shared = c53_receipts.shared_refund_receipt(db, line)
+            if shared:
+                entry["shared_refund_receipt"] = shared
+        missing_out.append(entry)
 
     if not include_all_messages:
         return missing_out

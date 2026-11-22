@@ -100,6 +100,23 @@ def _money(amount, currency) -> str:
     return f"{float(amount):.2f} {currency or ''}".strip()
 
 
+_GROUND_CATEGORIES = ("Taxi", "Tåg", "Kollektivtrafik")
+
+
+def _ground_km(m: ProcessedMessage) -> dict | None:
+    """C53 — tåg/buss/taxi-kvitto: {'mode', 'km'} (km None = saknas), annars None."""
+    from app.services.trip_legs import parse_km, receipt_mode
+
+    if m.category not in _GROUND_CATEGORIES and m.category not in (None, "", "Annat"):
+        return None
+    text = " ".join(str(v) for v in (m.vendor, m.sender, m.subject, m.summary,
+                                     m.ai_description_en, m.file_name) if v)
+    mode = receipt_mode(m.category, text)
+    if mode is None:
+        return None
+    return {"mode": mode, "km": parse_km(text)}
+
+
 def _receipt_items(db: Session) -> list[dict]:
     from app.services.card_line_coupling import suggest_receipts
     from app.services.trip_completeness import _today, _trip_for_date
@@ -134,6 +151,24 @@ def _receipt_items(db: Session) -> list[dict]:
                    if amount_missing else None)
         if account.get("missing"):
             warning = f"{warning}; Account missing" if warning else "Account missing"
+        # C53 Del 0b — samma kvitto som återbetalningen: bara förslag, Mikko
+        # laddar upp PDF:en själv (boten laddar inte upp igen).
+        shared = s.get("match") == "refund_shared_receipt"
+        if shared:
+            note = f"{s.get('note_sv')} - ladda upp PDF:en själv från Drive"
+            warning = f"{note}; {warning}" if warning else note
+        # C53 — km för tåg/buss/taxi: "xx km" sist i beskrivningen när känt,
+        # annars flaggan km_missing (gissas aldrig).
+        ground = _ground_km(m)
+        description = fill["description"] or _description_to_paste(m, c)
+        if ground is not None and ground["km"] is not None:
+            from app.services.trip_legs import append_km
+
+            description = append_km(description, ground["km"])
+            if fill.get("description"):
+                fill = {**fill, "description": description}
+        elif ground is not None:
+            warning = f"{warning}; km missing" if warning else "km missing"
         out.append({
             "id": f"receipt:{bid}:{m.message_id}",
             "kind": "receipt",
@@ -145,7 +180,14 @@ def _receipt_items(db: Session) -> list[dict]:
             "warning": warning,
             "account": account,
             "account_missing": bool(account.get("missing")),
-            "description_to_paste": fill["description"] or _description_to_paste(m, c),
+            "description_to_paste": description,
+            "shared_with_refund": ({"note": s.get("note"), "note_sv": s.get("note_sv"),
+                                    "also_coupled_to": s.get("also_coupled_to"),
+                                    "drive_link": s.get("drive_link"), "how": s.get("how")}
+                                   if shared else None),
+            "transport_mode": ground["mode"] if ground else None,
+            "km": ground["km"] if ground else None,
+            "flags": ["km_missing"] if ground is not None and ground["km"] is None else [],
             # C51 — konto → moms → kostnadsställe → beskrivning med kopieringsknapp.
             "bezala_fill": fill,
             "yes_label": "Couple",

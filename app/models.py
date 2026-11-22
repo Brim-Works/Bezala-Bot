@@ -913,3 +913,47 @@ class BezalaWriteLog(Base):
     outcome = Column(String(20), nullable=False, default="ok")
     detail = Column(Text, nullable=True)
     created_at = Column(DateTime, server_default=func.now(), nullable=False, index=True)
+
+
+class TripLeg(Base):
+    """C53 — en delsträcka i en kalenderresa (underlag för utsläppsrapportering).
+
+    Boten levererar aktivitetsdata (km, kWh, liter) — inga kg CO2e.
+    mode: flight | train | taxi | bus | car_phev
+    energy_type: jet_fuel | electricity | petrol | none
+    source: receipt | airport_table | assumption | manual
+    set_by: 'auto' (räknas om vid varje läsning) | 'user' (Mikko — skrivs
+    aldrig över). km = NULL betyder km_missing (gissas aldrig).
+    """
+
+    __tablename__ = "trip_legs"
+    __table_args__ = (UniqueConstraint("trip_id", "leg_key", name="uq_trip_leg_key"),)
+
+    id = Column(Integer, primary_key=True)
+    trip_id = Column(
+        Integer, ForeignKey("calendar_trips.id", ondelete="CASCADE"),
+        nullable=False, index=True,
+    )
+    leg_key = Column(String(120), nullable=False)
+    seq = Column(Integer, nullable=False, default=0)
+    leg_date = Column(Date, nullable=True)
+    mode = Column(String(16), nullable=False)
+    from_place = Column(String(80), nullable=True)
+    to_place = Column(String(80), nullable=True)
+    km = Column(Float, nullable=True)
+    energy_type = Column(String(16), nullable=False, default="none")
+    energy_amount = Column(Float, nullable=True)
+    energy_unit = Column(String(8), nullable=True)
+    source = Column(String(16), nullable=False, default="assumption")
+    is_estimate = Column(Boolean, nullable=False, default=False)
+    note = Column(Text, nullable=True)
+    flight_no = Column(String(16), nullable=True)
+    # Kort/medel/lång — tomt tills Riikka svarat.
+    flight_category = Column(String(16), nullable=True)
+    receipt_message_id = Column(String(255), nullable=True)
+    set_by = Column(String(10), nullable=False, default="auto")
+    excluded = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime, server_default=func.now(), nullable=False)
+    updated_at = Column(
+        DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
+    )
