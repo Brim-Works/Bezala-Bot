@@ -12,6 +12,7 @@ import TripEditModal from '../components/trips/TripEditModal.jsx';
 import TripFeedbackModal from '../components/trips/TripFeedbackModal.jsx';
 import AddReceiptToTripModal from '../components/trips/AddReceiptToTripModal.jsx';
 import PerDiemModal from '../components/per-diem/PerDiemModal.jsx';
+import NetvisorOverview from '../components/netvisor/NetvisorOverview.jsx';
 
 /* FAS 11.1 — Resor.
  *
@@ -295,6 +296,9 @@ export default function Trips() {
           </button>
         </div>
       </header>
+
+      {/* C49 — Netvisor-översikt 2026 */}
+      <NetvisorOverview year={2026} />
 
       <section className="trips-view__section" data-testid="trips-calendar">
         <div className="cal-trips__head">

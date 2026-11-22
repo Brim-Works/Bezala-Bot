@@ -284,6 +284,8 @@ def test_valid_token_works(env):
         # C48
         "list_bezala_accounts", "set_subscription_account", "get_receipt_inbox_info",
         "get_cleanup_report", "investigate_vendor", "list_receipts_without_amount",
+        # C49
+        "get_netvisor_entry", "list_netvisor_status", "set_netvisor_status",
     }
 
 

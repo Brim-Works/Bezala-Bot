@@ -1,0 +1,20 @@
+/* C49 — Netvisor-flik och 2026-översikt. */
+.nv-panel { margin-top: 12px; }
+.nv-panel > summary { cursor: pointer; }
+.nv-body { display: flex; flex-direction: column; gap: 10px; margin-top: 8px; }
+.nv-grid { display: grid; grid-template-columns: minmax(110px, max-content) 1fr; gap: 4px 12px; margin: 0; }
+.nv-grid dt { color: var(--text-muted, inherit); opacity: .75; }
+.nv-grid dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.nv-row { border: 1px solid var(--border, rgba(127,127,127,.25)); border-radius: 8px; }
+.nv-warn { border-left: 3px solid var(--err, #c0392b); padding-left: 10px; }
+.nv-warn ul, .nv-notes ul, .nv-uncertain, .nv-wlist { margin: 4px 0; padding-left: 18px; }
+.nv-small { font-size: 12px; }
+.nv-copyable { user-select: all; }
+.nv-actions { display: flex; gap: 8px; flex-wrap: wrap; margin: 8px 0; }
+.nv-xml { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 12px; max-height: 360px; overflow: auto;
+  background: var(--surface-2, rgba(127,127,127,.08)); padding: 10px; border-radius: 6px; }
+.nv-filter { display: inline-flex; align-items: center; gap: 4px; white-space: nowrap; }
+.nv-table-wrap { overflow-x: auto; }
+.nv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.nv-table th, .nv-table td { text-align: left; padding: 6px 8px; vertical-align: top;
+  border-bottom: 1px solid var(--border, rgba(127,127,127,.2)); }

@@ -320,6 +320,11 @@ app.include_router(c47_router)
 app.include_router(mcp_oauth_router)
 app.add_route("/mcp", McpEndpoint(), methods=["GET", "POST", "DELETE"])
 app.add_route("/mcp/", McpEndpoint(), methods=["GET", "POST", "DELETE"])
+# C49 - Netvisor-underlag (läsning/nedladdning) + MCP-verktyg för Netvisor.
+from app import mcp_netvisor as _c49_mcp_netvisor  # noqa: E402,F401
+from app.routers.netvisor import router as netvisor_router  # noqa: E402
+
+app.include_router(netvisor_router)
 
 
 def require_auth(request: Request) -> None:
