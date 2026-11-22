@@ -1167,12 +1167,9 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         self.assertEqual(att.attachment_id, "999")
         self.assertEqual(captured["method"], "POST")
         self.assertTrue(captured["url"].endswith("/attachments"))
-        # FAS 5.28 (C21) — state="unapproved" skickas redan i CREATE
-        # så draften aldrig hamnar i "Väntar på andras attestering"
-        # som default när PUT:en till state-fältet returnerar 500.
+        # C51 — `state` skickas aldrig i någon Bezala-skrivning.
         self.assertEqual(captured["data"], {
             "draft": "1",
-            "state": "unapproved",
             "bill_line_id": "2163467",
         })
         self.assertIn("file", captured["files"])
@@ -1191,7 +1188,7 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
 
     # ---- FAS 5.28 (C21) — state="unapproved" i CREATE-formen ----
 
-    def test_attach_file_post_form_includes_state_unapproved(self):
+    def test_attach_file_post_form_never_includes_state(self):
         """FAS 5.28 (C21) FIX B — POST /attachments måste skicka
         state='unapproved' redan i form-datan så att Bezala aldrig
         defaultar till 'reviewing' (Väntar på andras attestering).
@@ -1221,14 +1218,11 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         post_calls = [c for c in captured["calls"] if c["method"] == "POST"]
         self.assertEqual(len(post_calls), 1)
         form = post_calls[0]["data"]
-        self.assertEqual(
-            form.get("state"), "unapproved",
-            "POST /attachments form-datan måste innehålla "
-            "state='unapproved' så Bezala aldrig skapar draften som "
-            "'reviewing' från start",
-        )
+        # C51 — hårdregel: aldrig `state` i en skrivning (Arlanda m.fl.
+        # fick state=unapproved och hamnade i reviewing).
+        self.assertNotIn("state", form)
 
-    def test_upload_file_as_draft_post_form_includes_state_unapproved(self):
+    def test_upload_file_as_draft_post_form_never_includes_state(self):
         """FAS 5.28 (C21) — samma CREATE-state-guard för
         upload_file_as_draft, som används av upload_receipt-flödet
         (kvitton som inte matchas mot en bill_line)."""
@@ -1250,7 +1244,7 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         client._client.request = fake_request
         client.upload_file_as_draft(PDF_BYTES, "kvitto.pdf")
 
-        self.assertEqual(captured["data"].get("state"), "unapproved")
+        self.assertNotIn("state", captured["data"])  # C51
         self.assertEqual(captured["data"].get("draft"), "1")
 
     def test_attach_file_legacy_description_only_skips_put(self):
@@ -1295,7 +1289,7 @@ class BezalaMissingReceiptsClientTest(unittest.TestCase):
         put_resp.headers = {"content-type": "application/json"}
         put_resp.text = '{"id": 444, "state": "draft"}'
         put_resp.json = MagicMock(
-            return_value={"id": 444, "state": "draft"},
+            return_value={"id": 444, "state": "unapproved"},
         )
 
         def fake_request(method, url, **kwargs):

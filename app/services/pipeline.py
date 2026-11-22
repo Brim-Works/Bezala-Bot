@@ -1126,6 +1126,7 @@ def _process_one_message(
                         ai_description_en=(
                             plain_dashes(analysis.description_en) if analysis else None
                         ),
+                        vat_info=getattr(analysis, "vat_info", None) if analysis else None,
                         ai_confidence=analysis.confidence if analysis else None,
                         bezala_transaction_id=bezala_txn_id,
                         bezala_upload_status=bezala_status,

@@ -567,7 +567,7 @@ class BezalaLoggingTest(unittest.TestCase):
         resp.status_code = 200
         resp.headers = {"content-type": "application/json"}
         resp.text = '{"id": 2804}'
-        resp.json = MagicMock(return_value={"id": 2804})
+        resp.json = MagicMock(return_value={"id": 2804, "state": "unapproved"})
 
         def fake_request(method, url, **kwargs):
             if method == "PUT":

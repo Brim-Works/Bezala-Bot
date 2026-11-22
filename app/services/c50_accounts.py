@@ -161,7 +161,8 @@ def latest_own_expense(transactions: Iterable[dict], *vendor_texts: str | None) 
 
 
 def suggest_account(*vendor_texts: str | None, accounts: list[dict] | None = None,
-                    transactions: list[dict] | None = None) -> dict:
+                    transactions: list[dict] | None = None,
+                    category: str | None = None) -> dict:
     if accounts is None or transactions is None:
         acc_c, tx_c = reference()
         accounts = acc_c if accounts is None else accounts
@@ -181,6 +182,14 @@ def suggest_account(*vendor_texts: str | None, accounts: list[dict] | None = Non
                 "vat_code_id": line.get("vat_code_id"), "cost_center_ids": cc,
                 "source": f"your latest expense {_tx_date(tx)[:10]} (id {tx.get('id')})",
                 "missing": False}
+    # C51 Del 3 — reserv per kategori (Mikkos beslut), efter C50-regeln.
+    from app.services.c51_vat import category_account
+
+    name = category_account(category, *vendor_texts)
+    if name:
+        a = account_by_name(accounts, name)
+        return {"account_id": (a or {}).get("id"), "name": name,
+                "source": f"rule: category {category or 'company car'}", "missing": False}
     return {"account_id": None, "name": None, "source": None, "missing": True,
             "flag": ACCOUNT_MISSING}
 

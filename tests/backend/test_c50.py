@@ -169,7 +169,7 @@ def test_attach_file_not_draft_after_post_trips_kill_switch(bound_db):
         client.attach_file(2500000, "k.pdf", PDF, description="Scandic Go")
     assert guard.writes_halted(bound_db)
     # Beskrivningen skickas inte längre i formuläret.
-    assert forms == [{"draft": "1", "state": "unapproved", "bill_line_id": "2500000"}]
+    assert forms == [{"draft": "1", "bill_line_id": "2500000"}]  # C51 — aldrig state
     # Nästa skrivning stoppas innan något HTTP-anrop.
     with pytest.raises(BezalaError):
         client.attach_file(2500001, "k.pdf", PDF)
