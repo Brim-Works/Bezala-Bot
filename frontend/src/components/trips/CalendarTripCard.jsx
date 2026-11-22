@@ -1,5 +1,6 @@
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount } from '../../lib/format.js';
+import NetvisorPanel from '../netvisor/NetvisorPanel.jsx';
 
 /* Resor R1 — en resa upptäckt i Google Calendar.
  * Read-only: visar tider, destination, möten, hotell och kvitton som
@@ -232,6 +233,9 @@ export default function CalendarTripCard({ trip }) {
       </ol>
 
       <Checklist c={c} trip={trip} lang={lang} />
+
+      {/* C49 — Netvisor-underlag (bara läsning) */}
+      <NetvisorPanel tripId={trip.id} />
 
       <section className="cal-trip__receipts">
         <div className="cal-trip__label muted mono">{c.receiptsTitle}</div>
