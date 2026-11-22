@@ -345,7 +345,11 @@ def get_card_line(db: Session, bill_line_id: str, scan_bezala: bool = True) -> d
         try:
             from app.services.c51_bezala_inspect import inspect
 
-            out["bezala_transaction"] = inspect(bill_line_id=bid)
+            out["bezala_transaction"] = inspect(
+                bill_line_id=bid,
+                amount=line.amount if line is not None else None,
+                day=line.txn_date.isoformat() if line is not None and line.txn_date else None,
+            )
         except Exception as exc:  # noqa: BLE001
             out["bezala_transaction"] = {"error": str(exc)[:300]}
     if line is not None and line.status == "missing":
