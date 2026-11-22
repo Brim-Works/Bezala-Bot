@@ -185,6 +185,17 @@ function QueueCard({ item, busy, onDecide }) {
         <div className="m-warning" role="alert" data-testid="queue-card-warning">⚠ {item.warning}</div>
       )}
       <CardBody item={item} />
+      {item.kind === 'receipt' && (item.account || item.description_to_paste) && (
+        <div className="m-muted" data-testid="queue-card-bezala-fill">
+          {item.account && !item.account.missing && (
+            <div>Konto: {item.account.name || item.account.account_id}
+              {item.account.source ? ` (${item.account.source})` : ''}</div>
+          )}
+          {item.description_to_paste && (
+            <div>Beskrivning att klistra in i Bezala: <code>{item.description_to_paste}</code></div>
+          )}
+        </div>
+      )}
       <div className="m-actions m-actions--decide">
         <button type="button" className="m-btn m-btn--no" disabled={busy} onClick={() => onDecide('no')}>
           ← {labels.no || item.no_label}

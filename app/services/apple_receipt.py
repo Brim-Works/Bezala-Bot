@@ -23,6 +23,10 @@ APPLE_SENDER_DOMAINS = ("email.apple.com", "apple.com")
 
 # (nyckelord i gemener, engelskt tjänstenamn, är prenumeration)
 _SERVICES: tuple[tuple[str, str, bool], ...] = (
+    # C50 — appar som köps via Apple på företagskortet. Först, eftersom
+    # Apple-kvitton ofta nämner iCloud i sidfoten.
+    ("chatgpt", "ChatGPT Plus", True),
+    ("openai", "ChatGPT Plus", True),
     ("apple one", "Apple One", True),
     ("icloud+", "iCloud+", True),
     ("icloud", "iCloud+", True),
@@ -32,6 +36,8 @@ _SERVICES: tuple[tuple[str, str, bool], ...] = (
     ("apple news", "Apple News+", True),
     ("fitness+", "Apple Fitness+", True),
 )
+
+THIRD_PARTY_APPS = frozenset({"ChatGPT Plus"})
 
 _HARDWARE_WORDS = (
     "macbook", "imac", "mac mini", "mac studio", "iphone", "ipad",
@@ -79,7 +85,8 @@ class AppleReceipt:
         if self.is_hardware:
             return f"Apple hardware/AppleCare purchase - {self.period}"
         if self.service and self.is_subscription:
-            name = self.service if self.service.startswith("Apple") else f"Apple {self.service}"
+            name = (self.service if self.service.startswith("Apple")
+                    or self.service in THIRD_PARTY_APPS else f"Apple {self.service}")
             return f"{name} subscription - {self.period}"
         if self.service:
             return f"Apple {self.service} - {self.period}"

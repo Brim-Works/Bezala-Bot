@@ -132,7 +132,7 @@ def test_arlanda_without_amount_never_autocoupled_and_flagged(db):  # noqa: F811
         card = cards[0]
         assert card["receipt"]["message_id"] == r.message_id
         assert card["amount_missing"] is True
-        assert card["warning"] == "Amount missing - open the receipt before coupling"
+        assert card["warning"].startswith("Amount missing - open the receipt before coupling")
         assert "Amount missing - open the receipt before coupling" in card["subtitle"]
     from app.services.currency_converter import make_db_rate_provider
     from app.services.receipt_matcher import score_match
@@ -364,10 +364,11 @@ def test_private_apple_receipt_without_card_line_ignored_after_14_days(db):  # n
     get = lambda m: db.query(ProcessedMessage).get(m.id).waiting_status  # noqa: E731
     assert get(priv) == "ignored_private_source"
     assert get(rescanned) == "ignored_private_source"
-    assert get(work) == "no_transaction"  # jobbkvitton flaggas som förut
+    # C50 Del 3 — jobbkvitton utan kortrad efter 14 dagar → granskningslista.
+    assert get(work) == "probably_handled_elsewhere"
     assert get(fresh) == "waiting_for_transaction"
     ids = _ids(db)
-    assert f"notxn:{priv.message_id}" not in ids and f"notxn:{work.message_id}" in ids
+    assert f"notxn:{priv.message_id}" not in ids and f"notxn:{work.message_id}" not in ids
     from app.services.cleanup_log import report
 
     assert report(db, "ignored_private_source")["counts"]["ignored_private_source"] == 2

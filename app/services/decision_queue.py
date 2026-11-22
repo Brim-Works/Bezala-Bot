@@ -123,6 +123,14 @@ def _receipt_items(db: Session) -> list[dict]:
             continue
         trip = _trip_for_date(trips, c.txn_date)
         amount_missing = m.amount is None
+        # C50 — kontoförslag + beskrivning att klistra in (skrivs inte via API).
+        from app.services.card_line_coupling import _account_suggestion, _description_to_paste
+
+        account = _account_suggestion(m, c)
+        warning = ("Amount missing - open the receipt before coupling"
+                   if amount_missing else None)
+        if account.get("missing"):
+            warning = f"{warning}; Account missing" if warning else "Account missing"
         out.append({
             "id": f"receipt:{bid}:{m.message_id}",
             "kind": "receipt",
@@ -131,8 +139,10 @@ def _receipt_items(db: Session) -> list[dict]:
                          f"(card {_money(c.amount, c.currency)})" if amount_missing else
                          f"{_money(m.amount, m.currency)} ↔ {_money(c.amount, c.currency)}"),
             "amount_missing": amount_missing,
-            "warning": ("Amount missing - open the receipt before coupling"
-                        if amount_missing else None),
+            "warning": warning,
+            "account": account,
+            "account_missing": bool(account.get("missing")),
+            "description_to_paste": _description_to_paste(m, c),
             "yes_label": "Couple",
             "no_label": "Not this pair",
             "date": c.txn_date.isoformat() if c.txn_date else None,

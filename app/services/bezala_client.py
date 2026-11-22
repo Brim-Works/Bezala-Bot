@@ -660,6 +660,13 @@ class BezalaClient:
         """Hämtar Bezala-konton. Varje post har typiskt {id, name, code?}."""
         return self._fetch_list("/accounts")
 
+    def list_transactions(self) -> list[dict]:
+        """C50 — Mikkos egna utlägg (endast läsning). Används för att kopiera
+        konto/moms/kostnadsställe från senaste utlägget för samma leverantör."""
+        return self._fetch_list(
+            "/transactions", item_keys=("transactions", "items", "data", "results"),
+        )
+
     def list_cost_centers(self) -> list[dict]:
         """Hämtar kostnadsställen. Varje post har typiskt {id, name, default?}."""
         return self._fetch_list("/cost_centers")

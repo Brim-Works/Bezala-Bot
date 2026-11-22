@@ -878,6 +878,11 @@ def build_receipt_params(
             "default_vat_id": None,
         }
     else:
+        # C50 — Mikkos fasta regel: AI-verktyg → "AI työkalut".
+        from app.services.c50_accounts import is_ai_tool
+
+        if is_ai_tool(vendor, sender, subject, file_name):
+            category = "ai-verktyg"
         account = select_account(accounts, category)
 
     cost_center = select_default_cost_center(

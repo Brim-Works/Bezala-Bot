@@ -267,11 +267,17 @@ def set_account(db: Session, subscription_id: int, account, *, accounts=None) ->
         sub.account = None
         db.commit()
         return serialize(db, sub)
-    try:
-        acc = int(str(account).strip())
-    except ValueError as exc:
-        raise SubscriptionError("account must be the numeric Bezala account id "
-                                "(see list_bezala_accounts).") from exc
+    raw = str(account).strip()
+    if not raw.isdigit():
+        # C50 — kontonamnet som Bezala visar (t.ex. "AI työkalut").
+        from app.services.c50_accounts import account_by_name
+
+        hit = account_by_name(accounts or [], raw)
+        if hit is None or not str(hit.get("id", "")).isdigit():
+            raise SubscriptionError("account must be a Bezala account id or the exact "
+                                    "account name from list_bezala_accounts.")
+        raw = str(hit["id"])
+    acc = int(raw)
     if accounts:
         ids = {int(a["id"]) for a in accounts if str(a.get("id", "")).isdigit()}
         if ids and acc not in ids:
@@ -296,7 +302,10 @@ def bezala_accounts(db: Session, *, client=None) -> dict:
 
             client = BezalaClient()
             close = True
-        for a in client.list_accounts() or []:
+        from app.services.c50_accounts import visible_accounts
+
+        # C50 — samma lista som Bezala visar (aktiva konton med namn).
+        for a in visible_accounts(client.list_accounts() or []):
             accounts.append({k: a.get(k) for k in ("id", "name", "code", "number")
                              if a.get(k) is not None})
     except Exception as exc:  # noqa: BLE001
