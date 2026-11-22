@@ -137,10 +137,15 @@ def suggest_receipts(db: Session, card_lines: list[CardLine],
         from app.services.c53_receipts import shared_refund_receipt
 
         for c in card_lines:
-            if out.get(c.bill_line_id) is None:
-                s = shared_refund_receipt(db, c)
-                if s and (c.bill_line_id, s["message_id"]) not in exclude_pairs:
-                    out[c.bill_line_id] = s
+            cur = out.get(c.bill_line_id)
+            # Exakt belopp på ett kvitto med samma booking_ref går före ett
+            # svagt förslag med annat belopp (prod: 744 732,57 för 134,48).
+            if cur is not None and cur.get("amount") is not None and c.amount is not None \
+                    and abs(float(cur["amount"]) - float(c.amount)) < 0.01:
+                continue
+            s = shared_refund_receipt(db, c)
+            if s and (c.bill_line_id, s["message_id"]) not in exclude_pairs:
+                out[c.bill_line_id] = s
     except Exception:  # noqa: BLE001
         logger.exception("C53: återbetalningsförslag misslyckades")
     return out
