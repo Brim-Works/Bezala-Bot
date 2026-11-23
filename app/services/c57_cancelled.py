@@ -189,12 +189,13 @@ def detect(messages) -> dict[str, dict]:
                 "label_en": LABEL_EN,
             }
         info["message_ids"] = sorted(set(info["message_ids"]) | members)
-        pdays = [d for d in (_day(_g(by_id[x], "receipt_date"), _g(by_id[x], "bezala_payment_date"))
-                             for x in members if x in by_id and not is_refund(by_id[x])) if d]
-        # Köpdatum = kortradens datum för köpet om det finns, annars kvittots.
+        # Köpdatum = köpets kortrad. Finns den inte i boten (köpraden saknar
+        # kvitto, som för 8NLAI4) visas inget datum - kvittots datum är ofta
+        # flygdagen och kan ligga efter återbetalningen.
         buy = [d for d in (_day(_g(by_id[x], "bezala_payment_date"))
-                           for x in members if x in by_id and not refund_line(by_id[x])) if d]
-        info["purchase_date"] = min(buy or pdays).isoformat() if (buy or pdays) else None
+                           for x in members if x in by_id and not refund_line(by_id[x])
+                           and not is_refund(by_id[x])) if d]
+        info["purchase_date"] = min(buy).isoformat() if buy else None
         rdays = [d for d in (_day(_g(by_id[x], "bezala_payment_date"))
                              for x in members if x in by_id and refund_line(by_id[x])) if d]
         info["refund_date"] = max(rdays).isoformat() if rdays else None

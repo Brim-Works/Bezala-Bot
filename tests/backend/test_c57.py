@@ -103,6 +103,9 @@ def test_a_purchase_and_refund_is_zero(db):  # noqa: F811
     assert c["hz-et"]["booking_ref"] == "8HZCXX"
     assert c["hz-et"]["purchase_date"] == "2026-08-13"
     assert c["hz-et"]["refund_date"] == "2026-08-15"
+    # 8NLAI4: köpraden saknar kvitto - inget köpdatum (flygdagen 26 nov är inte köpdagen).
+    assert c["nl-et"]["purchase_date"] is None
+    assert c["nl-et"]["refund_date"] == "2026-11-18"
     a = allocate(db)
     assert _sums(a, 82) == {"EUR": 514.48, "SEK": 150.0}
 
