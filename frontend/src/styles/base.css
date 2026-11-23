@@ -4523,6 +4523,10 @@ html[data-theme='B'] {
   gap: 2px;
 }
 
+.trip-card__receipt--dup {
+  opacity: 0.6;
+}
+
 .trips-view__note {
   font-size: 13px;
 }

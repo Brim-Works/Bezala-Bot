@@ -59,21 +59,26 @@ def _overlaps(a_start: date, a_end: date, b_start: date, b_end: date) -> bool:
     return a_start <= b_end and b_start <= a_end
 
 
-def _receipt_warnings(messages: list[dict]) -> list[str]:
-    """Kvitton som ser ut som samma bokning två gånger, eller småbelopp."""
+def _receipt_warnings(messages: list[dict], duplicate_of: dict[str, str] | None = None) -> list[str]:
+    """Samma leverantör + belopp + SAMMA datum två gånger. Inga varningar för
+    belopp under 1 EUR (delbetalningar) eller för par som redan är kända
+    dubbletter (C44 duplicate_of - de räknas en gång)."""
+    duplicate_of = duplicate_of or {}
+    ids = {m.get("message_id") for m in messages}
     warnings: list[str] = []
-    seen: dict[tuple, str] = {}
+    seen: set[tuple] = set()
     for m in messages:
         amount = m.get("amount")
-        if amount is not None and abs(float(amount)) < TINY_AMOUNT:
-            warnings.append(f"tiny_amount:{m.get('vendor') or '?'}:{amount}")
-        if amount is None:
+        if amount is None or abs(float(amount)) < TINY_AMOUNT:
             continue
-        key = (_fold(m.get("vendor") or ""), round(float(amount), 2), m.get("currency"))
+        if duplicate_of.get(m.get("message_id")) in ids:
+            continue
+        key = (_fold(m.get("vendor") or ""), round(float(amount), 2), m.get("currency"),
+               m.get("receipt_date"))
         if key in seen:
             warnings.append(f"same_amount_twice:{m.get('vendor') or '?'}:{amount}")
         else:
-            seen[key] = m.get("message_id")
+            seen.add(key)
     return warnings
 
 
@@ -90,6 +95,11 @@ def analyse(db: Session) -> dict:
     calendar = db.query(CalendarTrip).order_by(CalendarTrip.start_date).all()
     cal_keys = {c.id: _calendar_keys(db, c) for c in calendar}
 
+    from app.models import ProcessedMessage
+
+    dup_map = {mid: d for mid, d in db.query(ProcessedMessage.message_id,
+                                               ProcessedMessage.duplicate_of)
+               .filter(ProcessedMessage.duplicate_of.isnot(None)).all()}
     rows: list[dict] = []
     for t in trips:
         s = _serialize(db, t)
@@ -119,7 +129,7 @@ def analyse(db: Session) -> dict:
             "old": t.end_date < CUTOFF,
             "empty": s["message_count"] == 0,
             "covered_by": covered,
-            "receipt_warnings": _receipt_warnings(s["messages"]),
+            "receipt_warnings": _receipt_warnings(s["messages"], dup_map),
             "_keys": keys,
             "_start": t.start_date,
             "_end": t.end_date,

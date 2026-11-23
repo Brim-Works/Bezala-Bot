@@ -374,3 +374,29 @@ test('C56: engelska — inga svenska etiketter', async ({ page }) => {
     expect(text).not.toContain(word);
   }
 });
+
+test('C56: samma biljett räknas en gång och kvitton utan resa listas', async ({ page }) => {
+  await setupApiMocks(page, {
+    calendarTrips: [{
+      ...CAL_TRIP,
+      receipts: [
+        { message_id: 'et', vendor: 'Finnair', amount: 446.77, currency: 'EUR', receipt_date: '2026-04-14', counted: true },
+        { message_id: 'bc', vendor: 'Finnair', amount: 446.77, currency: 'EUR', receipt_date: '2026-04-14', counted: false, duplicate_of: 'et' },
+        { message_id: 'f1', vendor: 'Flytoget', amount: 276, currency: 'NOK', receipt_date: '2026-04-14', counted: true },
+        { message_id: 'f2', vendor: 'Flytoget', amount: 276, currency: 'NOK', receipt_date: '2026-04-14', counted: true },
+      ],
+    }],
+    unassignedReceipts: [
+      { message_id: 'ay-1126', vendor: 'Finnair', amount: 134.48, currency: 'EUR', receipt_date: '2026-11-26', reason: 'ambiguous', candidates: [146, 147] },
+    ],
+    missingInfoReceipts: [{ message_id: 'n1' }, { message_id: 'n2' }],
+  });
+  await page.goto('/trips');
+  await expect(page.getByTestId('trip-row-7')).toContainText('446,77 EUR + 552,00 NOK');
+  await page.getByTestId('trip-row-toggle-7').click();
+  await expect(page.getByTestId('calendar-trip-receipt-bc')).toContainText('samma biljett, räknas en gång');
+  const un = page.getByTestId('trips-unassigned');
+  await expect(un).toContainText('Kvitton utan resa (1)');
+  await expect(page.getByTestId('trips-unassigned-ay-1126')).toContainText('passar flera resor: 146, 147');
+  await expect(page.getByTestId('trips-missing-info')).toContainText('2 kvitton saknar uppgifter');
+});

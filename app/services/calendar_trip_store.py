@@ -223,6 +223,12 @@ def _linked_receipts(db: Session, start: date, end: date) -> list[dict]:
     return out
 
 
+def receipt_totals(receipts: list[dict]) -> dict[str, float]:
+    from app.services.c56_receipt_allocation import totals
+
+    return totals(receipts)
+
+
 def _flight_times_by_day(flights: list[dict]) -> dict[str, dict]:
     """{'YYYY-MM-DD': {'departure': 'HH:MM', 'arrival': 'HH:MM'}} i
     Helsingfors-tid — flygtiderna visas i mindre text i UI."""
@@ -251,7 +257,18 @@ def _flight_times_by_day(flights: list[dict]) -> dict[str, dict]:
     return out
 
 
-def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = None) -> dict:
+def trip_receipts(db: Session, trip: CalendarTrip, allocation: dict | None = None) -> list[dict]:
+    """C56: kvitton som hör till just den här resan (varje kvitto på EN resa,
+    dubbletter med counted=False). Se c56_receipt_allocation."""
+    from app.services.c56_receipt_allocation import allocate
+
+    if allocation is None:
+        allocation = allocate(db)
+    return allocation["by_trip"].get(trip.id, [])
+
+
+def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = None,
+                   allocation: dict | None = None) -> dict:
     from app.services.trip_english import country_name
 
     flight_times = _flight_times_by_day(trip.flights or [])
@@ -261,6 +278,7 @@ def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = Non
         .order_by(CalendarTripDay.day_date)
         .all()
     )
+    receipts = trip_receipts(db, trip, allocation)
     return {
         "id": trip.id,
         "start_date": trip.start_date.isoformat(),
@@ -302,7 +320,8 @@ def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = Non
             }
             for d in days
         ],
-        "receipts": _linked_receipts(db, trip.start_date, trip.end_date),
+        "receipts": receipts,
+        "receipt_totals": receipt_totals(receipts),
         # C42 — checklista (read-only i UI): flyg/hotell/parkering/lokal.
         "checklist": checklist,
         "completeness": (checklist or {}).get("completeness"),
@@ -323,7 +342,18 @@ def list_trips(db: Session) -> list[dict]:
         db.rollback()
         logger.exception("C42: checklistor kunde inte räknas")
         lists = {}
-    return [serialize_trip(db, t, lists.get(t.id)) for t in rows]
+    from app.services.c56_receipt_allocation import allocate
+
+    allocation = allocate(db, rows)
+    return [serialize_trip(db, t, lists.get(t.id), allocation) for t in rows]
+
+
+def receipts_without_trip(db: Session) -> dict:
+    """C56: kvitton som inte passar någon resa + kvitton som saknar uppgifter."""
+    from app.services.c56_receipt_allocation import allocate
+
+    a = allocate(db)
+    return {"unassigned": a["unassigned"], "missing_info": a["missing_info"]}
 
 
 def refresh_from_calendar(db: Session) -> dict:
