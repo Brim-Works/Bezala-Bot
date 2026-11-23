@@ -438,7 +438,8 @@ def _context_direction(day: date | None, airport: str, city: str, flights: list[
     return None, None
 
 
-def _as_utc(value) -> datetime | None:
+def _as_utc(value, naive_tz: str = "Europe/Helsinki") -> datetime | None:
+    """Tid utan tidszon = Helsingfors-tid (appens regel), annars given zon."""
     if value is None:
         return None
     if isinstance(value, str):
@@ -449,8 +450,8 @@ def _as_utc(value) -> datetime | None:
     if not isinstance(value, datetime):
         return None
     if value.tzinfo is None:
-        return value.replace(tzinfo=ZoneInfo("UTC"))
-    return value
+        value = value.replace(tzinfo=ZoneInfo(naive_tz))
+    return value.astimezone(ZoneInfo("UTC"))
 
 
 _GMAIL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -469,7 +470,7 @@ def _bought_at(r) -> datetime | None:
                 return dt
         except (ValueError, OverflowError, OSError):
             pass
-    return _as_utc(getattr(r, "received_at", None))
+    return _as_utc(getattr(r, "received_at", None), "UTC")
 
 
 def _time_direction(bought, airport: str, city: str,

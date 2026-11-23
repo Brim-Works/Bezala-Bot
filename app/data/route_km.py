@@ -86,7 +86,16 @@ def routes() -> list[dict]:
 
 
 def operator_of(text: str | None) -> str | None:
+    """C59 - operatörens eget namn vinner över allmänna ord: 'Arlanda Express
+    ... airport express train' är Arlanda Express, inte Flytoget."""
     t = fold(text)
+    best, best_len = None, 0
+    for op, words in OPERATORS.items():
+        for w in words:
+            if w in t and len(w) > best_len and w != "airport express train":
+                best, best_len = op, len(w)
+    if best:
+        return best
     for op, words in OPERATORS.items():
         if any(w in t for w in words):
             return op

@@ -283,3 +283,35 @@ def test_postgres_rental_leg_and_arlanda_direction(pg_url):  # noqa: F811
         with engine.begin() as c:
             c.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
         engine.dispose()
+
+
+def test_arlanda_express_not_mistaken_for_flytoget():
+    from app.data import route_km as rk
+
+    assert rk.operator_of("Arlanda Express airport express train single ticket") == (
+        "arlanda_express")
+    assert rk.operator_of("Receipt from the Airport Express Train") == "flytoget"
+    assert rk.operator_of("Flytoget Oslo Lufthavn") == "flytoget"
+
+
+def test_arlanda_direction_with_ai_text_and_naive_helsinki_flight_times(db):  # noqa: F811
+    """Prod-fallet: AI-beskrivningen säger 'airport express train' och
+    kalenderflygen har tider utan tidszon (= Helsingfors-tid)."""
+    t = _trip(db, date(2026, 4, 16), date(2026, 4, 16), [
+        _flight("AY 801", None, "ARN", "2026-04-16T06:45:00", "2026-04-16T07:45:00"),
+        _flight("AY 812", None, "HEL", "2026-04-16T14:55:00", "2026-04-16T15:55:00"),
+    ], dest="Stockholm")
+    ai = "Arlanda Express airport express train single ticket, Stockholm C - Arlanda"
+    _r(db, date(2026, 4, 16), "Arlanda Express", 100.0, "SEK",
+       "20260416 Arlanda Express Enkelresa Stockholm-Arlanda.pdf", "Ordernummer 7307781",
+       category="Annat", ai_description_en=ai, message_id="19d95dcddfd6b740")
+    _r(db, date(2026, 4, 16), "Arlanda Express", 100.0, "SEK",
+       "20260416 Arlanda Express Enkelresa vuxen.pdf", "Ordernummer 7305162",
+       category="Annat", ai_description_en=ai, message_id="19d94ad5a19ff37f")
+    view = tl.get_trip_legs(db, t.id)
+    trains = {x["receipt_message_id"]: x for x in view["legs"] if x["mode"] == "train"}
+    assert (trains["19d94ad5a19ff37f"]["from"], trains["19d94ad5a19ff37f"]["to"]) == (
+        "Arlanda Airport", "Stockholm C")
+    assert (trains["19d95dcddfd6b740"]["from"], trains["19d95dcddfd6b740"]["to"]) == (
+        "Stockholm C", "Arlanda Airport")
+    assert view["admin"]["train_km"] == 78
