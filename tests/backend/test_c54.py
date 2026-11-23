@@ -331,3 +331,22 @@ def test_netvisor_payload_has_no_km_or_emissions(db):  # noqa: F811
     text = str(p["payload"]).lower()
     assert " km" not in text and "co2" not in text and "emission" not in text
     assert "approver" not in text and "accept" not in text
+
+
+def test_two_tickets_with_different_order_numbers_are_two_journeys(db):  # noqa: F811
+    """Prod resa 134: två Arlanda Express-biljetter samma dag, olika ordernummer."""
+    t = _trip(db, date(2026, 4, 16), date(2026, 4, 16), [
+        _flight("AY 801", "HEL", "ARN", "2026-04-16T03:45:00+00:00", "2026-04-16T04:45:00+00:00"),
+        _flight("AY 812", "ARN", "HEL", "2026-04-16T11:55:00+00:00", "2026-04-16T12:55:00+00:00"),
+    ], dest="Stockholm")
+    _r(db, date(2026, 4, 16), "Arlanda Express", 100.0, "SEK",
+       "20260416 Arlanda Express Enkelresa Stockholm-Arlanda.pdf",
+       "Arlanda express biljett och kvitto - Ordernummer 7307781")
+    _r(db, date(2026, 4, 16), "Arlanda Express", 100.0, "SEK",
+       "20260416 Arlanda Express Stockholm-Arlanda.pdf",
+       "Arlanda express biljett och kvitto - Ordernummer 7305162")
+    view = tl.get_trip_legs(db, t.id)
+    trains = [x for x in view["legs"] if x["mode"] == "train"]
+    assert len(trains) == 2 and not any(x["excluded"] for x in trains)
+    assert view["admin"]["train_km"] == 78
+    assert any("check direction" in x["note"] for x in trains)

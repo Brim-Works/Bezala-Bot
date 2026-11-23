@@ -453,6 +453,7 @@ def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> li
         if direction_known and not round_trip else None,
         "_summary": "journeys made" in (r.text or "") or "receipts from" in (r.text or ""),
         "_coupled": bool(getattr(r, "bill_line_id", None)),
+        "_order": _order_no(fields),
     }
     if not round_trip or not (frm and to):
         return [base]
@@ -465,6 +466,19 @@ def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> li
     first["_dedupe"] = ("rt", fold_vendor(r.vendor), r.day, r.amount)
     second["_dedupe"] = ("rt2", fold_vendor(r.vendor), r.day, r.amount)
     return [first, second]
+
+
+_ORDER_RE = re.compile(r"(?:ordernummer|order number|order no\.?|order|booking)\s*[:#]?\s*(\d{5,})",
+                       re.IGNORECASE)
+
+
+def _order_no(fields) -> str | None:
+    """Ordernummer ur ämne/filnamn - olika nummer = olika köp (inte dubblett)."""
+    for f in fields:
+        m = _ORDER_RE.search(str(f or ""))
+        if m:
+            return m.group(1)
+    return None
 
 
 def fold_vendor(v: str | None) -> str:
@@ -505,12 +519,19 @@ def ground_legs(trip: CalendarTrip, flights: list[dict], receipts: list) -> list
                                   str(x["receipt_message_id"])))
         keep = group[0]
         for dup in group[1:]:
+            if dup.get("_order") and keep.get("_order") and dup["_order"] != keep["_order"]:
+                # Två olika köp samma väg och dag: två resor (km är densamma
+                # åt båda hållen), men riktningen på kvittot kan vara fel.
+                dup["note"] = (f"{dup['note']}; separate ticket (order {dup['_order']}), "
+                               "same direction as another ticket - check direction")
+                continue
             dup["excluded"] = True
             dup["note"] = (f"{dup['note']}; duplicate of receipt {keep['receipt_message_id']} "
                            "(same vendor, day, amount and route) - not counted")
     for leg in legs:
         leg.pop("_summary", None)
         leg.pop("_coupled", None)
+        leg.pop("_order", None)
         leg.setdefault("excluded", False)
     return legs
 
