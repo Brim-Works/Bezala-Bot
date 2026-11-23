@@ -438,3 +438,73 @@ test('C57: avbokad bokning hopfälld, räknas inte, och frågor till Mikko', asy
   await expect(page.getByTestId('trips-unassigned-8NLAI4-et')).toHaveCount(0);
   await expect(page.getByTestId('trips-cancelled-no-trip')).toContainText('Avbokade och återbetalda, utan resa (1)');
 });
+
+// ---------- C58 — tydligare chips + hotellnätter utan kvitto ----------
+
+const C58_ITEMS = (resolution) => [
+  { kind: 'flight', slot: null, status: 'found', set_by: 'auto', note: 'Flights', receipt: null },
+  { kind: 'hotel', slot: '2026-01-20', status: 'found', set_by: 'auto', note: 'Night',
+    receipt: { vendor: 'Riverside Hotel' } },
+  resolution
+    ? { kind: 'hotel', slot: '2026-01-21', status: 'found', set_by: 'user', resolution,
+      resolved_at: '2026-11-23T10:00:00', note: 'Riverside Hotel Ängelholm - betald direkt av företaget',
+      receipt: null }
+    : { kind: 'hotel', slot: '2026-01-21', status: 'missing', set_by: 'auto', resolution: null,
+      note: 'Night', receipt: null },
+];
+const C58_OPEN = {
+  status: 'incomplete', missing: 1, missing_items: 1, card_lines_without_receipt: 0, waiting: 0,
+  missing_kinds: ['hotel 2026-01-21'], missing_receipts: [{ kind: 'hotel', slot: '2026-01-21' }],
+};
+const C58_DONE = {
+  status: 'complete', missing: 0, missing_items: 0, card_lines_without_receipt: 0, waiting: 0,
+  missing_kinds: [], missing_receipts: [],
+};
+
+test('C58: "1 kvitto saknas" (röd) och "km saknas" (gul) är två chips; hotellnatt med knappar', async ({ page }) => {
+  const trip = {
+    ...CAL_TRIP, id: 130, destination: 'Ängelholm', start_date: '2026-01-20', end_date: '2026-01-22',
+    completeness: C58_OPEN, checklist: { items: C58_ITEMS(null), card_lines: [], completeness: C58_OPEN },
+  };
+  await setupApiMocks(page, {
+    calendarTrips: [trip],
+    emissionsPerTrip: [{ trip_id: 130, km: 1784, legs_missing_km: 1, flags: [] }],
+  });
+  let posted = null;
+  await page.route('**/api/c58/calendar-trips/130/hotel-night', async (route) => {
+    posted = route.request().postDataJSON();
+    const done = posted.choice !== 'undo';
+    const cl = done
+      ? { items: C58_ITEMS(posted.choice), card_lines: [], completeness: C58_DONE }
+      : { items: C58_ITEMS(null), card_lines: [], completeness: C58_OPEN };
+    await route.fulfill({ json: cl });
+  });
+  await page.goto('/trips');
+  const chip = page.getByTestId('calendar-trip-completeness-130');
+  await expect(chip).toHaveText('1 kvitto saknas');
+  await expect(chip).toHaveClass(/pill--err/);
+  await expect(chip).toHaveAttribute('title', 'Saknas: Hotell 2026-01-21');
+  await expect(page.getByTestId('trip-row-missing-130')).toHaveText('Saknas: Hotell 2026-01-21');
+  const km = page.getByTestId('trip-row-km-130');
+  await expect(km).toHaveText('km saknas');
+  await expect(km).toHaveClass(/pill--warn/);
+
+  await page.getByTestId('trip-row-toggle-130').click();
+  const night = page.getByTestId('night-130-2026-01-21');
+  await expect(night).toContainText('Natt 2026-01-21: inget hotellkvitto');
+  await expect(night.getByRole('button')).toHaveText([
+    'Det fanns inget hotell', 'Redan hanterat i Bezala', 'Faktureras direkt till företaget',
+    'Kvitto kommer', 'Tips',
+  ]);
+  // Natten med kvitto får inga knappar.
+  await expect(page.getByTestId('night-130-2026-01-20')).toHaveCount(0);
+
+  await page.getByTestId('night-invoiced_to_company-130-2026-01-21').click();
+  expect(posted).toEqual({ night: '2026-01-21', choice: 'invoiced_to_company' });
+  await expect(chip).toHaveText('Komplett');
+  await expect(page.getByTestId('check-130-hotel-2026-01-21')).toContainText('Faktureras direkt till företaget');
+  await expect(night).toContainText('valt 2026-11-23');
+  await page.getByTestId('night-undo-130-2026-01-21').click();
+  expect(posted.choice).toBe('undo');
+  await expect(chip).toHaveText('1 kvitto saknas');
+});

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import CalendarTripCard from './CalendarTripCard.jsx';
-import { cityLabel, fill, fmtRange, sumByCurrency } from './tripFormat.js';
+import { cityLabel, fill, fmtRange, receiptsChip, sumByCurrency } from './tripFormat.js';
 
 /* C56 — en kalenderresa som en hopfälld rad: stad, datum, belopp, status,
  * km, checklista. Netvisor-texten och Godkänn står på raden; dagar,
@@ -13,12 +13,16 @@ function statusPill(status) {
   return 'pill pill--accent mono';
 }
 
-export default function CalendarTripRow({ trip, nvText, km, onApprove, onUnapprove }) {
+export default function CalendarTripRow({ trip: tripIn, nvText, km, onApprove, onUnapprove }) {
   const { t, lang } = useI18n();
   const c = t.trips.calendar;
   const [open, setOpen] = useState(false);
+  // C58 — checklistan efter ett hotellval (svaret från backend) gäller direkt.
+  const [cl, setCl] = useState(null);
+  const trip = cl ? { ...tripIn, checklist: cl, completeness: cl.completeness } : tripIn;
   const amount = sumByCurrency(trip.receipts, lang);
   const comp = trip.completeness;
+  const chip = receiptsChip(c.check, comp);
   const approved = trip.status === 'approved';
 
   return (
@@ -46,7 +50,7 @@ export default function CalendarTripRow({ trip, nvText, km, onApprove, onUnappro
           </span>
           {km ? (
             km.missing ? (
-              <span className="pill pill--err mono" data-testid={`trip-row-km-${trip.id}`}>
+              <span className="pill pill--warn mono" data-testid={`trip-row-km-${trip.id}`}>
                 {t.trips.kmMissing}
               </span>
             ) : (
@@ -55,14 +59,13 @@ export default function CalendarTripRow({ trip, nvText, km, onApprove, onUnappro
               </span>
             )
           ) : null}
-          {comp ? (
+          {chip ? (
             <span
-              className={comp.status === 'complete' ? 'pill pill--ok mono' : 'pill pill--err mono'}
+              className={chip.cls}
+              title={chip.title || undefined}
               data-testid={`calendar-trip-completeness-${trip.id}`}
             >
-              {comp.status === 'complete'
-                ? c.check.complete
-                : fill(c.check.incomplete, { count: comp.missing })}
+              {chip.text}
             </span>
           ) : null}
         </span>
@@ -89,6 +92,11 @@ export default function CalendarTripRow({ trip, nvText, km, onApprove, onUnappro
           ))}
         </ul>
       ) : null}
+      {chip && chip.list ? (
+        <div className="trip-row__missing mono muted" data-testid={`trip-row-missing-${trip.id}`}>
+          {chip.title}
+        </div>
+      ) : null}
       {nvText ? (
         <div className="trip-row__nv mono" data-testid={`trip-row-nv-${trip.id}`}>
           <span className="muted">{t.trips.netvisorText}:</span> {nvText}
@@ -96,7 +104,7 @@ export default function CalendarTripRow({ trip, nvText, km, onApprove, onUnappro
       ) : null}
       {open ? (
         <div className="trip-row__details">
-          <CalendarTripCard trip={trip} embedded />
+          <CalendarTripCard trip={trip} embedded onChecklist={setCl} />
           {approved && onUnapprove ? (
             <div className="trip-card__actions">
               <button

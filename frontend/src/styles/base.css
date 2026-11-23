@@ -5405,3 +5405,41 @@ html[data-theme='B'] {
   flex: 1 1 200px;
   min-width: 0;
 }
+
+/* C58 — saknade kvitton under raden + hotellnatt utan kvitto. */
+.trip-row__missing {
+  font-size: 12.5px;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+
+.cal-trip__night {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  flex-basis: 100%;
+  margin-top: 4px;
+  font-size: 13px;
+}
+
+.cal-trip__night-buttons {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cal-trip__tips {
+  flex-basis: 100%;
+  margin: 2px 0 0;
+  padding-left: 16px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}

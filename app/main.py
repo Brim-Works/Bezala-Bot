@@ -364,6 +364,10 @@ app.include_router(emissions_router)
 from app.routers.c56 import router as c56_router  # noqa: E402
 
 app.include_router(c56_router)
+# C58 - hotellnätter utan kvitto (val + tips).
+from app.routers.c58 import router as c58_router  # noqa: E402
+
+app.include_router(c58_router)
 
 
 def require_auth(request: Request) -> None:

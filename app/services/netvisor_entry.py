@@ -309,6 +309,14 @@ def build_entry(db: Session, trip_id: int) -> dict:
     for r in rows:
         if r["settings"]["night_travel_check"]:
             notes.append(f"Row {r['row']}: {r['settings']['night_travel_check']}")
+    # C58 - hotell som fakturerats direkt till företaget blir aldrig en
+    # utgiftsrad i reseräkningen (boten bygger bara traktamentsrader).
+    invoiced = invoiced_hotel_nights(db, trip.id)
+    if invoiced:
+        notes.append(
+            "Hotel invoiced directly to the company (" + ", ".join(invoiced)
+            + ") - no expense line in the travel expense."
+        )
 
     return {
         "trip_id": trip.id,
@@ -326,7 +334,18 @@ def build_entry(db: Session, trip_id: int) -> dict:
         "notes": notes,
         "ready": not warnings,
         "amounts": "Calculated by Netvisor, not by Bezala Bot.",
+        "hotel_invoiced_to_company": invoiced,
     }
+
+
+def invoiced_hotel_nights(db: Session, trip_id: int) -> list[str]:
+    from app.models import TripExpectation
+
+    rows = (db.query(TripExpectation)
+            .filter(TripExpectation.trip_id == trip_id, TripExpectation.kind == "hotel",
+                    TripExpectation.resolution == "invoiced_to_company")
+            .order_by(TripExpectation.slot).all())
+    return [r.slot for r in rows]
 
 
 def _night_without_hotel(days: list[CalendarTripDay], trip_end: date) -> str | None:

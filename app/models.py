@@ -711,6 +711,10 @@ class TripExpectation(Base):
     message_id = Column(String(255), nullable=True)
     bill_line_id = Column(String(64), nullable=True)
     note = Column(Text, nullable=True)
+    # C58 - Mikkos val för en hotellnatt utan kvitto: no_hotel |
+    # handled_in_bezala | invoiced_to_company | receipt_coming (NULL = inget val).
+    resolution = Column(String(32), nullable=True)
+    resolved_at = Column(DateTime, nullable=True)
     updated_at = Column(
         DateTime, server_default=func.now(), onupdate=func.now(), nullable=False,
     )

@@ -338,14 +338,43 @@ def _fill_airports(db: Session, trip: CalendarTrip, flights: list[dict]) -> list
     return flights
 
 
-def _has_moovy_parking(db: Session, trip: CalendarTrip) -> bool:
+def _has_moovy_parking(db: Session, trip: CalendarTrip, receipts=None) -> bool:
     if (trip.time_source or "") == "parking":
         return True
     row = (db.query(TripExpectation)
            .filter(TripExpectation.trip_id == trip.id, TripExpectation.kind == "parking",
                    TripExpectation.status == "found")
            .first())
-    return row is not None
+    if row is not None:
+        return True
+    # C58 - ett Moovy-kvitto (flygplatsparkering) inom ±1 dygn från resan
+    # räcker: då vet vi att Mikko körde egen (tjänste)bil till HEL.
+    if receipts is None:
+        from app.services.trip_completeness import load_receipts
+
+        receipts = load_receipts(db)
+    lo, hi = trip.start_date - timedelta(days=1), trip.end_date + timedelta(days=1)
+    return any(r.day is not None and lo <= r.day <= hi and "moovy" in (r.text or "")
+               and (r.amount is None or r.amount >= 0)
+               for r in receipts)
+
+
+CAR_MODES = ("car_phev", "car_private")
+
+
+def _own_car_legs(db: Session, trip: CalendarTrip) -> bool:
+    """C58 - resan har redan bil-ben som inte är bottens Moovy-ben
+    (manuella eller andra). Då skapas inga automatiska bil-ben."""
+    rows = (db.query(TripLeg)
+            .filter(TripLeg.trip_id == trip.id, TripLeg.mode.in_(CAR_MODES))
+            .all())
+    return any(not (r.leg_key or "").startswith("car:") for r in rows)
+
+
+def _trip_ended(trip: CalendarTrip) -> bool:
+    from app.services.trip_completeness import _today
+
+    return trip.end_date < _today()
 
 
 def _local_receipts(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip],
@@ -596,12 +625,16 @@ def build_auto_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTri
 
     legs += ground_legs(trip, flights, _local_receipts(db, trip, all_trips, receipts))
 
-    if starts_home and ends_home and _has_moovy_parking(db, trip):
+    if _own_car_legs(db, trip):
+        # C58 - Mikkos bil-ben vinner; inga dubbla ben, ingen fråga.
+        pass
+    elif starts_home and ends_home and _has_moovy_parking(db, trip, receipts):
         cfg = car_settings()
         back_date = flights[-1].get("arr_date") or trip.end_date
         legs = (_car_legs("out", trip.start_date, cfg["out_electric_share"], cfg)
                 + legs + _car_legs("back", back_date, cfg["back_electric_share"], cfg))
-    else:
+    elif _trip_ended(trip) and not _has_moovy_parking(db, trip, receipts):
+        # C58 - frågan ställs först när resan är slut och Moovy inte svarar.
         flags.append("home_transport_unknown")
 
     for i, leg in enumerate(legs):
@@ -780,10 +813,28 @@ def hotel_nights(db: Session, trip: CalendarTrip, receipts=None) -> dict:
     receipts = receipts if receipts is not None else load_receipts(db)
     slots = [s for s in _hotel_slots(trip, _days(db, trip), receipts)
              if s.get("status") in ("found", "missing")]
-    found = sum(1 for s in slots if s["status"] == "found")
-    return {"nights": len(slots), "with_receipt": found,
-            "is_estimate": found < len(slots),
-            "nights_without_receipt": [s["slot"] for s in slots if s["status"] == "missing"]}
+    # C58 - Mikkos val: 'inget hotell' räknas inte; 'redan hanterat i Bezala'
+    # och 'faktureras direkt till företaget' räknas som klara hotellnätter.
+    marks = {r.slot: r for r in db.query(TripExpectation)
+             .filter(TripExpectation.trip_id == trip.id, TripExpectation.kind == "hotel",
+                     TripExpectation.set_by == "user").all()}
+    counted, done, without, invoiced = [], 0, [], []
+    for s in slots:
+        m = marks.get(s["slot"])
+        if m is not None and m.status == "not_applicable":
+            continue
+        counted.append(s)
+        resolution = getattr(m, "resolution", None) if m is not None else None
+        if resolution == "invoiced_to_company":
+            invoiced.append(s["slot"])
+        if s["status"] == "found" or (m is not None and m.status == "found"):
+            done += 1
+        else:
+            without.append(s["slot"])
+    return {"nights": len(counted), "with_receipt": done,
+            "is_estimate": done < len(counted),
+            "nights_without_receipt": without,
+            "invoiced_to_company": invoiced}
 
 
 def admin_totals(rows: list[TripLeg], nights: dict | None = None) -> dict:

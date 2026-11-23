@@ -1,5 +1,8 @@
+import { useState } from 'react';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount } from '../../lib/format.js';
+import { request } from '../../api/client.js';
+import { receiptsChip } from './tripFormat.js';
 import NetvisorPanel from '../netvisor/NetvisorPanel.jsx';
 
 /* Resor R1 — en resa upptäckt i Google Calendar.
@@ -45,20 +48,116 @@ const CHECK_PILL = {
 };
 
 function CompletenessPill({ c, trip }) {
-  const comp = trip.completeness;
-  if (!comp) return null;
-  const ok = comp.status === 'complete';
+  const chip = receiptsChip(c.check, trip.completeness);
+  if (!chip) return null;
   return (
     <span
-      className={ok ? 'pill pill--ok mono' : 'pill pill--err mono'}
+      className={chip.cls}
+      title={chip.title || undefined}
       data-testid={`calendar-trip-completeness-${trip.id}`}
     >
-      {ok ? c.check.complete : fill(c.check.incomplete, { count: comp.missing })}
+      {chip.text}
     </span>
   );
 }
 
-function Checklist({ c, trip, lang }) {
+/* C58 — hotellnatt utan kvitto: Mikko väljer själv (inget förifylls).
+ * Valet sparas i bottens egen tabell; inget skickas till Bezala/Netvisor. */
+const NIGHT_CHOICES = [
+  ['no_hotel', 'noHotel'],
+  ['handled_in_bezala', 'handled'],
+  ['invoiced_to_company', 'invoiced'],
+  ['receipt_coming', 'coming'],
+];
+
+function HotelNightRow({ k, trip, item, onChecklist, lang }) {
+  const n = k.night;
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const [tips, setTips] = useState(null);
+  const choose = async (choice) => {
+    setBusy(true);
+    setErr('');
+    try {
+      const res = await request(`/api/c58/calendar-trips/${trip.id}/hotel-night`, {
+        method: 'POST',
+        body: { night: item.slot, choice },
+      });
+      if (onChecklist) onChecklist(res);
+    } catch (e) {
+      setErr(`${n.saveFailed}: ${e && e.message ? e.message : e}`);
+    } finally {
+      setBusy(false);
+    }
+  };
+  const loadTips = async () => {
+    try {
+      const res = await request(`/api/c58/calendar-trips/${trip.id}/hotel-tips`);
+      const night = ((res && res.nights) || []).find((x) => x.night === item.slot);
+      setTips((night && night.tips) || []);
+    } catch (e) {
+      setTips([]);
+    }
+  };
+  const chosen = item.resolution;
+  return (
+    <div className="cal-trip__night" data-testid={`night-${trip.id}-${item.slot}`}>
+      {chosen ? (
+        <>
+          <span className="sr-only" data-testid={`night-choice-${trip.id}-${item.slot}`}>{chosen}</span>
+          {item.resolved_at ? (
+            <span className="mono muted cal-trip__small">
+              {fill(n.chosenOn, { date: item.resolved_at.slice(0, 10) })}
+            </span>
+          ) : null}
+          {item.note ? <span className="muted cal-trip__small">{item.note}</span> : null}
+          <button type="button" className="btn btn-sm" disabled={busy}
+            onClick={() => choose('undo')} data-testid={`night-undo-${trip.id}-${item.slot}`}>
+            {n.undo}
+          </button>
+        </>
+      ) : (
+        <>
+          <span className="muted">{fill(n.question, { night: item.slot })}</span>
+          <span className="cal-trip__night-buttons">
+            {NIGHT_CHOICES.map(([choice, label]) => (
+              <button key={choice} type="button" className="btn btn-sm" disabled={busy}
+                onClick={() => choose(choice)}
+                data-testid={`night-${choice}-${trip.id}-${item.slot}`}>
+                {n[label]}
+              </button>
+            ))}
+            <button type="button" className="btn btn-sm btn-ghost" onClick={loadTips}
+              data-testid={`night-tips-${trip.id}-${item.slot}`}>
+              {n.tips}
+            </button>
+          </span>
+        </>
+      )}
+      {tips ? (
+        <ul className="cal-trip__tips muted cal-trip__small" data-testid={`night-tiplist-${trip.id}-${item.slot}`}>
+          {tips.length === 0 ? <li>{n.tipsNone}</li> : tips.map((x, i) => (
+            <li key={i}>
+              {x.source === 'bezala'
+                ? fill(n.tipBezala, { id: x.bezala_transaction_id || '—', text: x.text || '',
+                  amount: x.amount != null ? fmtAmount(x.amount, x.currency, lang) : '', date: x.date })
+                : fill(n.tipBot, { vendor: x.vendor || '—',
+                  amount: x.amount != null ? fmtAmount(x.amount, x.currency, lang) : '', date: x.date })}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+      {err ? <div className="err cal-trip__small">{err}</div> : null}
+    </div>
+  );
+}
+
+function isOpenNight(item) {
+  return item.kind === 'hotel' && item.slot
+    && (item.resolution || (item.status === 'missing' && item.set_by !== 'user'));
+}
+
+function Checklist({ c, trip, lang, onChecklist }) {
   const cl = trip.checklist;
   if (!cl) return null;
   const k = c.check;
@@ -73,7 +172,9 @@ function Checklist({ c, trip, lang }) {
             data-testid={`check-${trip.id}-${item.kind}-${item.slot || 'x'}`}
           >
             <span className={CHECK_PILL[item.status] || 'pill pill--muted mono'}>
-              {k.status[item.status] || item.status}
+              {item.resolution && k.night.chosen[item.resolution]
+                ? k.night.chosen[item.resolution]
+                : (k.status[item.status] || item.status)}
             </span>
             <span className="cal-trip__strong">{k.kind[item.kind] || item.kind}</span>
             {item.kind === 'hotel' && item.slot ? (
@@ -91,8 +192,11 @@ function Checklist({ c, trip, lang }) {
                 <span className="muted">{item.receipt.vendor}</span>
               )
             ) : null}
-            {item.set_by === 'user' ? (
+            {item.set_by === 'user' && !item.resolution ? (
               <span className="mono muted cal-trip__small">{k.byMikko}{item.note ? `: ${item.note}` : ''}</span>
+            ) : null}
+            {isOpenNight(item) ? (
+              <HotelNightRow k={k} trip={trip} item={item} onChecklist={onChecklist} lang={lang} />
             ) : null}
           </li>
         ))}
@@ -157,7 +261,7 @@ export function CancelledBookings({ bookings, c, lang, testid = 'cancelled' }) {
   );
 }
 
-export default function CalendarTripCard({ trip, embedded = false }) {
+export default function CalendarTripCard({ trip, embedded = false, onChecklist }) {
   const { t, lang } = useI18n();
   const c = t.trips.calendar;
   const days = trip.days || [];
@@ -222,7 +326,7 @@ export default function CalendarTripCard({ trip, embedded = false }) {
       ))}
     </ol>
 
-    <Checklist c={c} trip={trip} lang={lang} />
+    <Checklist c={c} trip={trip} lang={lang} onChecklist={onChecklist} />
 
     {/* C49 — Netvisor-underlag (bara läsning) */}
     <NetvisorPanel tripId={trip.id} />
