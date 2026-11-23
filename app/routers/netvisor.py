@@ -48,6 +48,13 @@ def get_status(year: int = 2026, db: Session = Depends(get_db)):
     return {"year": year, "count": len(trips), "trips": trips}
 
 
+@router.get("/descriptions")
+def get_descriptions(year: int = 2026, db: Session = Depends(get_db)):
+    from app.services.netvisor_status import preview_descriptions
+
+    return preview_descriptions(db, year)
+
+
 @router.get("/trips/{trip_id}/entry")
 def get_entry(trip_id: int, db: Session = Depends(get_db)):
     from app.services.netvisor_entry import build_entry

@@ -14,7 +14,8 @@ from app.mcp_server import _run, mcp
 async def get_netvisor_entry(trip_id: int) -> dict:
     """What to fill in in Netvisor's per diem calculator (Dagpenningskalkylator)
     for a trip: title ('Business trip {City}, {Country} {d.m.yyyy}-{d.m.yyyy}'),
-    description (purpose, English) and one or more calculator rows: by air/sea,
+    description (C55: 'Travel for <purpose> in <city>', same text as every
+    row's line description; no meals in the text) and one or more calculator rows: by air/sea,
     object (country in Swedish as Netvisor shows it), start/end date (d.m.yyyy) and
     time (HH:MM, Helsinki), line description and settings (>15 km, >5 km,
     'Inklusive kost' + which days, night travel = no, flagged if a night has no
@@ -30,12 +31,26 @@ async def get_netvisor_entry(trip_id: int) -> dict:
 @mcp.tool()
 async def list_netvisor_status(year: int = 2026) -> dict:
     """All approved and edited trips of the year with their Netvisor status
-    (not_created | created_manual | created_api), Netvisor report id and note,
-    sorted by date. Read-only."""
+    (not_created | created_manual | created_api), Netvisor report id, note and
+    C55 netvisor_description ('Travel for <purpose> in <city>'), sorted by date.
+    Read-only."""
     from app.services.netvisor_status import list_status
 
     trips = await _run(list_status, year)
     return {"year": year, "count": len(trips), "trips": trips}
+
+
+@mcp.tool()
+async def preview_netvisor_descriptions(year: int = 2026) -> dict:
+    """C55 - every active (not rejected) trip of the year with the Netvisor
+    description that would be used for both the travel expense description and
+    each per diem linedescription: 'Travel for <purpose> in <city>' (English
+    city, no country, dates, km or meals). flags 'purpose_missing' -> text is
+    'Travel in <city>'; set the purpose with update_trip. warnings: text does
+    not match the pattern, long dash, km-like numbers or 'free meal'. Read-only."""
+    from app.services.netvisor_status import preview_descriptions
+
+    return await _run(preview_descriptions, year)
 
 
 @mcp.tool()
