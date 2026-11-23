@@ -83,3 +83,37 @@ export function suggestionCity(c, s) {
     })
     .join(' & ');
 }
+
+/* C58 — vilka kvitton som saknas, för chippets tooltip:
+ * 'Hotell 2026-01-21, Parkering HEL, kortbetalning 2026-01-22'. */
+export function missingReceiptsLabel(check, comp) {
+  const list = (comp && comp.missing_receipts) || [];
+  return list
+    .map((m) => {
+      if (m.kind === 'card_line') {
+        const base = fill(check.cardLineShort, { date: m.slot || '' });
+        return m.vendor ? `${base} (${m.vendor})` : base;
+      }
+      const name = (check.kind && check.kind[m.kind]) || m.kind;
+      return m.slot ? `${name} ${m.slot}` : name;
+    })
+    .join(', ');
+}
+
+/* C58 — kvittochippet: text, klass och tooltip. null = inget chip. */
+export function receiptsChip(check, comp) {
+  if (!comp) return null;
+  if (comp.status === 'complete') {
+    if (comp.waiting > 0) {
+      return { cls: 'pill pill--warn mono', text: fill(check.waiting, { count: comp.waiting }), title: '' };
+    }
+    return { cls: 'pill pill--ok mono', text: check.complete, title: '' };
+  }
+  const list = missingReceiptsLabel(check, comp);
+  return {
+    cls: 'pill pill--err mono',
+    text: comp.missing === 1 ? check.incompleteOne : fill(check.incomplete, { count: comp.missing }),
+    title: list ? fill(check.missingTitle, { list }) : '',
+    list,
+  };
+}

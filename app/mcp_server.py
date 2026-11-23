@@ -329,6 +329,36 @@ async def set_expectation_status(
 
 
 @mcp.tool()
+async def set_hotel_night_choice(
+    trip_id: int,
+    night: str,
+    choice: str,
+    note: str | None = None,
+) -> dict:
+    """C58 - Mikko's choice for one hotel night without a receipt (night =
+    YYYY-MM-DD). choice: 'no_hotel' (no hotel that night: removed from the
+    checklist and from hotel nights), 'handled_in_bezala' (done, counts as a
+    hotel night), 'invoiced_to_company' (hotel invoices the company directly,
+    no receipt or Bezala expense expected; done, counts as a hotel night, never
+    an expense line in Netvisor), 'receipt_coming' (stays open, no warning for
+    7 days) or 'undo'. Never prefill - ask Mikko first. Only Bezala Bot's own
+    table changes. Returns the updated checklist."""
+    from app.services.trip_completeness import set_hotel_night_choice as _set
+
+    return await _run(_set, trip_id, night, choice, note)
+
+
+@mcp.tool()
+async def get_hotel_night_tips(trip_id: int) -> dict:
+    """C58 - read-only tips for hotel nights without a receipt: hotel receipts
+    in the bot near the night and Bezala expenses with hotel words near the
+    date (GET only). Nothing is coupled; show the tips to Mikko, never choose."""
+    from app.services.c58_hotel_nights import hotel_night_tips
+
+    return await _run(hotel_night_tips, trip_id)
+
+
+@mcp.tool()
 async def list_missing(older_than_days: int = 5) -> dict:
     """Everything missing: checklist items with status 'missing' on trips that
     ended at least `older_than_days` days ago, plus Bezala card payments

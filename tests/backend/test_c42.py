@@ -138,7 +138,12 @@ def test_late_receipt_moves_missing_to_found(db):
     assert _items(cl, "parking")[0]["status"] == "missing"
     assert cl["completeness"] == {"status": "incomplete", "missing": 3,
                                   "missing_items": 3, "card_lines_without_receipt": 0,
-                                  "missing_kinds": ["flight", "hotel 2026-03-02", "parking"]}
+                                  "missing_kinds": ["flight", "hotel 2026-03-02", "parking"],
+                                  "waiting": 0,
+                                  "missing_receipts": [
+                                      {"kind": "flight", "slot": None},
+                                      {"kind": "hotel", "slot": "2026-03-02"},
+                                      {"kind": "parking", "slot": None}]}
 
     # Flygkvitto köpt en månad innan, nämner flightnumret.
     _receipt(db, date(2026, 2, 1), category="Flyg", vendor="Finnair",
@@ -378,7 +383,11 @@ def test_mcp_tools_and_completeness(env):
     assert trips[0]["completeness"] == {"status": "incomplete", "missing": 2,
                                         "missing_items": 2,
                                         "card_lines_without_receipt": 0,
-                                        "missing_kinds": ["flight", "parking"]}
+                                        "missing_kinds": ["flight", "parking"],
+                                        "waiting": 0,
+                                        "missing_receipts": [
+                                            {"kind": "flight", "slot": None},
+                                            {"kind": "parking", "slot": None}]}
 
     cl = _call(c, at, "get_trip_checklist", trip_id=trip_id)["data"]
     assert [(i["kind"], i["status"]) for i in cl["items"]] == [

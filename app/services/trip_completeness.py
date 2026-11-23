@@ -52,6 +52,15 @@ FLIGHT_LOOKBACK_DAYS = 365
 PREPAID_LOOKBACK_DAYS = 90
 AFTER_TRIP_DAYS = 3  # Moovy/hotell kan kvittas dagen efter hemkomst
 
+# C58 - Mikkos val för en hotellnatt utan kvitto -> checklistans status.
+HOTEL_CHOICES = {
+    "no_hotel": "not_applicable",        # natten finns inte (ingen hotellnatt)
+    "handled_in_bezala": "found",        # klar, räknas som hotellnatt
+    "invoiced_to_company": "found",      # hotellet fakturerar Visma; klar, hotellnatt
+    "receipt_coming": "missing",         # står kvar, men ingen varning på några dagar
+}
+RECEIPT_COMING_GRACE_DAYS = 7
+
 _FLIGHT_WORDS = ("finnair", "amadeus", "norwegian", "airbaltic", "lufthansa",
                  "flysas", "sas scandinavian", "klm", "e-ticket", "eticket")
 _HOTEL_WORDS = ("hotel", "hotell", "scandic", "strawberry", "clarion", "radisson",
@@ -558,6 +567,10 @@ def recompute_trip(db: Session, trip: CalendarTrip,
             if rec is not None and not row.message_id:
                 row.message_id = rec.message_id
                 row.bill_line_id = rec.bill_line_id
+            # C58 - 'Kvitto kommer' och kvittot kom: natten är klar.
+            if (rec is not None and getattr(row, "resolution", None) == "receipt_coming"
+                    and row.status == "missing"):
+                row.status = "found"
             continue
         new = (item["status"], rec.message_id if rec else None,
                rec.bill_line_id if rec else None, item.get("note"))
@@ -592,9 +605,24 @@ def _night_outside(slot: str, start: str, end: str) -> bool:
     return len(slot) == 10 and slot[4] == "-" and not (start <= slot < end)
 
 
+def _waiting(row: TripExpectation, today: date | None = None) -> bool:
+    """C58 - 'Kvitto kommer': ingen varning de första dagarna."""
+    if row.status != "missing" or getattr(row, "resolution", None) != "receipt_coming":
+        return False
+    at = row.resolved_at
+    if at is None:
+        return True
+    today = today or _today()
+    return (today - at.date()).days < RECEIPT_COMING_GRACE_DAYS
+
+
 def _row_dict(row: TripExpectation, by_msg: dict[str, Receipt]) -> dict:
     rec = by_msg.get(row.message_id) if row.message_id else None
+    resolution = getattr(row, "resolution", None)
     return {
+        "resolution": resolution,
+        "resolved_at": row.resolved_at.isoformat() if getattr(row, "resolved_at", None) else None,
+        "waiting": _waiting(row),
         "kind": row.kind,
         "slot": row.slot or None,
         "status": row.status,
@@ -620,19 +648,31 @@ def card_lines_for_trip(db: Session, trip: CalendarTrip) -> list[CardLine]:
 
 def completeness(rows: Iterable[TripExpectation], card_lines: Iterable[CardLine]) -> dict:
     rows = list(rows)
-    missing_rows = [r for r in rows if r.status == "missing"]
+    card_lines = list(card_lines)
+    today = _today()
+    # C58 - 'Kvitto kommer' räknas inte som saknat de första dagarna.
+    waiting_rows = [r for r in rows if _waiting(r, today)]
+    missing_rows = [r for r in rows if r.status == "missing" and r not in waiting_rows]
     missing_items = len(missing_rows)
-    missing_cards = sum(1 for c in card_lines if c.status == "missing")
+    missing_card_rows = [c for c in card_lines if c.status == "missing"]
+    missing_cards = len(missing_card_rows)
     missing = missing_items + missing_cards
     return {
         "status": "complete" if missing == 0 else "incomplete",
         "missing": missing,
         "missing_items": missing_items,
         "card_lines_without_receipt": missing_cards,
+        "waiting": len(waiting_rows),
         # t.ex. ['flight', 'hotel 2026-03-02'] — syns direkt i list_trips.
         "missing_kinds": [
             f"{r.kind} {r.slot}" if r.slot else r.kind for r in missing_rows
         ],
+        # C58 - för chippets tooltip: vilka kvitton som saknas.
+        "missing_receipts": (
+            [{"kind": r.kind, "slot": r.slot or None} for r in missing_rows]
+            + [{"kind": "card_line", "slot": c.txn_date.isoformat() if c.txn_date else None,
+                "vendor": c.vendor} for c in missing_card_rows]
+        ),
     }
 
 
@@ -711,11 +751,56 @@ def set_expectation_status(db: Session, trip_id: int, kind: str, status: str,
         if status == "auto":
             row.set_by = "auto"
             row.note = None
+            row.resolution = None
+            row.resolved_at = None
         else:
             row.set_by = "user"
             row.status = status
             if note is not None:
                 row.note = note
+    db.flush()
+    out = checklist(db, trip, receipts)
+    db.commit()
+    return out
+
+
+def set_hotel_night_choice(db: Session, trip_id: int, night: str, choice: str,
+                           note: str | None = None) -> dict:
+    """C58 - Mikkos val för en hotellnatt utan kvitto (eller 'undo').
+
+    no_hotel: natten tas bort ur checklistan och ur hotellnätterna.
+    handled_in_bezala / invoiced_to_company: klar, räknas som hotellnatt.
+    receipt_coming: står kvar som saknad, men ingen varning i några dagar.
+    Bara bottens egen tabell ändras - inget skickas till Bezala eller Netvisor."""
+    from app.services.calendar_trip_edit import TripEditError, _get, clean_text, parse_date
+
+    trip = _get(db, trip_id)
+    if choice != "undo" and choice not in HOTEL_CHOICES:
+        raise TripEditError(
+            f"Unknown choice '{choice}'. Use one of: {', '.join(HOTEL_CHOICES)} or 'undo'."
+        )
+    d = parse_date(night, "night").isoformat()
+    note = clean_text(note, "note")
+    receipts = load_receipts(db)
+    rows = recompute_trip(db, trip, receipts)
+    row = next((r for r in rows if r.kind == "hotel" and r.slot == d), None)
+    if row is None:
+        raise TripEditError(
+            f"No hotel night {d} on this trip "
+            f"({trip.start_date.isoformat()} – {trip.end_date.isoformat()})."
+        )
+    if choice == "undo":
+        row.set_by = "auto"
+        row.note = None
+        row.resolution = None
+        row.resolved_at = None
+    else:
+        row.set_by = "user"
+        row.status = HOTEL_CHOICES[choice]
+        row.resolution = choice
+        row.resolved_at = datetime.utcnow()
+        if note is not None:
+            row.note = note
     db.flush()
     out = checklist(db, trip, receipts)
     db.commit()
@@ -732,14 +817,15 @@ def snapshot_user_marks(db: Session, trip_ids: list[int]) -> list[dict]:
     # Kolumnfrågor (inte entiteter) — raderna bulk-raderas strax efteråt.
     rows = (
         db.query(CalendarTrip.start_date, CalendarTrip.end_date, TripExpectation.kind,
-                 TripExpectation.slot, TripExpectation.status, TripExpectation.note)
+                 TripExpectation.slot, TripExpectation.status, TripExpectation.note,
+                 TripExpectation.resolution, TripExpectation.resolved_at)
         .join(CalendarTrip, CalendarTrip.id == TripExpectation.trip_id)
         .filter(TripExpectation.trip_id.in_(trip_ids), TripExpectation.set_by == "user")
         .all()
     )
     return [
         {"start_date": r[0], "end_date": r[1], "kind": r[2], "slot": r[3] or "",
-         "status": r[4], "note": r[5]}
+         "status": r[4], "note": r[5], "resolution": r[6], "resolved_at": r[7]}
         for r in rows
     ]
 
@@ -769,7 +855,9 @@ def restore_user_marks(db: Session, marks: list[dict], trips: list[CalendarTrip]
         if _night_outside(slot, target.start_date.isoformat(), target.end_date.isoformat()):
             continue
         db.add(TripExpectation(trip_id=target.id, kind=m["kind"], slot=slot,
-                               status=m["status"], note=m["note"], set_by="user"))
+                               status=m["status"], note=m["note"], set_by="user",
+                               resolution=m.get("resolution"),
+                               resolved_at=m.get("resolved_at")))
         restored += 1
     return restored
 
@@ -1025,7 +1113,7 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
     for t in trips:
         cl = lists[t.id]
         for item in cl["items"]:
-            if item["status"] != "missing":
+            if item["status"] != "missing" or item.get("waiting"):
                 continue
             trip_items.append({
                 "trip_id": t.id,

@@ -117,7 +117,8 @@ def test_no_parking_means_home_transport_unknown(db):  # noqa: F811
 
 
 def test_missing_return_flight_is_km_missing_not_guessed(db):  # noqa: F811
-    t = _trip(db, date(2026, 10, 13), date(2026, 10, 14), [OSLO_FLIGHTS[0]])
+    t = _trip(db, date(2026, 10, 13), date(2026, 10, 14), [OSLO_FLIGHTS[0]],
+              time_source="flight_default")  # C58: ingen Moovy -> frågan ställs
     rows, flags = tl.sync_trip_legs(db, t)
     assert "return_flight_missing" in flags and "km_missing" in flags
     assert "home_transport_unknown" in flags

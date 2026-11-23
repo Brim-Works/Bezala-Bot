@@ -270,6 +270,7 @@ def test_valid_token_works(env):
         "remove_trip_day", "approve_trip", "unapprove_trip", "refresh_calendar",
         # C42
         "get_trip_checklist", "set_expectation_status", "list_missing",
+        "set_hotel_night_choice", "get_hotel_night_tips",
         "set_card_line_status",
         # C43
         "mark_private_expense",
