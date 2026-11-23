@@ -103,7 +103,7 @@ _PROCESSED_MESSAGES_ADDITIONS.update({
 
 # C47 — kvitton som väntar på korttransaktion + granskningsflagga.
 _PROCESSED_MESSAGES_ADDITIONS.update({
-    "waiting_status": "VARCHAR(24)",
+    "waiting_status": "VARCHAR(64)",
     "waiting_since": "TIMESTAMP",
     "review_flag": "VARCHAR(64)",
 })
@@ -200,6 +200,38 @@ _INDEXES = [
 ]
 
 
+# C54 - kolumner som måste vara minst så här långa (Postgres håller längden,
+# SQLite gör det inte och behöver ingen ändring).
+_WIDEN_VARCHAR: dict[tuple[str, str], int] = {
+    ("processed_messages", "waiting_status"): 64,
+}
+
+
+def widen_varchar_columns(eng, insp=None) -> list[str]:
+    """Idempotent: bredda varchar-kolumner som är kortare än _WIDEN_VARCHAR.
+    Bara Postgres - att bredda varchar ändrar inga befintliga värden."""
+    if eng.dialect.name != "postgresql":
+        return []
+    insp = insp or inspect(eng)
+    done = []
+    for (table, column), length in _WIDEN_VARCHAR.items():
+        cols = {c["name"]: c for c in insp.get_columns(table)}
+        col = cols.get(column)
+        current = getattr(col["type"], "length", None) if col else None
+        if col is None or current is None or current >= length:
+            continue
+        try:
+            with eng.begin() as conn:
+                conn.execute(text(
+                    f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({length})"))
+            logger.info("Breddade %s.%s från varchar(%s) till varchar(%s)",
+                        table, column, current, length)
+            done.append(f"{table}.{column}")
+        except Exception:
+            logger.exception("Kunde inte bredda %s.%s", table, column)
+    return done
+
+
 def _apply_schema_migrations() -> None:
     """Idempotent: lägger till nya kolumner + index som saknas i existerande
     tabeller. Körs vid varje startup — no-op när schemat redan är uppdaterat."""
@@ -235,6 +267,9 @@ def _apply_schema_migrations() -> None:
                     logger.info("Lade till kolumn app_settings.%s", name)
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
+
+    if "processed_messages" in tables:
+        widen_varchar_columns(engine, insp)
 
     if "card_lines" in tables:
         existing = {col["name"] for col in insp.get_columns("card_lines")}

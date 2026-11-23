@@ -104,7 +104,9 @@ class ProcessedMessage(Base):
     # C47 — kvitto utan korttransaktion ännu. 'waiting_for_transaction'
     # (väntar), 'no_transaction' (ingen träff efter 14 dagar), 'private'
     # (Mikko: privat/annat kort), 'closed' (sluta vänta). NULL = inte i kön.
-    waiting_status = Column(String(24), nullable=True)
+    # C54 - 64 tecken: already_handled_in_bezala (25) / probably_handled_elsewhere (26)
+    # fick inte plats i varchar(24) i Postgres.
+    waiting_status = Column(String(64), nullable=True)
     waiting_since = Column(DateTime, nullable=True)
     # C47 Del 6 — t.ex. 'date_corrected' (AI-datum utanför rimligt fönster).
     review_flag = Column(String(64), nullable=True)

@@ -55,14 +55,14 @@ def _oslo_trip_140(db):  # noqa: F811
 # ---------------------------------------------------------------- Del 1 rutttabell
 
 
-def test_flytoget_both_directions_52_4():
-    assert rk.lookup_km("Oslo Airport", "Skoyen", "flytoget")["km"] == 52.4
-    assert rk.lookup_km("Skoyen", "Oslo Airport", "flytoget")["km"] == 52.4
+def test_flytoget_both_directions_51():
+    assert rk.lookup_km("Oslo Airport", "Skoyen", "flytoget")["km"] == 51.0
+    assert rk.lookup_km("Skoyen", "Oslo Airport", "flytoget")["km"] == 51.0
     assert rk.lookup_km("Oslo Airport", "Oslo S")["km"] == 48.1
     assert rk.lookup_km("Oslo Airport", "Nationaltheatret")["km"] == 49.5
     assert rk.lookup_km("Lysaker", "Oslo Airport")["km"] == 55.1
     assert rk.lookup_km("Arlanda Airport", "Stockholm C")["km"] == 39.0
-    assert rk.lookup_km("Copenhagen Airport", "Malmo C") is None  # inte i kvittona
+    assert rk.lookup_km("Copenhagen Airport", "Angelholm") is None  # km saknas
 
 
 def test_places_and_direction_from_receipt_names():
@@ -78,19 +78,19 @@ def test_places_and_direction_from_receipt_names():
     assert rk.is_round_trip("Arlanda Express Tur och retur biljett")
 
 
-def test_oslo_21_oct_gives_two_train_legs_of_52_4(db):  # noqa: F811
+def test_oslo_21_oct_gives_two_train_legs_of_51(db):  # noqa: F811
     t, a, b, c = _oslo_trip_140(db)
     view = tl.get_trip_legs(db, t.id)
     trains = [leg for leg in view["legs"] if leg["mode"] == "train"]
     active = [leg for leg in trains if not leg["excluded"]]
-    assert [leg["km"] for leg in active] == [52.4, 52.4]
+    assert [leg["km"] for leg in active] == [51.0, 51.0]
     assert all(leg["source"] == "route_table" and leg["is_estimate"] for leg in active)
     assert {(leg["from"], leg["to"]) for leg in active} == {
         ("Oslo Airport", "Skoyen"), ("Skoyen", "Oslo Airport")}
     dup = [leg for leg in trains if leg["excluded"]]
     assert len(dup) == 1 and dup[0]["receipt_message_id"] == c.message_id
     assert "duplicate of receipt" in dup[0]["note"]
-    assert view["admin"]["train_km"] == 104.8 and view["admin"]["estimate"]["train_km"]
+    assert view["admin"]["train_km"] == 102 and view["admin"]["estimate"]["train_km"]
     cars = [leg for leg in view["legs"] if leg["mode"] == "car_phev"]
     assert [leg["km"] for leg in cars] == [48, 48]
     assert "km_missing" not in view["legs_flags"]
@@ -131,12 +131,12 @@ def test_missing_route_gives_km_missing_with_reason(db):  # noqa: F811
     _r(db, date(2026, 3, 5), "Skånetrafiken", 490.0, "SEK",
        "20260305 Skånetrafiken Öresundszon 24 timmar.pdf", "Tack för ditt köp")
     _r(db, date(2026, 3, 5), "Skånetrafiken", 245.0, "SEK",
-       "20260305 Skånetrafiken Kastrup-Helsingborg.pdf", "Tack för ditt köp")
+       "20260305 Skånetrafiken Kastrup-Angelholm.pdf", "Tack för ditt köp")
     view = tl.get_trip_legs(db, t.id)
     trains = [leg for leg in view["legs"] if leg["mode"] == "train"]
     assert all(leg["km"] is None and leg["km_missing"] for leg in trains)
     assert {leg["km_reason"] for leg in trains} == {"no_route_in_table"}
-    hb = [leg for leg in trains if leg["to"] == "Helsingborg C"][0]
+    hb = [leg for leg in trains if leg["to"] == "Angelholm"][0]
     assert hb["from"] == "Copenhagen Airport"  # riktningen visas även utan km
     assert "km_missing" in view["legs_flags"]
     assert view["admin"]["missing"]["train_km"] == 2
@@ -273,12 +273,12 @@ def test_trips_view_mcp_and_export_give_same_numbers_for_trip_140(client, db):  
     for k in tl.ADMIN_KEYS:
         assert mcp["admin"][k] == view["admin"][k] == detail["admin"][k] \
             == export[tl.ADMIN_LABELS[k]], k
-    assert mcp["admin"]["train_km"] == 104.8
+    assert mcp["admin"]["train_km"] == 102
     assert mcp["admin"]["medium_flights_km"] == 1526
     # detaljexporten summerar till samma tågkm
     rows = tl.export_rows(db, 2026)
     assert round(sum(float(r["km"]) for r in rows
-                     if r["trip_id"] == t.id and r["admin_category"] == "train_km"), 1) == 104.8
+                     if r["trip_id"] == t.id and r["admin_category"] == "train_km"), 1) == 102
     csv_admin = client.get("/api/emissions/export.csv?year=2026&mode=admin").text
     assert csv_admin.splitlines()[0] == ",".join(tl.ADMIN_EXPORT_COLUMNS)
     csv_admin.encode("ascii")
@@ -295,7 +295,7 @@ def test_admin_export_excludes_company_car_and_detail_is_ascii(db):  # noqa: F81
     detail.encode("ascii")
     assert "company_car_info_only" in detail
     routes = tl.export_csv(db, 2026, "route_table")
-    assert "Oslo Airport,Skoyen,52.4" in routes
+    assert "Oslo Airport,Skoyen,51.0" in routes
     routes.encode("ascii")
 
 
@@ -309,7 +309,7 @@ def test_patch_leg_from_trips_view(client, db):  # noqa: F811
     r = client.patch(f"/api/emissions/legs/{train['leg_id']}", json={"excluded": True})
     assert r.json()["excluded"] is True
     a = client.get(f"/api/emissions/trips/{t.id}/legs").json()["admin"]
-    assert a["train_km"] == 52.4
+    assert a["train_km"] == 51
 
 
 def test_summary_counts_rejected_trips(db):  # noqa: F811
@@ -350,3 +350,23 @@ def test_two_tickets_with_different_order_numbers_are_two_journeys(db):  # noqa:
     assert len(trains) == 2 and not any(x["excluded"] for x in trains)
     assert view["admin"]["train_km"] == 78
     assert any("check direction" in x["note"] for x in trains)
+
+
+def test_skanetrafiken_kastrup_malmo_and_helsingborg(db):  # noqa: F811
+    """Mikko 2026-11-23: hans egna km från tidigare Bezala-utlägg."""
+    assert rk.lookup_km("Copenhagen Airport", "Malmo C", "skanetrafiken")["km"] == 30.4
+    assert rk.lookup_km("Helsingborg C", "Copenhagen Airport", "skanetrafiken")["km"] == 98.5
+    t = _trip(db, date(2026, 11, 10), date(2026, 11, 11), [
+        _flight("AY 957", "HEL", "CPH", "2026-11-10T09:35:00+00:00", "2026-11-10T11:10:00+00:00"),
+        _flight("AY 962", "CPH", "HEL", "2026-11-11T17:30:00+00:00", "2026-11-11T19:55:00+00:00"),
+    ], dest="Helsingborg")
+    _r(db, date(2026, 11, 10), "Skånetrafiken", 245.0, "SEK",
+       "20261110 Skånetrafiken Kastrup-Helsingborg enkel.pdf", "Tack för ditt köp")
+    _r(db, date(2026, 11, 11), "Skånetrafiken", 245.0, "SEK",
+       "20261111 Skånetrafiken Helsingborg-Kastrup Öresundszon.pdf", "Tack för ditt köp")
+    view = tl.get_trip_legs(db, t.id)
+    trains = [x for x in view["legs"] if x["mode"] == "train"]
+    assert [(x["from"], x["to"], x["km"]) for x in trains] == [
+        ("Copenhagen Airport", "Helsingborg C", 98.5), ("Helsingborg C", "Copenhagen Airport", 98.5)]
+    assert all(x["source"] == "route_table" and x["is_estimate"] for x in trains)
+    assert view["admin"]["train_km"] == 197
