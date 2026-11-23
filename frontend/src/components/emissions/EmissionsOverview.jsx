@@ -36,6 +36,7 @@ const STR = {
       airport_unknown: 'flygplats okänd',
     },
     onlyBot: 'Ändringar sparas bara i Bezala Bot, inget skickas till Bezala.',
+    ask: 'Fråga Mikko',
   },
   en: {
     title: 'Km per trip (Admin report)',
@@ -59,6 +60,7 @@ const STR = {
       airport_unknown: 'airport unknown',
     },
     onlyBot: 'Changes are saved in Bezala Bot only, nothing is sent to Bezala.',
+    ask: 'Ask Mikko',
   },
 };
 
@@ -257,7 +259,13 @@ export default function EmissionsOverview({ year: initialYear = 2026 }) {
                     <td>{r.destination || '—'}</td>
                     {ADMIN_KEYS.map((k) => <AdminCell key={k} admin={r.admin} k={k} s={s} />)}
                     <td className="nv-small">
-                      {r.legs_missing_km ? <span className="pill pill--err">{s.missing(r.legs_missing_km)}</span> : '—'}
+                      {r.legs_missing_km ? <span className="pill pill--err">{s.missing(r.legs_missing_km)}</span> : null}
+                      {(r.questions || []).map((q) => (
+                        <div key={`${q.kind}-${q.leg_id || ''}`} data-testid={`emissions-ask-${r.trip_id}`}>
+                          <span className="pill pill--warn">{s.ask}</span> {lang === 'en' ? q.text_en : q.text_sv}
+                        </div>
+                      ))}
+                      {!r.legs_missing_km && !(r.questions || []).length ? '—' : null}
                       <CarInfo car={r.admin.company_car_info_only} s={s} />
                     </td>
                     <td>

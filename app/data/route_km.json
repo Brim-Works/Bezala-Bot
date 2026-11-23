@@ -1,5 +1,5 @@
 {
-  "note": "C54 route table for ground transport. km = rail/road distance between the two places. symmetric = same km both ways. Values from this table are always marked is_estimate=true and source=route_table. A km value on the receipt always wins over the table. Priority: Mikko's own km (as used in his earlier Bezala expenses) first, so all years are consistent; public sources only when Mikko has no value. Edit a single leg with update_trip_leg or in the Trips view.",
+  "note": "C54 route table for ground transport. km = rail/road distance between the two places. symmetric = same km both ways. Values from this table are always marked is_estimate=true and source=route_table. A km value on the receipt always wins over the table. Priority: Mikko's own km (as used in his earlier Bezala expenses) first, so all years are consistent; public sources only when Mikko has no value. Edit a single leg with update_trip_leg or in the Trips view. symmetric=true means the same km in both directions (A-B and B-A).",
   "routes": [
     {
       "operator": "flytoget",
@@ -65,6 +65,36 @@
       "reference": "Mikko 2026-11-23: 98.5 km, as in his earlier Bezala expenses. Public sources: sv.wikipedia station km 29 + 16 + 53 = 98 km; Rome2Rio about 97 km."
     },
     {
+      "operator": "skanetrafiken",
+      "mode": "train",
+      "from": "Alvesta",
+      "to": "Copenhagen Airport",
+      "km": 202.4,
+      "symmetric": true,
+      "is_estimate": true,
+      "reference": "Mikko 2026-11-23 (C57, set manually on his trips): Alvesta - Malmo C 172 km (web, Omio) + Malmo C - Copenhagen Airport 30.4 km (route table). Estimate."
+    },
+    {
+      "operator": "skanetrafiken",
+      "mode": "train",
+      "from": "Copenhagen Airport",
+      "to": "Angelholm",
+      "km": 123.5,
+      "symmetric": true,
+      "is_estimate": true,
+      "reference": "Mikko 2026-11-23 (C57, set manually on his trips): Copenhagen Airport - Helsingborg C 98.5 km (Mikko's own) + Helsingborg C - Angelholm 25 km (web, Omio). Estimate."
+    },
+    {
+      "operator": "skanetrafiken",
+      "mode": "train",
+      "from": "Copenhagen Airport",
+      "to": "Bastad",
+      "km": 141.5,
+      "symmetric": true,
+      "is_estimate": true,
+      "reference": "Mikko 2026-11-23 (C57, set manually on his trips): Copenhagen Airport - Helsingborg C 98.5 km (Mikko's own) + Helsingborg C - Bastad 43 km (web, Omio). Estimate."
+    },
+    {
       "operator": "company_car",
       "mode": "car_phev",
       "from": "Porvoo",
@@ -74,7 +104,5 @@
       "reference": "C53: company car home - Helsinki Airport, env TRIP_CAR_HOME_KM_ONE_WAY (default 48). Info only, not in the Admin report."
     }
   ],
-  "routes_without_km": [
-    "Skanetrafiken / Oresundstag routes seen on Mikko's 2026 receipts without km (no km on the receipts): Copenhagen Airport - Angelholm, Copenhagen Airport - Bastad, Alvesta - Copenhagen Airport. Add the km with update_trip_leg or here when known."
-  ]
+  "routes_without_km": []
 }

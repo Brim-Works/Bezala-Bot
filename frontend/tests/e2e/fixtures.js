@@ -426,6 +426,7 @@ export async function setupApiMocks(page, overrides = {}) {
     c56Hidden: overrides.c56Hidden || [],
     unassignedReceipts: overrides.unassignedReceipts || [],
     missingInfoReceipts: overrides.missingInfoReceipts || [],
+    cancelledWithoutTrip: overrides.cancelledWithoutTrip || [],
     netvisorDescriptions: overrides.netvisorDescriptions || [],
     emissionsPerTrip: overrides.emissionsPerTrip || [],
     calendarRefreshResponse: overrides.calendarRefreshResponse || {
@@ -577,6 +578,7 @@ export async function setupApiMocks(page, overrides = {}) {
       return route.fulfill(jsonResponse({
         source: 'calendar', trips: state.calendarTrips,
         unassigned: state.unassignedReceipts, missing_info: state.missingInfoReceipts,
+        cancelled_without_trip: state.cancelledWithoutTrip,
       }));
     }
     if (method === 'GET' && pathname.endsWith('/api/trips/suggestions')) {

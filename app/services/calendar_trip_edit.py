@@ -252,6 +252,10 @@ def list_trips(
         row["completeness"] = lists[t.id]["completeness"]
         # C56: belopp per valuta (varje kvitto på EN resa, samma biljett en gång).
         row["receipt_totals"] = totals(allocation["by_trip"].get(t.id, []))
+        cb = allocation["cancelled_by_trip"].get(t.id, [])
+        if cb:
+            row["cancelled_not_counted"] = [
+                {k: b[k] for k in ("booking_ref", "vendor", "amount", "currency")} for b in cb]
         day_rows = _days(db, t)
         row["free_meals"] = sum(d.free_meals or 0 for d in day_rows)
         out.append(row)
@@ -357,11 +361,19 @@ def trip_detail(db: Session, trip: CalendarTrip) -> dict:
             for f in (trip.flight_options or [])
         ],
         "days": days,
-        "receipts": (receipts := trip_receipts(db, trip)),
+        "receipts": (receipts := trip_receipts(db, trip, allocation := _allocate(db))),
         "receipt_totals": receipt_totals(receipts),
+        # C57 - avbokade och återbetalda bokningar (räknas inte).
+        "cancelled_bookings": allocation["cancelled_by_trip"].get(trip.id, []),
         "edited_at": trip.edited_at.isoformat() if trip.edited_at else None,
         "approved_at": trip.approved_at.isoformat() if trip.approved_at else None,
     }
+
+
+def _allocate(db: Session) -> dict:
+    from app.services.c56_receipt_allocation import allocate
+
+    return allocate(db)
 
 
 def get_trip(db: Session, trip_id: int) -> dict:

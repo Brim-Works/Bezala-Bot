@@ -267,6 +267,15 @@ def trip_receipts(db: Session, trip: CalendarTrip, allocation: dict | None = Non
     return allocation["by_trip"].get(trip.id, [])
 
 
+def cancelled_bookings(db: Session, trip: CalendarTrip, allocation: dict | None = None) -> list[dict]:
+    """C57: avbokade + återbetalda bokningar på resan (räknas inte)."""
+    from app.services.c56_receipt_allocation import allocate
+
+    if allocation is None:
+        allocation = allocate(db)
+    return allocation.get("cancelled_by_trip", {}).get(trip.id, [])
+
+
 def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = None,
                    allocation: dict | None = None) -> dict:
     from app.services.trip_english import country_name
@@ -322,6 +331,8 @@ def serialize_trip(db: Session, trip: CalendarTrip, checklist: dict | None = Non
         ],
         "receipts": receipts,
         "receipt_totals": receipt_totals(receipts),
+        # C57 — avbokade och återbetalda bokningar (räknas inte), hopfällda i UI.
+        "cancelled_bookings": cancelled_bookings(db, trip, allocation),
         # C42 — checklista (read-only i UI): flyg/hotell/parkering/lokal.
         "checklist": checklist,
         "completeness": (checklist or {}).get("completeness"),
@@ -353,7 +364,8 @@ def receipts_without_trip(db: Session) -> dict:
     from app.services.c56_receipt_allocation import allocate
 
     a = allocate(db)
-    return {"unassigned": a["unassigned"], "missing_info": a["missing_info"]}
+    return {"unassigned": a["unassigned"], "missing_info": a["missing_info"],
+            "cancelled_without_trip": a["cancelled_without_trip"]}
 
 
 def refresh_from_calendar(db: Session) -> dict:

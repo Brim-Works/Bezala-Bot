@@ -81,7 +81,12 @@ INSTRUCTIONS = (
     "manual km always win; export_trip_legs(mode='admin'|'detail'|'route_table'). "
     "C56: list_trip_suggestions shows the receipt-based AI suggestions and which are "
     "covered by a calendar trip, old or duplicates; merge_duplicate_trip_suggestions "
-    "is a dry-run unless apply=true - only after Mikko says yes to the list."
+    "is a dry-run unless apply=true - only after Mikko says yes to the list. "
+    "C57: a booking bought and refunded (receipt on a negative card line, or purchase + "
+    "refund receipt, same vendor and booking/amount) is 'cancelled': not in trip totals, "
+    "checklists or 'receipts without a trip'; shown collapsed as 'Cancelled and refunded "
+    "(not counted)'. list_cancelled_bookings; set_cancelled_booking(cancelled=false) "
+    "counts it again (undo). get_trip 'questions' = things to ask Mikko (never guess)."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -859,6 +864,28 @@ async def compare_trip_amounts() -> dict:
     from app.services.c56_receipt_allocation import compare
 
     return await _run(compare)
+
+
+@mcp.tool()
+async def list_cancelled_bookings() -> list[dict]:
+    """C57, read-only: bookings bought and refunded (e.g. Finnair 8HZCXX), counted
+    as zero. One row per booking: vendor, booking_ref, amount, purchase/refund
+    date, the bot's receipts (message_ids), reason, and counted=true if Mikko
+    said it should count after all. Nothing in Bezala is touched."""
+    from app.services.c57_cancelled import list_cancelled
+
+    return await _run(list_cancelled)
+
+
+@mcp.tool()
+async def set_cancelled_booking(booking: str, cancelled: bool, note: str | None = None) -> dict:
+    """C57: undo/redo for a cancelled booking (key 'booking' from
+    list_cancelled_bookings, e.g. 'finnair:8HZCXX'). cancelled=false = count it
+    again; cancelled=true = back to automatic. Only Bezala Bot's own view
+    changes; nothing is deleted or sent to Bezala. Ask Mikko first."""
+    from app.services.c57_cancelled import set_cancelled_booking as _set
+
+    return await _run(_set, booking, cancelled, note)
 
 
 @mcp.tool()

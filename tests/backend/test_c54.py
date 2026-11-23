@@ -62,7 +62,9 @@ def test_flytoget_both_directions_51():
     assert rk.lookup_km("Oslo Airport", "Nationaltheatret")["km"] == 49.5
     assert rk.lookup_km("Lysaker", "Oslo Airport")["km"] == 55.1
     assert rk.lookup_km("Arlanda Airport", "Stockholm C")["km"] == 39.0
-    assert rk.lookup_km("Copenhagen Airport", "Angelholm") is None  # km saknas
+    # C57: Mikkos rutter finns nu i tabellen; Lund C saknar fortfarande km.
+    assert rk.lookup_km("Copenhagen Airport", "Angelholm")["km"] == 123.5
+    assert rk.lookup_km("Copenhagen Airport", "Lund C") is None  # km saknas
 
 
 def test_places_and_direction_from_receipt_names():
@@ -131,12 +133,12 @@ def test_missing_route_gives_km_missing_with_reason(db):  # noqa: F811
     _r(db, date(2026, 3, 5), "Skånetrafiken", 490.0, "SEK",
        "20260305 Skånetrafiken Öresundszon 24 timmar.pdf", "Tack för ditt köp")
     _r(db, date(2026, 3, 5), "Skånetrafiken", 245.0, "SEK",
-       "20260305 Skånetrafiken Kastrup-Angelholm.pdf", "Tack för ditt köp")
+       "20260305 Skånetrafiken Kastrup-Lund C.pdf", "Tack för ditt köp")
     view = tl.get_trip_legs(db, t.id)
     trains = [leg for leg in view["legs"] if leg["mode"] == "train"]
     assert all(leg["km"] is None and leg["km_missing"] for leg in trains)
     assert {leg["km_reason"] for leg in trains} == {"no_route_in_table"}
-    hb = [leg for leg in trains if leg["to"] == "Angelholm"][0]
+    hb = [leg for leg in trains if leg["to"] == "Lund C"][0]
     assert hb["from"] == "Copenhagen Airport"  # riktningen visas även utan km
     assert "km_missing" in view["legs_flags"]
     assert view["admin"]["missing"]["train_km"] == 2
