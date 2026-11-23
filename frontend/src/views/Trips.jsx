@@ -5,6 +5,7 @@ import { useToast } from '../lib/toast.jsx';
 import { fmtAmount } from '../lib/format.js';
 import TripSuggestionCard from '../components/trips/TripSuggestionCard.jsx';
 import CalendarTripRow from '../components/trips/CalendarTripRow.jsx';
+import { CancelledBookings } from '../components/trips/CalendarTripCard.jsx';
 import TripActiveCard from '../components/trips/TripActiveCard.jsx';
 import TripDetailDrawer from '../components/trips/TripDetailDrawer.jsx';
 import TripEditModal from '../components/trips/TripEditModal.jsx';
@@ -41,7 +42,7 @@ export default function Trips() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [calendarTrips, setCalendarTrips] = useState([]);
-  const [unassigned, setUnassigned] = useState({ unassigned: [], missing_info: [] });
+  const [unassigned, setUnassigned] = useState({ unassigned: [], missing_info: [], cancelled: [] });
   const [sugg, setSugg] = useState({ suggestions: [], counts: {} });
   const [activeTrips, setActiveTrips] = useState([]);
   const [nvTexts, setNvTexts] = useState({});
@@ -71,6 +72,7 @@ export default function Trips() {
       setUnassigned({
         unassigned: (cal && cal.unassigned) || [],
         missing_info: (cal && cal.missing_info) || [],
+        cancelled: (cal && cal.cancelled_without_trip) || [],
       });
       setSugg(s || { suggestions: [], counts: {} });
       setActiveTrips((a && a.trips) || []);
@@ -82,6 +84,7 @@ export default function Trips() {
         km[r.trip_id] = {
           km: r.km || 0,
           missing: (r.legs_missing_km || 0) > 0 || (r.flags || []).includes('km_missing'),
+          questions: r.questions || [],
         };
       }
       setKmByTrip(km);
@@ -465,7 +468,7 @@ export default function Trips() {
             ) : null}
           </section>
 
-          {unassigned.unassigned.length || unassigned.missing_info.length ? (
+          {unassigned.unassigned.length || unassigned.missing_info.length || unassigned.cancelled.length ? (
             <section className="trips-view__section" data-testid="trips-unassigned">
               {unassigned.unassigned.length ? (
                 <details className="trips-view__hidden" open>
@@ -490,6 +493,19 @@ export default function Trips() {
                       </li>
                     ))}
                   </ul>
+                </details>
+              ) : null}
+              {unassigned.cancelled.length ? (
+                <details className="trips-view__hidden" data-testid="trips-cancelled-no-trip">
+                  <summary>
+                    {formatString(t.trips.cancelledNoTripTitle, { count: unassigned.cancelled.length })}
+                  </summary>
+                  <CancelledBookings
+                    bookings={unassigned.cancelled}
+                    c={t.trips.calendar}
+                    lang={lang}
+                    testid="trips-cancelled"
+                  />
                 </details>
               ) : null}
               {unassigned.missing_info.length ? (

@@ -82,7 +82,9 @@ def _receipt_dict(msg: ProcessedMessage, suggestion_id: int) -> dict:
 
 def allocate(db: Session, trips: list[CalendarTrip] | None = None) -> dict:
     """{'by_trip': {calendar_trip_id: [kvitto]}, 'unassigned': [...],
-    'missing_info': [...]}. Kvitton med counted=False är dubbletter."""
+    'missing_info': [...], 'cancelled_by_trip': {id: [bokning]},
+    'cancelled_without_trip': [bokning]}. Kvitton med counted=False är
+    dubbletter; avbokade bokningar (C57) finns bara i cancelled_*."""
     if trips is None:
         trips = db.query(CalendarTrip).all()
     rows = (
@@ -131,9 +133,43 @@ def allocate(db: Session, trips: list[CalendarTrip] | None = None) -> dict:
         r["placed_by"] = "date"
         return {**r, "_trip": ranked[0].id}
 
+    # C57 - avbokade och återbetalda bokningar: räknas inte, hamnar inte i
+    # 'utan resa'. En hopfälld rad per bokning på resan (eller utan resa).
+    from app.services.c57_cancelled import cancelled_messages
+
+    cancelled = cancelled_messages(db)
+    cancelled_by_trip: dict[int, list[dict]] = {}
+    cancelled_without_trip: list[dict] = []
+    bookings: dict[str, dict] = {}
+    for msg, sid in msgs.values():
+        info = cancelled.get(msg.message_id)
+        if info is None:
+            continue
+        b = bookings.setdefault(info["booking"], {
+            k: info[k] for k in ("booking", "vendor", "booking_ref", "amount", "currency",
+                                 "purchase_date", "refund_date", "reason", "label_sv",
+                                 "label_en")
+        } | {"receipts": [], "counted": False, "_msgs": []})
+        b["_msgs"].append((msg, sid))
+        b["receipts"].append(_receipt_dict(msg, sid) | {"counted": False, "cancelled": True})
+    for b in bookings.values():
+        # Placera bokningen efter köpkvittot (originalet, inte dubbletten).
+        msg, sid = sorted(b.pop("_msgs"), key=lambda mt: (bool(mt[0].duplicate_of), mt[0].id))[0]
+        res = place(msg, sid)
+        tid = res.get("_trip")
+        b["receipts"].sort(key=lambda r: r["message_id"])
+        if tid is None:
+            b["reason_no_trip"] = res.get("reason")
+            if res.get("candidates"):
+                b["candidates"] = res["candidates"]
+            cancelled_without_trip.append(b)
+        else:
+            cancelled_by_trip.setdefault(tid, []).append(b)
+
     # Original först, dubbletter sist (de följer originalets resa).
-    order = sorted(msgs.values(), key=lambda mt: (
-        bool(mt[0].duplicate_of and mt[0].duplicate_of in msgs), mt[0].id))
+    order = sorted((mt for mt in msgs.values() if mt[0].message_id not in cancelled),
+                   key=lambda mt: (bool(mt[0].duplicate_of and mt[0].duplicate_of in msgs),
+                                   mt[0].id))
     for msg, sid in order:
         if msg.vendor is None and msg.amount is None:
             missing_info.append(_receipt_dict(msg, sid) | {"counted": False})
@@ -156,7 +192,9 @@ def allocate(db: Session, trips: list[CalendarTrip] | None = None) -> dict:
     for lst in by_trip.values():
         lst.sort(key=lambda r: (r.get("receipt_date") or "", r["message_id"]))
     unassigned.sort(key=lambda r: (r.get("receipt_date") or "", r["message_id"]))
-    return {"by_trip": by_trip, "unassigned": unassigned, "missing_info": missing_info}
+    return {"by_trip": by_trip, "unassigned": unassigned, "missing_info": missing_info,
+            "cancelled_by_trip": cancelled_by_trip,
+            "cancelled_without_trip": cancelled_without_trip}
 
 
 def totals(receipts: list[dict]) -> dict[str, float]:
@@ -192,6 +230,10 @@ def compare(db: Session) -> dict:
             "receipts_after": len([r for r in a["by_trip"].get(t.id, []) if r["counted"]]),
             "duplicates_counted_once": len([r for r in a["by_trip"].get(t.id, [])
                                             if not r["counted"]]),
+            "cancelled_not_counted": [
+                {k: b[k] for k in ("booking_ref", "vendor", "amount", "currency")}
+                for b in a["cancelled_by_trip"].get(t.id, [])],
         })
     return {"trips": rows, "unassigned": a["unassigned"],
+            "cancelled_without_trip": a["cancelled_without_trip"],
             "missing_info_count": len(a["missing_info"])}

@@ -199,8 +199,12 @@ def load_receipts(db: Session) -> list[Receipt]:
         .all()
     )
     # C44 — dubbletter (samma köp fångat två gånger) räknas inte.
+    # C57 — avbokade och återbetalda bokningar räknas inte heller.
+    from app.services.c57_cancelled import cancelled_messages
+
+    cancelled = cancelled_messages(db)
     return [r for r in (Receipt(m) for m in rows)
-            if r.day is not None and not r.duplicate_of]
+            if r.day is not None and not r.duplicate_of and r.message_id not in cancelled]
 
 
 def _days(db: Session, trip: CalendarTrip) -> list[CalendarTripDay]:

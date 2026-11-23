@@ -4482,6 +4482,28 @@ html[data-theme='B'] {
   overflow-wrap: anywhere;
 }
 
+.trip-row__ask {
+  margin: 0;
+  padding-left: 20px;
+  list-style: none;
+  font-size: 12.5px;
+  overflow-wrap: anywhere;
+}
+
+.trip-card__cancelled {
+  font-size: 13px;
+  margin-top: 6px;
+}
+
+.trip-card__cancelled summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.trip-card__cancelled-amount {
+  text-decoration: line-through;
+}
+
 .trip-row__details {
   display: flex;
   flex-direction: column;

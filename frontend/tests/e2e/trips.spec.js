@@ -400,3 +400,41 @@ test('C56: samma biljett räknas en gång och kvitton utan resa listas', async (
   await expect(page.getByTestId('trips-unassigned-ay-1126')).toContainText('passar flera resor: 146, 147');
   await expect(page.getByTestId('trips-missing-info')).toContainText('2 kvitton saknar uppgifter');
 });
+
+test('C57: avbokad bokning hopfälld, räknas inte, och frågor till Mikko', async ({ page }) => {
+  const booking = (ref, amount, date) => ({
+    booking: `finnair:${ref}`, vendor: 'Finnair', booking_ref: ref, amount, currency: 'EUR',
+    purchase_date: date, refund_date: date, counted: false,
+    receipts: [{ message_id: `${ref}-et`, vendor: 'Finnair', amount, currency: 'EUR', receipt_date: date, counted: false, cancelled: true }],
+  });
+  await setupApiMocks(page, {
+    calendarTrips: [{
+      ...CAL_TRIP,
+      receipts: [
+        { message_id: 'ot', vendor: 'Finnair', amount: 514.48, currency: 'EUR', receipt_date: '2026-04-14', counted: true },
+      ],
+      cancelled_bookings: [booking('8HZCXX', 674.48, '2026-04-13')],
+    }],
+    cancelledWithoutTrip: [booking('8NLAI4', 134.48, '2026-11-18')],
+    emissionsPerTrip: [{
+      trip_id: 7, km: 0, legs_missing_km: 1, flags: ['km_missing', 'home_transport_unknown'],
+      questions: [
+        { kind: 'km_missing', leg_id: 66, text_sv: 'Taxi 2026-09-01: km står inte på kvittot och start och slut saknas. Hur många km? (Boten gissar inte.)', text_en: 'x' },
+        { kind: 'home_transport', leg_id: null, text_sv: 'Hur tog du dig till och från HEL? Bil, taxi eller annat?', text_en: 'y' },
+      ],
+    }],
+  });
+  await page.goto('/trips');
+  await expect(page.getByTestId('trip-row-7')).toContainText('514,48 EUR');
+  await expect(page.getByTestId('trip-row-7')).not.toContainText('674,48');
+  await expect(page.getByTestId('trip-row-ask-7')).toContainText('Fråga Mikko');
+  await expect(page.getByTestId('trip-row-ask-7')).toContainText('Bil, taxi eller annat?');
+  await expect(page.getByTestId('trip-row-ask-7')).toContainText('start och slut saknas');
+  await page.getByTestId('trip-row-toggle-7').click();
+  const row = page.getByTestId('cancelled-finnair:8HZCXX');
+  await expect(row).toContainText('Avbokad och återbetald (räknas inte)');
+  await expect(row).toContainText('bokning 8HZCXX');
+  await expect(row).toContainText('674,48 EUR');
+  await expect(page.getByTestId('trips-unassigned-8NLAI4-et')).toHaveCount(0);
+  await expect(page.getByTestId('trips-cancelled-no-trip')).toContainText('Avbokade och återbetalda, utan resa (1)');
+});

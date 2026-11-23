@@ -124,6 +124,39 @@ function statusPill(status) {
 
 /* C56: embedded = visas inuti den kompakta raden (CalendarTripRow) —
  * rubrik, status och belopp står redan på raden, här bara detaljerna. */
+/* C57 — köp + återbetalning av samma bokning: räknas inte, visas hopfällt. */
+export function CancelledBookings({ bookings, c, lang, testid = 'cancelled' }) {
+  if (!bookings || bookings.length === 0) return null;
+  return (
+    <>
+      {bookings.map((b) => (
+        <details key={b.booking} className="trip-card__cancelled" data-testid={`${testid}-${b.booking}`}>
+          <summary>
+            <span className="muted">{c.cancelledTitle}</span>
+            {' · '}
+            <span>{b.vendor || '—'}</span>
+            {b.booking_ref ? <span className="mono"> {fill(c.cancelledBooking, { ref: b.booking_ref })}</span> : null}
+            {' · '}
+            <span className="mono trip-card__cancelled-amount">{fmtAmount(b.amount, b.currency, lang)}</span>
+          </summary>
+          <div className="muted mono nv-small">
+            {fill(c.cancelledDates, { buy: b.purchase_date || '—', refund: b.refund_date || '—' })}
+          </div>
+          <ul className="trip-card__receipts">
+            {(b.receipts || []).map((r) => (
+              <li key={r.message_id} className="trip-card__receipt trip-card__receipt--dup">
+                <span className="vchip-mini">{r.vendor || '—'}</span>
+                <span className="mono muted">{r.receipt_date || '—'}</span>
+                <span className="mono">{fmtAmount(r.amount, r.currency, lang)}</span>
+              </li>
+            ))}
+          </ul>
+        </details>
+      ))}
+    </>
+  );
+}
+
 export default function CalendarTripCard({ trip, embedded = false }) {
   const { t, lang } = useI18n();
   const c = t.trips.calendar;
@@ -216,6 +249,7 @@ export default function CalendarTripCard({ trip, embedded = false }) {
           ))}
         </ul>
       )}
+      <CancelledBookings bookings={trip.cancelled_bookings} c={c} lang={lang} />
     </section>
     </>
   );

@@ -79,6 +79,16 @@ export default function CalendarTripRow({ trip, nvText, km, onApprove, onUnappro
           )}
         </span>
       </div>
+      {km && km.questions && km.questions.length ? (
+        <ul className="trip-row__ask" data-testid={`trip-row-ask-${trip.id}`}>
+          {km.questions.map((q) => (
+            <li key={`${q.kind}-${q.leg_id || ''}`}>
+              <span className="pill pill--warn mono">{t.trips.askMikko}</span>{' '}
+              {lang === 'en' ? q.text_en : q.text_sv}
+            </li>
+          ))}
+        </ul>
+      ) : null}
       {nvText ? (
         <div className="trip-row__nv mono" data-testid={`trip-row-nv-${trip.id}`}>
           <span className="muted">{t.trips.netvisorText}:</span> {nvText}

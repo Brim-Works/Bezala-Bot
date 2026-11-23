@@ -285,7 +285,19 @@ def _flight_receipt(db: Session, trip: CalendarTrip) -> ProcessedMessage | None:
            .first())
     if row is None or not row.message_id:
         return None
-    m = db.query(ProcessedMessage).filter(ProcessedMessage.message_id == row.message_id).first()
+    mid = row.message_id
+    # C57 - Mikkos egen markering pekar på en avbokad bokning: använd det
+    # gällande flygkvittot (samma matchning som checklistan).
+    from app.services.c57_cancelled import cancelled_messages
+
+    if mid in cancelled_messages(db):
+        from app.services.trip_completeness import _match_flight, load_receipts
+
+        valid = _match_flight(trip, load_receipts(db))
+        if valid is None:
+            return None
+        mid = valid.message_id
+    m = db.query(ProcessedMessage).filter(ProcessedMessage.message_id == mid).first()
     if m is None:
         return None
     try:
@@ -612,6 +624,9 @@ def sync_trip_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip
     """Räkna om auto-raderna och spara. Mikkos rader (set_by='user' eller
     source='manual' med km) skrivs aldrig över."""
     auto, flags = build_auto_legs(db, trip, all_trips, receipts)
+    from app.services.c57_cancelled import cancelled_messages
+
+    cancelled = cancelled_messages(db)
     existing = {r.leg_key: r for r in db.query(TripLeg).filter(TripLeg.trip_id == trip.id).all()}
     keys = set()
     for leg in auto:
@@ -622,6 +637,12 @@ def sync_trip_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip
             db.add(row)
             existing[leg["leg_key"]] = row
         if _locked(row):
+            # C57 - Mikkos km rörs aldrig, men ett flygben som pekar på en
+            # avbokad bokning pekas om till det gällande kvittot.
+            if (row.mode == "flight" and leg.get("receipt_message_id")
+                    and row.receipt_message_id in cancelled
+                    and row.receipt_message_id != leg["receipt_message_id"]):
+                row.receipt_message_id = leg["receipt_message_id"]
             continue
         for f in _FIELDS:
             v = leg.get(f)
@@ -843,6 +864,40 @@ def _missing_list(rows: list[TripLeg]) -> list[dict]:
             for r in rows if r.km is None and not r.excluded]
 
 
+_MODE_SV = {"taxi": "Taxi", "train": "Tåg", "bus": "Buss", "flight": "Flyg",
+            "car_phev": "Bil", "car": "Bil"}
+
+
+def questions(rows: list[TripLeg], flags: list[str]) -> list[dict]:
+    """C57 Del 3 - det boten inte vet frågas, gissas aldrig.
+
+    km_missing: en fråga per delsträcka utan km. home_transport_unknown: hur
+    Mikko tog sig till och från HEL (bil, taxi eller annat)."""
+    out: list[dict] = []
+    for r in rows:
+        if r.km is not None or r.excluded:
+            continue
+        d = r.leg_date.isoformat() if r.leg_date else "?"
+        mode_sv = _MODE_SV.get(r.mode, r.mode)
+        route = f" {r.from_place or '?'} - {r.to_place or '?'}" if (r.from_place or r.to_place) else ""
+        unknown_ends = not r.from_place and not r.to_place
+        sv = (f"{mode_sv} {d}{route}: km står inte på kvittot"
+              + (" och start och slut saknas" if unknown_ends else "")
+              + ". Hur många km? (Boten gissar inte.)")
+        en = (f"{r.mode} {d}{route}: no km on the receipt"
+              + (" and no start or end" if unknown_ends else "")
+              + ". How many km? (The bot does not guess.)")
+        out.append({"kind": "km_missing", "leg_id": r.id, "text_sv": sv, "text_en": en})
+    if "home_transport_unknown" in (flags or []):
+        out.append({
+            "kind": "home_transport", "leg_id": None,
+            "text_sv": "Hur tog du dig till och från HEL? Bil, taxi eller annat?",
+            "text_en": "How did you get to and from HEL? Car, taxi or other?",
+            "options": ["car", "taxi", "other"],
+        })
+    return out
+
+
 def trip_legs_view(db: Session, trip: CalendarTrip, all_trips=None, receipts=None) -> dict:
     from app.services.trip_completeness import load_receipts
 
@@ -855,6 +910,8 @@ def trip_legs_view(db: Session, trip: CalendarTrip, all_trips=None, receipts=Non
         "legs_totals": _totals(rows),
         "admin": admin_totals(rows, hotel_nights(db, trip, receipts)),
         "legs_missing": _missing_list(rows),
+        # C57 - frågor till Mikko i stället för tysta flaggor.
+        "questions": questions(rows, flags),
     }
 
 
@@ -1024,6 +1081,7 @@ def get_emissions_summary(db: Session, year: int = 2026) -> dict:
             "legs_missing_km": admin["legs_missing_km"],
             "missing_legs": _missing_list(rows),
             "flags": flags,
+            "questions": questions(rows, flags),
         })
     year_admin = sum_admin([a for *_, a in data])
     active = [r for r in all_rows if not r.excluded]
