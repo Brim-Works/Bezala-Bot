@@ -32,6 +32,7 @@ from app.models import (
     CalendarTrip, CardLine, ExpectedRefund, ProcessedMessage, QueueDecision, Subscription,
 )
 from app.services.calendar_trip_edit import TripEditError
+from app.services.trip_english import meals_text_sv
 
 logger = logging.getLogger(__name__)
 
@@ -257,8 +258,14 @@ def _trip_items(db: Session) -> list[dict]:
         if items:
             comp["total"] = len(items)
             comp["found"] = sum(1 for i in items if i.get("status") == "found")
-        meals = sum(d.free_meals or 0 for d in db.query(CalendarTripDay)
-                    .filter(CalendarTripDay.trip_id == t.id).all())
+        trip_days = (db.query(CalendarTripDay)
+                     .filter(CalendarTripDay.trip_id == t.id)
+                     .order_by(CalendarTripDay.day_date).all())
+        meals = sum(d.free_meals or 0 for d in trip_days)
+        # C59 - per dag, aldrig en summa ('gratis lunch 13 apr, 14 apr').
+        meals_sv = meals_text_sv(
+            (d.day_date.isoformat(), d.free_meals, d.free_meal_sources,
+             d.country or t.country) for d in trip_days)
         text = _trip_completeness_text(comp) if comp else None
         km = _trip_km(db, t)
         out.append({
@@ -267,7 +274,7 @@ def _trip_items(db: Session) -> list[dict]:
             "title": f"Trip {t.destination or '?'}",
             "subtitle": (f"{t.start_date} – {t.end_date}"
                          + (f" - {text}" if text else "")
-                         + (f" - {meals} free meal(s)" if meals else "")),
+                         + (f" - {meals_sv}" if meals_sv else "")),
             "yes_label": "Approve trip",
             "no_label": "Not a business trip",
             "date": t.start_date.isoformat(),
@@ -275,6 +282,7 @@ def _trip_items(db: Session) -> list[dict]:
             "completeness": text,
             "completeness_detail": comp or None,
             "free_meals": meals,
+            "meals_text_sv": meals_sv,
             # C54 - km kompakt på resekortet (samma siffror som Resor-vyn).
             "km": km,
         })

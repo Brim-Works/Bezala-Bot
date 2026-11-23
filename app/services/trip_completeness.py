@@ -33,7 +33,7 @@ from app.models import (
 
 logger = logging.getLogger(__name__)
 
-KINDS = ("flight", "hotel", "parking", "local")
+KINDS = ("flight", "hotel", "parking", "local", "car_rental")
 STATUSES = ("found", "missing", "not_applicable", "optional")
 # Det Mikko kan sätta via set_expectation_status. 'auto' tar bort hans
 # markering så att omräkningen bestämmer igen.
@@ -80,8 +80,19 @@ _CATEGORY_KIND = {
     "Tåg": "local",
     "Kollektivtrafik": "local",
     "Taxi": "local",
-    "Bilhyra": "local",
+    # C59 - hyrbil är en bil-sträcka, aldrig lokal tåg/buss-transport.
+    "Bilhyra": "car_rental",
 }
+
+# C59 - hyrbilsfirmor (Hertz Malmö = hyrbil Malmö-Ljungby, inte tåg CPH-Malmö).
+_CAR_RENTAL_WORDS = ("hertz", "avis budget", "avis car", "avis rent", "avis.se", "avis.com", "sixt", "europcar", "budget rent",
+                     "enterprise rent", "hyrbil", "biluthyrning", "bilhyra",
+                     "car rental", "rental car", "rent a car", "autovuokra")
+
+
+def is_car_rental(category: str | None, text: str | None) -> bool:
+    t = f" {(text or '').lower()} "
+    return category == "Bilhyra" or any(w in t for w in _CAR_RENTAL_WORDS)
 
 
 # ---------- Hjälp ----------
@@ -139,7 +150,8 @@ class Receipt:
 
     __slots__ = ("message_id", "vendor", "amount", "currency", "day", "text",
                  "kinds", "drive_link", "bill_line_id", "kind", "segments",
-                 "parking_entry_at", "parking_exit_at", "duplicate_of", "route_fields")
+                 "parking_entry_at", "parking_exit_at", "duplicate_of", "route_fields",
+                 "received_at")
 
     def __init__(self, m: ProcessedMessage):
         self.message_id = m.message_id
@@ -167,6 +179,8 @@ class Receipt:
         self.kinds = classify_receipt(m.category, self.text)
         # C54 - fält som kan ge sträckans riktning (filnamn först).
         self.route_fields = [m.file_name, m.subject, m.ai_description_en, m.summary]
+        # C59 - när mailet kom (köptid) ger riktningen för Arlanda Express.
+        self.received_at = getattr(m, "received_at", None)
 
     def as_link(self) -> dict:
         return {
@@ -184,6 +198,8 @@ def classify_receipt(category: str | None, text: str) -> set[str]:
     """Vilka slags resekostnad ett kvitto kan vara. Kategorin från AI:n
     går först; leverantörsord är reserv när kategorin saknas/är 'Annat'."""
     kinds: set[str] = set()
+    if is_car_rental(category, text):
+        return {"car_rental"}
     if category in _CATEGORY_KIND:
         kinds.add(_CATEGORY_KIND[category])
         return kinds
@@ -535,7 +551,22 @@ def expected_items(db: Session, trip: CalendarTrip,
     items += _hotel_slots(trip, days, receipts)
     items.append(_parking_slot(trip, receipts))
     items += _local_slots(trip, days, receipts)
+    items += _car_rental_slots(trip, receipts)
     return items
+
+
+def _car_rental_slots(trip: CalendarTrip, receipts: list[Receipt]) -> list[dict]:
+    """C59 - hyrbilskvitto under resan = egen post 'Hyrbil' (inte lokaltransport)."""
+    out = []
+    for r in receipts:
+        if ("car_rental" not in r.kinds or r.day is None
+                or not (trip.start_date <= r.day <= trip.end_date + timedelta(days=1))):
+            continue
+        if r.amount is not None and r.amount < 0:
+            continue
+        out.append({"kind": "car_rental", "slot": r.message_id, "status": "found",
+                    "receipt": r, "note": f"Rental car {r.vendor or ''}".strip()})
+    return out
 
 
 # ---------- Lagring / omräkning ----------

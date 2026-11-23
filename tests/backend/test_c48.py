@@ -500,7 +500,7 @@ def test_queue_paging_and_trip_completeness(db):  # noqa: F811
     card = next(i for i in p1["items"] + p2["items"] if i["id"] == f"trip:{t.id}")
     assert card["free_meals"] == 1
     assert card["completeness"].startswith("0/") and "missing: flight" in card["completeness"]
-    assert "1 free meal(s)" in card["subtitle"]
+    assert "gratis måltid" in card["subtitle"] and "free meal" not in card["subtitle"]
 
 
 def test_mcp_list_pending_offset_signature():

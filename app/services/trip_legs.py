@@ -249,6 +249,7 @@ def _trip_flights(db: Session, trip: CalendarTrip) -> list[dict]:
             "dest": (f.get("destination_iata") or "").upper() or None,
             "date": _hel_date(f.get("start")) or trip.start_date,
             "arr_date": _hel_date(f.get("end")),
+            "dep_at": f.get("start"), "arr_at": f.get("end"),
             "source_note": "calendar",
         })
     if out:
@@ -368,7 +369,8 @@ def _own_car_legs(db: Session, trip: CalendarTrip) -> bool:
     rows = (db.query(TripLeg)
             .filter(TripLeg.trip_id == trip.id, TripLeg.mode.in_(CAR_MODES))
             .all())
-    return any(not (r.leg_key or "").startswith("car:") for r in rows)
+    # C59 - hyrbilen på plats (rental:) säger inget om resan till/från HEL.
+    return any(not (r.leg_key or "").startswith(("car:", "rental:")) for r in rows)
 
 
 def _trip_ended(trip: CalendarTrip) -> bool:
@@ -436,6 +438,59 @@ def _context_direction(day: date | None, airport: str, city: str, flights: list[
     return None, None
 
 
+def _as_utc(value) -> datetime | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        try:
+            value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    if not isinstance(value, datetime):
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=ZoneInfo("UTC"))
+    return value
+
+
+_GMAIL_ID_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def _bought_at(r) -> datetime | None:
+    """När biljetten köptes = när kvittomailet kom. Gmail-id:t bär tiden i
+    UTC (id >> 20 = millisekunder) - säkrare än Date-rubriken, vars
+    tidszon kan tappas i databasen. Annars received_at."""
+    mid = str(getattr(r, "message_id", "") or "")
+    if _GMAIL_ID_RE.match(mid):
+        try:
+            ms = int(mid, 16) >> 20
+            dt = datetime.fromtimestamp(ms / 1000, tz=ZoneInfo("UTC"))
+            if 2015 <= dt.year <= 2100:
+                return dt
+        except (ValueError, OverflowError, OSError):
+            pass
+    return _as_utc(getattr(r, "received_at", None))
+
+
+def _time_direction(bought, airport: str, city: str,
+                    flights: list[dict]) -> tuple[str | None, str | None]:
+    """C59 - dagsresa: biljett köpt efter landningen och närmare den än
+    hemflyget = flygplats -> stad; närmare hemflyget = stad -> flygplats.
+    Okänd köptid eller flygtid, eller köpt före landningen = okänt."""
+    bought = _as_utc(bought)
+    if bought is None or len(flights) < 2:
+        return None, None
+    landed = _as_utc(flights[0].get("arr_at"))
+    leaves = _as_utc(flights[-1].get("dep_at"))
+    if landed is None or leaves is None or not (landed <= bought <= leaves):
+        return None, None
+    if landed.astimezone(HELSINKI).date() != leaves.astimezone(HELSINKI).date():
+        return None, None  # bara dagsresor - annars avgör dagen
+    if bought - landed <= leaves - bought:
+        return airport, city
+    return city, airport
+
+
 def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> list[dict]:
     """Ett kvitto -> 1 delsträcka (2 vid tur och retur) med från/till och km."""
     from app.data import route_km as rk
@@ -445,9 +500,26 @@ def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> li
     frm, to, seen = rk.direction_from(fields)
     direction_known = bool(frm and to)
     estimate_dir = False
+    time_dir = False
     reason = None
     round_trip = any(rk.is_round_trip(f) for f in fields if f)
-    if not direction_known:
+    fixed = rk.OPERATOR_FIXED.get(operator or "", ())
+    if len(fixed) == 2 and not round_trip:
+        # C59 - Arlanda Express: biljetten anger ingen riktning ("Enkelresa
+        # Vuxen", giltig åt båda hållen). Ortnamn i texten är företagets
+        # adress eller AI:ns filnamn - lita inte på dem. Riktningen tas ur
+        # resan: dagen, annars köptiden (mailet) mot flygtiderna.
+        airport = next((p for p in fixed if p in rk.AIRPORTS), None)
+        city = next((p for p in fixed if p != airport), None)
+        c_frm, c_to = _context_direction(r.day, airport, city, flights, trip)
+        if not c_frm:
+            c_frm, c_to = _time_direction(_bought_at(r), airport, city, flights)
+            time_dir = bool(c_frm)
+        if c_frm:
+            frm, to = c_frm, c_to
+            direction_known = False
+            estimate_dir = True
+    if not direction_known and not (frm and to):
         ends = list(seen)
         for p in rk.OPERATOR_FIXED.get(operator or "", ()):
             if p not in ends:
@@ -482,7 +554,9 @@ def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> li
             km, source, is_est = None, "receipt", estimate_dir
             reason = reason or "no_route_in_table"
             note = f"{vendor} - km not on receipt"
-    if estimate_dir:
+    if time_dir:
+        note += "; direction from purchase time vs flight times"
+    elif estimate_dir:
         note += "; direction from the trip (flight arrival/departure day)"
     base = {
         "leg_key": f"receipt:{r.message_id}", "leg_date": r.day, "mode": mode,
@@ -491,7 +565,7 @@ def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> li
         "source": source, "is_estimate": is_est, "note": note,
         "receipt_message_id": r.message_id, "km_reason": None if km is not None else reason,
         "_dedupe": (fold_vendor(r.vendor), r.day, r.amount, frm, to)
-        if direction_known and not round_trip else None,
+        if (direction_known or len(fixed) == 2) and frm and to and not round_trip else None,
         "_summary": "journeys made" in (r.text or "") or "receipts from" in (r.text or ""),
         "_coupled": bool(getattr(r, "bill_line_id", None)),
         "_order": _order_no(fields),
@@ -624,6 +698,7 @@ def build_auto_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTri
         })
 
     legs += ground_legs(trip, flights, _local_receipts(db, trip, all_trips, receipts))
+    legs += rental_legs(db, trip, all_trips, receipts)
 
     if _own_car_legs(db, trip):
         # C58 - Mikkos bil-ben vinner; inga dubbla ben, ingen fråga.
@@ -640,6 +715,113 @@ def build_auto_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTri
     for i, leg in enumerate(legs):
         leg["seq"] = i
     return legs, flags
+
+
+# ---------------------------------------------------------------- C59 hyrbil
+
+_EV_WORDS = ("kwh", "electric", "elbil", "sähkö", "ex30", "ex40", "ex90", "polestar",
+             "tesla", "id.3", "id.4", "id.5", "ioniq", "ev6", "e-niro", "enyaq",
+             "model y", "model 3", "mg4", "bev")
+_KM_OUT_IN_RE = re.compile(r"km\s*out\s*:?\s*(\d{1,6}).*?km\s*in\s*:?\s*(\d{1,6})",
+                           re.IGNORECASE | re.DOTALL)
+_MILEAGE_RE = re.compile(r"(?:mileage|körsträcka|kilometers?|ajettu)\s*:?\s*(\d{1,4}(?:[.,]\d)?)\s*km",
+                         re.IGNORECASE)
+_PICKUP_RE = re.compile(r"(?:delivery|pick-?up|utlämning|hämtad)\s*:?\s*([A-Za-zÅÄÖåäöØø]+)",
+                        re.IGNORECASE)
+
+
+def rental_km(text: str | None) -> float | None:
+    """Km ur hyrbilskvittot: mätarställning in - ut, annars 'Mileage: 376 km',
+    annars första 'NNN km'. Ingen träff = None (gissas aldrig)."""
+    if not text:
+        return None
+    m = _KM_OUT_IN_RE.search(text)
+    if m:
+        diff = int(m.group(2)) - int(m.group(1))
+        if 0 < diff < 5000:
+            return float(diff)
+    m = _MILEAGE_RE.search(text)
+    if m:
+        try:
+            km = float(m.group(1).replace(",", "."))
+            if 0 < km < 5000:
+                return km
+        except ValueError:
+            pass
+    return parse_km(text)
+
+
+def is_electric_rental(text: str | None) -> bool:
+    t = f" {(text or '').lower()} "
+    return any(w in t for w in _EV_WORDS)
+
+
+def _rental_receipts(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip],
+                     receipts=None) -> list:
+    from app.services.trip_completeness import load_receipts
+
+    receipts = receipts if receipts is not None else load_receipts(db)
+    others = [t for t in all_trips if t.id != trip.id and t.status != "rejected"]
+    out = []
+    for r in receipts:
+        if r.day is None or "car_rental" not in r.kinds:
+            continue
+        if not (trip.start_date <= r.day <= trip.end_date + timedelta(days=1)):
+            continue
+        if r.day > trip.end_date and any(o.start_date <= r.day <= o.end_date for o in others):
+            continue
+        if r.amount is not None and r.amount < 0:
+            continue
+        out.append(r)
+    return out
+
+
+def _trip_cities(db: Session, trip: CalendarTrip) -> list[str]:
+    from app.models import CalendarTripDay
+    from app.services.trip_english import _ascii, split_cities
+
+    days = (db.query(CalendarTripDay).filter(CalendarTripDay.trip_id == trip.id)
+            .order_by(CalendarTripDay.day_date).all())
+    names = [d.destination for d in days if d.destination] or [trip.destination]
+    return [_ascii(c) for c in split_cities(names)]
+
+
+def rental_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip] | None = None,
+                receipts=None) -> list[dict]:
+    """C59 - hyrbil (Hertz/Avis/Sixt/Europcar) = ETT bil-ben car_private
+    (inte tjänstebil, inte tåg): hämtort -> arbetsorter -> återlämning.
+    km från kvittot (mätare in - ut). Elbil: energy_type electricity och
+    kWh tomt - kvittot anger batteriets storlek, inte förbrukningen."""
+    from app.services.trip_english import _ascii
+
+    all_trips = all_trips if all_trips is not None else db.query(CalendarTrip).all()
+    out: list[dict] = []
+    cities = None
+    for r in _rental_receipts(db, trip, all_trips, receipts):
+        full = " ".join(str(f) for f in (getattr(r, "route_fields", None) or []) if f)
+        text = f"{r.text or ''} {full}"
+        km = rental_km(text)
+        if cities is None:
+            cities = _trip_cities(db, trip)
+        m = _PICKUP_RE.search(text)
+        pickup = _ascii(m.group(1).capitalize()) if m else (cities[0] if cities else None)
+        via = [c for c in cities if c != pickup]
+        electric = is_electric_rental(text)
+        to_place = " - ".join([*via, pickup]) if pickup and via else pickup
+        note = f"Rental car {r.vendor or ''}".strip()
+        note += "; electric car - kWh not on receipt, ask Mikko" if electric else ""
+        note += "; km from receipt" if km is not None else " - km not on receipt"
+        out.append({
+            "leg_key": f"rental:{r.message_id}", "leg_date": r.day, "mode": "car_private",
+            "from_place": pickup, "to_place": to_place, "km": km,
+            "energy_type": "electricity" if electric else None,
+            "energy_amount": None, "energy_unit": "kWh" if electric else None,
+            "source": "receipt", "is_estimate": False, "note": note,
+            "receipt_message_id": r.message_id,
+            "km_reason": None if km is not None else "no_km_on_receipt",
+            "excluded": False,
+        })
+    return out
 
 
 _FIELDS = ("seq", "leg_date", "mode", "from_place", "to_place", "km", "energy_type",
@@ -916,7 +1098,7 @@ def _missing_list(rows: list[TripLeg]) -> list[dict]:
 
 
 _MODE_SV = {"taxi": "Taxi", "train": "Tåg", "bus": "Buss", "flight": "Flyg",
-            "car_phev": "Bil", "car": "Bil"}
+            "car_phev": "Bil", "car": "Bil", "car_private": "Bil (inte tjänstebil)"}
 
 
 def questions(rows: list[TripLeg], flags: list[str]) -> list[dict]:
@@ -939,6 +1121,19 @@ def questions(rows: list[TripLeg], flags: list[str]) -> list[dict]:
               + (" and no start or end" if unknown_ends else "")
               + ". How many km? (The bot does not guess.)")
         out.append({"kind": "km_missing", "leg_id": r.id, "text_sv": sv, "text_en": en})
+    for r in rows:
+        # C59 - elbil utan förbrukning: fråga, gissa aldrig kWh.
+        if (r.excluded or r.mode != "car_private" or r.energy_type != "electricity"
+                or r.energy_amount is not None):
+            continue
+        d = r.leg_date.isoformat() if r.leg_date else "?"
+        out.append({
+            "kind": "kwh_missing", "leg_id": r.id,
+            "text_sv": f"Elbil {d} {r.from_place or '?'} - {r.to_place or '?'}: "
+                       "kWh saknas, fråga Mikko. (Boten gissar inte.)",
+            "text_en": f"Electric car {d} {r.from_place or '?'} - {r.to_place or '?'}: "
+                       "kWh missing, ask Mikko. (The bot does not guess.)",
+        })
     if "home_transport_unknown" in (flags or []):
         out.append({
             "kind": "home_transport", "leg_id": None,

@@ -190,7 +190,7 @@ def generate_purpose(
             return None
         phrases.append("Meetings")
     phrases = phrases[:2]
-    head = " and ".join([phrases[0]] + [p[0].lower() + p[1:] for p in phrases[1:]])
+    head = " and ".join([phrases[0]] + [_lower_first(p) for p in phrases[1:]])
     head = head[0].upper() + head[1:]
     if city:
         return f"{head}, {city} office" if office else f"{head}, {city}"
@@ -286,6 +286,44 @@ def meals_note(days: Iterable[tuple[str, int | None, list | None, str | None]]) 
     return f"({total} free {word}: {'; '.join(parts)})"
 
 
+_SV_MONTHS = ("jan", "feb", "mar", "apr", "maj", "jun", "jul", "aug", "sep", "okt",
+              "nov", "dec")
+_SV_MEAL = {"lunch": "lunch", "dinner": "middag", "breakfast": "frukost",
+            "meal in ticket": "måltid i biljetten"}
+
+
+def meals_text_sv(days: Iterable[tuple[str, int | None, list | None, str | None]]) -> str | None:
+    """C59 - måltider per dag för översikten (svenska), aldrig en summa.
+
+    En lunch per dag 13 och 14 apr -> 'gratis lunch 13 apr, 14 apr'.
+    '2 gratis måltider' bara när en och samma dag har 2:
+    -> '2 gratis måltider 7 maj; gratis lunch 8 maj'.
+    days: (YYYY-MM-DD, free_meals, free_meal_sources, country)."""
+    from datetime import date as _date
+
+    from app.services.trip_meals import meal_names
+
+    groups: list[list] = []  # [etikett, [datum]]
+    for day, n, sources, cc in days:
+        if not n:
+            continue
+        if n >= 2:
+            label = f"{n} gratis måltider"
+        else:
+            names = meal_names(sources, cc)
+            label = "gratis " + (_SV_MEAL.get(names[0], names[0]) if len(names) == 1
+                                 else "måltid")
+        d = _date.fromisoformat(str(day)[:10])
+        when = f"{d.day} {_SV_MONTHS[d.month - 1]}"
+        if groups and groups[-1][0] == label:
+            groups[-1][1].append(when)
+        else:
+            groups.append([label, [when]])
+    if not groups:
+        return None
+    return "; ".join(f"{label} {', '.join(dates)}" for label, dates in groups)
+
+
 def _ascii(text: str) -> str:
     """'Malmö' -> 'Malmo', 'Ängelholm' -> 'Angelholm' (versaler behålls)."""
     text = (text or "").replace("ø", "o").replace("Ø", "O").replace("æ", "ae").replace(
@@ -314,13 +352,44 @@ def join_and(items: list[str]) -> str:
     return ", ".join(items[:-1]) + " and " + items[-1]
 
 
+# C59 - egennamn som aldrig får liten bokstav (företag, kunder, orter).
+_PROPER_NAMES = {
+    "agda", "azets", "visma", "tooeasy", "hrm", "bpo", "netvisor", "bezala",
+    "finnair", "hertz", "malmö", "malmo", "helsingborg", "ljungby", "växjö", "vaxjo",
+    "båstad", "bastad", "ängelholm", "angelholm", "oslo", "stockholm", "gothenburg",
+    "göteborg", "copenhagen", "köpenhamn", "helsinki", "helsingfors", "porvoo",
+    "sweden", "norway", "finland", "denmark", "nordic", "nordics",
+}
+
+
+def _is_proper_word(word: str) -> bool:
+    w = word.strip("()[]\"'.,:;")
+    if not w:
+        return False
+    if sum(1 for ch in w if ch.isupper()) >= 2:
+        return True  # förkortning (HRM, PS, BPO) eller TooEasy
+    return w.lower() in _PROPER_NAMES
+
+
 def _lower_first(text: str) -> str:
-    """'Management meeting' -> 'management meeting'; 'HRM SE kick-off' oförändrat."""
+    """C59 - liten första bokstav bara när första ordet är ett vanligt ord.
+
+    'Board meeting at TooEasy' -> 'board meeting at TooEasy'
+    'Agda PS Partner Day'     -> oförändrat (egennamn)
+    'HRM SE kick-off'         -> oförändrat (förkortning)
+    Egennamn: förkortning (2+ versaler), känt namn, eller rubrik där nästa
+    ord också börjar med versal ('Agda PS', 'Partner Day')."""
     if not text:
         return text
-    first = text.split(" ", 1)[0]
-    if sum(1 for ch in first if ch.isupper()) >= 2:
-        return text  # förkortning (HRM, IT, CFO)
+    words = text.split()
+    first = words[0]
+    if not first[:1].isupper():
+        return text
+    if _is_proper_word(first):
+        return text
+    nxt = words[1] if len(words) > 1 else ""
+    if nxt[:1].isupper():
+        return text  # 'Agda PS', 'Customer Day X' - behåll stavningen
     return text[0].lower() + text[1:]
 
 

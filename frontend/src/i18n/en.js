@@ -1060,7 +1060,7 @@ export default {
           saveFailed: 'Could not save the choice',
         },
         cardLine: 'Card payment without receipt',
-        kind: { flight: 'Flight', hotel: 'Hotel', parking: 'HEL parking', local: 'Local transport' },
+        kind: { flight: 'Flight', hotel: 'Hotel', parking: 'HEL parking', local: 'Local transport', car_rental: 'Rental car' },
         status: {
           found: 'Found', missing: 'Missing', not_applicable: 'N/A',
           optional: 'Optional', receipt_not_available: 'No receipt exists',
