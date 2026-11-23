@@ -1068,7 +1068,7 @@ export default {
           saveFailed: 'Kunde inte spara valet',
         },
         cardLine: 'Kortbetalning utan kvitto',
-        kind: { flight: 'Flyg', hotel: 'Hotell', parking: 'Parkering HEL', local: 'Lokaltransport' },
+        kind: { flight: 'Flyg', hotel: 'Hotell', parking: 'Parkering HEL', local: 'Lokaltransport', car_rental: 'Hyrbil' },
         status: {
           found: 'Hittat', missing: 'Saknas', not_applicable: 'Ej aktuellt',
           optional: 'Valfritt', receipt_not_available: 'Kvitto finns ej',

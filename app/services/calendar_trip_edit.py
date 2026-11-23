@@ -25,6 +25,7 @@ from app.services.trip_meals import meals_included
 from app.services.trip_english import (
     country_name,
     meals_note,
+    meals_text_sv,
     non_english_warnings,
 )
 
@@ -258,6 +259,10 @@ def list_trips(
                 {k: b[k] for k in ("booking_ref", "vendor", "amount", "currency")} for b in cb]
         day_rows = _days(db, t)
         row["free_meals"] = sum(d.free_meals or 0 for d in day_rows)
+        # C59 - måltider per dag (svenska), inte en summa över dagarna.
+        row["meals_text_sv"] = meals_text_sv(
+            (d.day_date.isoformat(), d.free_meals, d.free_meal_sources, d.country or t.country)
+            for d in day_rows)
         out.append(row)
     if flagged_only:
         out = [t for t in out if t["flags"]]
@@ -327,6 +332,12 @@ def trip_detail(db: Session, trip: CalendarTrip) -> dict:
         "flight_arrival": _times(trip.end_at),
         # C55 - Netvisor-texten (beskrivning = linedescription), utan måltider.
         **_netvisor_text(trip, day_rows),
+        # C59 - samma sak på svenska, per dag ('gratis lunch 13 apr, 14 apr').
+        "meals_text_sv": meals_text_sv(
+            (d.day_date.isoformat(), d.free_meals, d.free_meal_sources,
+             d.country or trip_country or trip.country)
+            for d in day_rows
+        ),
         # Måltider bara i botens egen vy - exporteras aldrig till Netvisor.
         "meals_note": meals_note(
             (d.day_date.isoformat(), d.free_meals, d.free_meal_sources,
