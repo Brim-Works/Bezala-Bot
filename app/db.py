@@ -333,6 +333,19 @@ def _apply_schema_migrations() -> None:
                 except Exception:
                     logger.exception("Kunde inte lägga till kolumn %s", name)
 
+    # C54 - varför km saknas på en delsträcka.
+    if "trip_legs" in tables:
+        existing = {col["name"] for col in insp.get_columns("trip_legs")}
+        with engine.begin() as conn:
+            for name, col_type in {"km_reason": "VARCHAR(32)"}.items():
+                if name in existing:
+                    continue
+                try:
+                    conn.execute(text(f"ALTER TABLE trip_legs ADD COLUMN {name} {col_type}"))
+                    logger.info("Lade till kolumn trip_legs.%s", name)
+                except Exception:
+                    logger.exception("Kunde inte lägga till kolumn %s", name)
+
     with engine.begin() as conn:
         for index_name, table_name, column_name in _INDEXES:
             if table_name not in tables:

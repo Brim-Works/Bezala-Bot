@@ -948,9 +948,12 @@ class TripLeg(Base):
     is_estimate = Column(Boolean, nullable=False, default=False)
     note = Column(Text, nullable=True)
     flight_no = Column(String(16), nullable=True)
-    # Kort/medel/lång — tomt tills Riikka svarat.
+    # C54 - short (<700) / medium / long (>=3700) per flygsträcka.
     flight_category = Column(String(16), nullable=True)
     receipt_message_id = Column(String(255), nullable=True)
+    # C54 - varför km saknas: no_route_in_table | no_receipt | direction_unknown |
+    # no_km_on_receipt | airport_unknown (NULL när km finns).
+    km_reason = Column(String(32), nullable=True)
     set_by = Column(String(10), nullable=False, default="auto")
     excluded = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime, server_default=func.now(), nullable=False)

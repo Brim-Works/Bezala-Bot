@@ -260,6 +260,7 @@ def _trip_items(db: Session) -> list[dict]:
         meals = sum(d.free_meals or 0 for d in db.query(CalendarTripDay)
                     .filter(CalendarTripDay.trip_id == t.id).all())
         text = _trip_completeness_text(comp) if comp else None
+        km = _trip_km(db, t)
         out.append({
             "id": f"trip:{t.id}",
             "kind": "trip",
@@ -274,8 +275,32 @@ def _trip_items(db: Session) -> list[dict]:
             "completeness": text,
             "completeness_detail": comp or None,
             "free_meals": meals,
+            # C54 - km kompakt på resekortet (samma siffror som Resor-vyn).
+            "km": km,
         })
     return out
+
+
+def _trip_km(db: Session, trip) -> dict | None:
+    """Admin-km för resekortet: summa km (utan tjänstebil), saknade sträckor,
+    uppskattning ja/nej. Får aldrig fälla kön."""
+    try:
+        from app.services import trip_legs
+
+        a = trip_legs.trip_legs_view(db, trip)["admin"]
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("[c54-queue] km för resa %s misslyckades", getattr(trip, "id", None))
+        return None
+    keys = [k for k in trip_legs.ADMIN_KEYS if k != "hotel_nights"]
+    return {
+        "km": round(sum(a[k] for k in keys), 1),
+        "flight_km": round(a["short_flights_km"] + a["medium_flights_km"] + a["long_flights_km"], 1),
+        "ground_km": round(a["train_km"] + a["bus_km"] + a["non_company_car_km"], 1),
+        "hotel_nights": a["hotel_nights"],
+        "legs_missing_km": a["legs_missing_km"],
+        "is_estimate": any(a["estimate"][k] for k in keys),
+    }
 
 
 def _subscription_items(db: Session) -> list[dict]:

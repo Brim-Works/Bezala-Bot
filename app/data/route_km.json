@@ -1,0 +1,20 @@
+{
+  "note": "C54 route table for ground transport. km = rail/road distance between the two places. symmetric = same km both ways. Values from this table are always marked is_estimate=true and source=route_table. A km value on the receipt always wins over the table. Edit a single leg with update_trip_leg or in the Trips view.",
+  "routes": [
+    {"operator": "flytoget", "mode": "train", "from": "Oslo Airport", "to": "Skoyen", "km": 52.4, "symmetric": true,
+     "reference": "Mikko 2026-11-22: rail distance, Gardermoen station table (Oslo Airport 51.85 km, Skoyen 52.43 km)"},
+    {"operator": "flytoget", "mode": "train", "from": "Oslo Airport", "to": "Oslo S", "km": 48.1, "symmetric": true,
+     "reference": "Mikko 2026-11-22: rail distance"},
+    {"operator": "flytoget", "mode": "train", "from": "Oslo Airport", "to": "Nationaltheatret", "km": 49.5, "symmetric": true,
+     "reference": "Mikko 2026-11-22: rail distance"},
+    {"operator": "flytoget", "mode": "train", "from": "Oslo Airport", "to": "Lysaker", "km": 55.1, "symmetric": true,
+     "reference": "Mikko 2026-11-22: rail distance"},
+    {"operator": "arlanda_express", "mode": "train", "from": "Arlanda Airport", "to": "Stockholm C", "km": 39.0, "symmetric": true,
+     "reference": "Wikipedia 'Arlanda Express': line length 39 km; route map Stockholm Central 0.0, Arlanda South 38.5, Arlanda North 39.0"},
+    {"operator": "company_car", "mode": "car_phev", "from": "Porvoo", "to": "HEL", "km": 48.0, "symmetric": true,
+     "reference": "C53: company car home - Helsinki Airport, env TRIP_CAR_HOME_KM_ONE_WAY (default 48). Info only, not in the Admin report."}
+  ],
+  "routes_without_km": [
+    "Skanetrafiken / Oresundstag routes seen on Mikko's 2026 receipts (no km on the receipts, so no km here): Copenhagen Airport - Helsingborg C, Copenhagen Airport - Malmo C, Copenhagen Airport - Angelholm, Copenhagen Airport - Bastad, Alvesta - Copenhagen Airport. Add the km with update_trip_leg when known."
+  ]
+}

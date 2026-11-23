@@ -130,7 +130,7 @@ class Receipt:
 
     __slots__ = ("message_id", "vendor", "amount", "currency", "day", "text",
                  "kinds", "drive_link", "bill_line_id", "kind", "segments",
-                 "parking_entry_at", "parking_exit_at", "duplicate_of")
+                 "parking_entry_at", "parking_exit_at", "duplicate_of", "route_fields")
 
     def __init__(self, m: ProcessedMessage):
         self.message_id = m.message_id
@@ -156,6 +156,8 @@ class Receipt:
                              m.ai_description_en, m.bezala_payment_merchant) if v
         ).lower()
         self.kinds = classify_receipt(m.category, self.text)
+        # C54 - fält som kan ge sträckans riktning (filnamn först).
+        self.route_fields = [m.file_name, m.subject, m.ai_description_en, m.summary]
 
     def as_link(self) -> dict:
         return {

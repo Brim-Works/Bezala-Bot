@@ -18,3 +18,14 @@
 .nv-table { width: 100%; border-collapse: collapse; font-size: 13px; }
 .nv-table th, .nv-table td { text-align: left; padding: 6px 8px; vertical-align: top;
   border-bottom: 1px solid var(--border, rgba(127,127,127,.2)); }
+
+/* C54 - redigerbara delsträckor i Resor-vyn */
+.nv-input {
+  font: inherit;
+  padding: 2px 4px;
+  border: 1px solid var(--border, #ccc);
+  border-radius: 4px;
+  background: transparent;
+  color: inherit;
+  max-width: 100%;
+}

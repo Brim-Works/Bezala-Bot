@@ -79,7 +79,8 @@ def test_hel_osl_round_trip_is_two_legs_of_763(db):  # noqa: F811
     flights = [leg for leg in legs if leg["mode"] == "flight"]
     assert [f["km"] for f in flights] == [763, 763]
     assert [f["flight_no"] for f in flights] == ["AY 911", "AY 918"]
-    assert all(f["source"] == "airport_table" and f["flight_category"] is None for f in flights)
+    assert all(f["source"] == "airport_table" and f["flight_category"] == "medium"
+               for f in flights)
     assert flights[1]["leg_date"] == date(2026, 4, 14)
 
 
@@ -244,7 +245,9 @@ def test_emissions_summary_and_export(db):  # noqa: F811
     assert s["trips"] == 1
     assert s["by_mode"]["flight"]["km"] == 1526
     assert s["by_mode"]["car_phev"]["kwh"] == 7.92 and s["by_mode"]["car_phev"]["litres"] == 3.36
-    assert s["total_km"] == 1526 + 96
+    # C54: tjänstebilen ingår inte i Admins summa (bara info).
+    assert s["total_km"] == 1526
+    assert s["company_car_info_only"]["km"] == 96
     assert s["per_trip"][0]["by_mode"]["car_phev"] == 96
     assert "CO2e" in s["note"]
     rows = tl.export_rows(db, 2026)

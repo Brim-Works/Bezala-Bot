@@ -57,6 +57,7 @@ class LegPatch(BaseModel):
     note: str | None = None
     flight_category: str | None = None
     excluded: bool | None = None
+    clear_km: bool = False
 
 
 @router.patch("/legs/{leg_id}")
@@ -66,20 +67,35 @@ def patch_leg(leg_id: int, payload: LegPatch, db: Session = Depends(get_db)):
     return _guard(trip_legs.update_trip_leg, db, leg_id, **data)
 
 
+_MODES = ("detail", "admin", "route_table")
+
+
+def _mode(mode: str) -> str:
+    if mode not in _MODES:
+        raise HTTPException(status_code=400, detail=f"mode must be one of {list(_MODES)}")
+    return mode
+
+
 @router.get("/export.csv")
-def export_csv(year: int = 2026, db: Session = Depends(get_db)):
+def export_csv(year: int = 2026, mode: str = "detail", db: Session = Depends(get_db)):
+    mode = _mode(mode)
+    name = f"trip-legs-{year}" if mode == "detail" else f"trip-{mode.replace('_', '-')}-{year}"
     return Response(
-        content=trip_legs.export_csv(db, year), media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": f'attachment; filename="trip-legs-{year}.csv"'},
+        content=trip_legs.export_csv(db, year, mode), media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{name}.csv"'},
     )
 
 
 @router.get("/export.json")
-def export_json(year: int = 2026, db: Session = Depends(get_db)):
-    rows = trip_legs.export_rows(db, year)
+def export_json(year: int = 2026, mode: str = "detail", db: Session = Depends(get_db)):
+    mode = _mode(mode)
+    rows = (trip_legs.admin_export_rows(db, year) if mode == "admin"
+            else trip_legs.route_table_rows() if mode == "route_table"
+            else trip_legs.export_rows(db, year))
+    name = f"trip-legs-{year}" if mode == "detail" else f"trip-{mode.replace('_', '-')}-{year}"
     return Response(
-        content=json.dumps({"year": year, "count": len(rows), "rows": rows},
+        content=json.dumps({"year": year, "mode": mode, "count": len(rows), "rows": rows},
                            ensure_ascii=False, indent=2),
         media_type="application/json",
-        headers={"Content-Disposition": f'attachment; filename="trip-legs-{year}.json"'},
+        headers={"Content-Disposition": f'attachment; filename="{name}.json"'},
     )
