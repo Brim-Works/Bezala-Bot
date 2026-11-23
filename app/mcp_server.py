@@ -75,7 +75,10 @@ INSTRUCTIONS = (
     "C53 emissions data: get_trip shows 'legs' (km per leg and mode); "
     "get_emissions_summary(year) sums km/kWh/litres; update_trip_leg/add_trip_leg "
     "correct legs; export_trip_legs gives CSV/JSON. km_missing = ask Mikko, never guess. "
-    "No kg CO2e - Admin applies own factors."
+    "No kg CO2e - Admin applies own factors. C54: Admin's seven rows (short/medium/long "
+    "flights km, train, bus, non-company car km, hotel nights); company car is info only; "
+    "ground km from a route table (route_table, is_estimate) - receipt km and Mikko's "
+    "manual km always win; export_trip_legs(mode='admin'|'detail'|'route_table')."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -551,10 +554,15 @@ async def list_subscriptions() -> dict:
 
 @mcp.tool()
 async def get_emissions_summary(year: int = 2026) -> dict:
-    """C53 - activity data for emissions reporting: total km per mode (flight,
-    train, taxi, bus, car_phev), kWh and litres, per trip and for the year, plus
-    how many legs miss km. No kg CO2e - Admin applies own factors. Car legs
-    (home - HEL in the company plug-in hybrid) are estimates (source=assumption)."""
+    """C53/C54 - Admin's seven report rows for the year (`admin`) and per trip
+    (`per_trip[].admin`): short (<700 km) / medium (700-3700) / long (3700+)
+    flights km per flight leg, train km, bus km, non-company car km (taxi, own
+    car) and hotel nights; `estimate` marks rows that contain route-table or
+    assumed values, `missing` counts legs without km (`per_trip[].missing_legs`
+    with reason). Company car (home - HEL, plug-in hybrid) is separate in
+    `company_car_info_only` and NOT in Admin's totals. Also by_mode, kWh/litres,
+    trips_rejected_not_counted. No kg CO2e - Admin applies own factors.
+    Same numbers as the Trips view and export_trip_legs."""
     from app.services import trip_legs
 
     return await _run(trip_legs.get_emissions_summary, year)
@@ -578,9 +586,11 @@ async def update_trip_leg(
     excluded: bool | None = None,
 ) -> dict:
     """C53 - correct one leg (leg_id from get_trip 'legs'). Only Bezala Bot's own
-    table changes. mode: flight|train|taxi|bus|car_phev; energy_type:
-    jet_fuel|electricity|petrol|none; energy_unit: kWh|l; source:
-    receipt|airport_table|assumption|manual. Setting km on a car_phev leg
+    table changes. mode: flight|train|taxi|bus|car_phev|car_private (own car);
+    energy_type: jet_fuel|electricity|petrol|none; energy_unit: kWh|l; source:
+    receipt|airport_table|route_table|assumption|manual. flight_category:
+    short|medium|long or '' (= from km). A km you set becomes source=manual and
+    is never overwritten. Setting km on a car_phev leg
     recalculates kWh/litres unless energy_amount is given. excluded=true drops
     the leg (e.g. Mikko got a lift instead of driving). Edited legs are locked
     (never recalculated). Ask Mikko for the value - never guess."""
@@ -618,18 +628,29 @@ async def add_trip_leg(
 
 
 @mcp.tool()
-async def export_trip_legs(year: int = 2026, format: str = "json") -> dict:
-    """C53 - export one row per leg for Admin (trip_id, date, mode, from, to, km,
-    energy, estimate yes/no, source). format: 'json' (rows) or 'csv' (text)."""
+async def export_trip_legs(year: int = 2026, format: str = "json",
+                           mode: str = "detail") -> dict:
+    """C53/C54 - export for Admin. mode: 'detail' = one row per leg (trip_id, date,
+    mode, from, to, km, km_reason, energy, estimate yes/no, source, admin_category,
+    receipt + Bezala id); 'admin' = one row per trip and year with exactly Admin's
+    seven columns (Short/Medium/Long flights km, Train km, Bus km, Non-company car
+    km, Hotel nights) plus a Total row - company car NOT included; 'route_table' =
+    the km route table (operator, from, to, km, symmetric, reference).
+    format: 'json' (rows) or 'csv' (text). English and plain '-' only."""
     from app.services import trip_legs
 
-    def work(db, y, fmt):
+    def work(db, y, fmt, md):
+        if md not in ("detail", "admin", "route_table"):
+            return {"error": "mode must be detail, admin or route_table"}
         if fmt == "csv":
-            return {"year": y, "format": "csv", "csv": trip_legs.export_csv(db, y)}
-        rows = trip_legs.export_rows(db, y)
-        return {"year": y, "format": "json", "count": len(rows), "rows": rows}
+            return {"year": y, "format": "csv", "mode": md,
+                    "csv": trip_legs.export_csv(db, y, md)}
+        rows = (trip_legs.admin_export_rows(db, y) if md == "admin"
+                else trip_legs.route_table_rows() if md == "route_table"
+                else trip_legs.export_rows(db, y))
+        return {"year": y, "format": "json", "mode": md, "count": len(rows), "rows": rows}
 
-    return await _run(work, year, (format or "json").lower())
+    return await _run(work, year, (format or "json").lower(), (mode or "detail").lower())
 
 
 @mcp.tool()

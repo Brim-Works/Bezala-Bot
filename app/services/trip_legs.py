@@ -29,10 +29,11 @@ from app.services.calendar_trip_edit import TripEditError
 
 HELSINKI = ZoneInfo("Europe/Helsinki")
 
-MODES = ("flight", "train", "taxi", "bus", "car_phev")
+# car_private = egen bil (inte tjänstebil) -> Admin "Non-company car km".
+MODES = ("flight", "train", "taxi", "bus", "car_phev", "car_private")
 ENERGY_TYPES = ("jet_fuel", "electricity", "petrol", "none")
 ENERGY_UNITS = ("kWh", "l")
-SOURCES = ("receipt", "airport_table", "assumption", "manual")
+SOURCES = ("receipt", "airport_table", "route_table", "assumption", "manual")
 
 # ---------------------------------------------------------------- flyg
 
@@ -251,7 +252,7 @@ def _trip_flights(db: Session, trip: CalendarTrip) -> list[dict]:
             "source_note": "calendar",
         })
     if out:
-        return out
+        return _fill_airports(db, trip, out)
     row = (db.query(TripExpectation)
            .filter(TripExpectation.trip_id == trip.id, TripExpectation.kind == "flight")
            .first())
@@ -275,6 +276,54 @@ def _trip_flights(db: Session, trip: CalendarTrip) -> list[dict]:
             "arr_date": d, "source_note": "flight receipt",
         })
     return out
+
+
+def _flight_receipt(db: Session, trip: CalendarTrip) -> ProcessedMessage | None:
+    """Flygkvittot för resan - e-ticket, aldrig bokningsbekräftelsen (C53 Del 0b)."""
+    row = (db.query(TripExpectation)
+           .filter(TripExpectation.trip_id == trip.id, TripExpectation.kind == "flight")
+           .first())
+    if row is None or not row.message_id:
+        return None
+    m = db.query(ProcessedMessage).filter(ProcessedMessage.message_id == row.message_id).first()
+    if m is None:
+        return None
+    try:
+        from app.services.c53_receipts import original_of
+
+        orig = original_of(db, m)
+    except Exception:  # noqa: BLE001
+        orig = None
+    return orig or m
+
+
+def _fill_airports(db: Session, trip: CalendarTrip, flights: list[dict]) -> list[dict]:
+    """C54 - kalenderflyg utan avgångs-/ankomstflygplats: 1) flygkvittots
+    segment med samma flightnummer, 2) resans kedja (föregående flygs ankomst,
+    tur och retur till hemmaflygplatsen). Kedjan märks 'inferred' (uppskattning)."""
+    if all(f["origin"] and f["dest"] for f in flights):
+        return flights
+    seg_by_no: dict[str, dict] = {}
+    m = _flight_receipt(db, trip)
+    for s in (getattr(m, "flight_segments", None) or []) if m is not None else []:
+        if isinstance(s, dict) and s.get("flight_no"):
+            seg_by_no[str(s["flight_no"]).replace(" ", "").upper()] = s
+    for f in flights:
+        s = seg_by_no.get((f.get("flight_no") or "").replace(" ", "").upper())
+        if s:
+            f["origin"] = f["origin"] or (s.get("origin") or "").upper() or None
+            f["dest"] = f["dest"] or (s.get("dest") or "").upper() or None
+    homes = _home()
+    for i, f in enumerate(flights):
+        if not f["origin"]:
+            if i > 0 and flights[i - 1]["dest"]:
+                f["origin"], f["inferred"] = flights[i - 1]["dest"], "origin"
+            elif (i == 0 and len(flights) > 1 and flights[-1]["dest"] in homes
+                  and f["dest"] and f["dest"] not in homes):
+                f["origin"], f["inferred"] = flights[-1]["dest"], "origin"
+        if not f["dest"] and i + 1 < len(flights) and flights[i + 1]["origin"]:
+            f["dest"], f["inferred"] = flights[i + 1]["origin"], "destination"
+    return flights
 
 
 def _has_moovy_parking(db: Session, trip: CalendarTrip) -> bool:
@@ -309,6 +358,163 @@ def _local_receipts(db: Session, trip: CalendarTrip, all_trips: list[CalendarTri
     return out
 
 
+# ---------------------------------------------------------------- C54 Admin-kategorier
+
+
+def flight_thresholds() -> tuple[float, float]:
+    """(short < x, long >= y) km per flygsträcka. Env med default 700/3700."""
+    return (_env_float("FLIGHT_SHORT_MAX_KM", 700.0), _env_float("FLIGHT_LONG_MIN_KM", 3700.0))
+
+
+def flight_category(km: float | None) -> str | None:
+    if km is None:
+        return None
+    short_max, long_min = flight_thresholds()
+    if km < short_max:
+        return "short"
+    if km >= long_min:
+        return "long"
+    return "medium"
+
+
+# ---------------------------------------------------------------- C54 tåg/buss med rutttabell
+
+
+def _context_direction(day: date | None, airport: str, city: str, flights: list[dict],
+                       trip: CalendarTrip) -> tuple[str | None, str | None]:
+    """Riktning ur resans sammanhang: ankomstdagen = flygplats -> stad,
+    hemresedagen = stad -> flygplats. Samma dag (dagsresa) = okänt."""
+    out_day = (flights[0].get("arr_date") or flights[0].get("date")) if flights else trip.start_date
+    back_day = flights[-1].get("date") if len(flights) > 1 else trip.end_date
+    if day is None or out_day == back_day:
+        return None, None
+    if day == out_day:
+        return airport, city
+    if day == back_day:
+        return city, airport
+    return None, None
+
+
+def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> list[dict]:
+    """Ett kvitto -> 1 delsträcka (2 vid tur och retur) med från/till och km."""
+    from app.data import route_km as rk
+
+    fields = list(getattr(r, "route_fields", None) or []) or [r.text]
+    operator = rk.operator_of(" ".join(str(f) for f in fields if f) + " " + (r.vendor or ""))
+    frm, to, seen = rk.direction_from(fields)
+    direction_known = bool(frm and to)
+    estimate_dir = False
+    reason = None
+    round_trip = any(rk.is_round_trip(f) for f in fields if f)
+    if not direction_known:
+        ends = list(seen)
+        for p in rk.OPERATOR_FIXED.get(operator or "", ()):
+            if p not in ends:
+                ends.append(p)
+        if len(ends) == 2:
+            airport = next((p for p in ends if p in rk.AIRPORTS), None)
+            city = next((p for p in ends if p != airport), None)
+            if airport and city:
+                if round_trip:
+                    frm, to = airport, city
+                else:
+                    frm, to = _context_direction(r.day, airport, city, flights, trip)
+                    estimate_dir = bool(frm)
+                    if not frm:
+                        reason = "direction_unknown"
+                        frm, to = None, None
+            else:
+                reason = "direction_unknown"
+        else:
+            reason = "direction_unknown" if len(ends) == 1 else "no_route_in_table"
+    km_receipt = parse_km(r.text)
+    vendor = r.vendor or "Receipt"
+    if km_receipt is not None:
+        km, source, is_est = km_receipt, "receipt", estimate_dir
+        note = f"{vendor}; km from receipt"
+    else:
+        hit = rk.lookup_km(frm, to, operator)
+        if hit is not None:
+            km, source, is_est = hit["km"], "route_table", True
+            note = f"{vendor}; route table {hit['from']} - {hit['to']} {fmt_km(hit['km'])} km"
+        else:
+            km, source, is_est = None, "receipt", estimate_dir
+            reason = reason or "no_route_in_table"
+            note = f"{vendor} - km not on receipt"
+    if estimate_dir:
+        note += "; direction from the trip (flight arrival/departure day)"
+    base = {
+        "leg_key": f"receipt:{r.message_id}", "leg_date": r.day, "mode": mode,
+        "from_place": frm, "to_place": to, "km": km,
+        "energy_type": "none", "energy_amount": None, "energy_unit": None,
+        "source": source, "is_estimate": is_est, "note": note,
+        "receipt_message_id": r.message_id, "km_reason": None if km is not None else reason,
+        "_dedupe": (fold_vendor(r.vendor), r.day, r.amount, frm, to)
+        if direction_known and not round_trip else None,
+        "_summary": "journeys made" in (r.text or "") or "receipts from" in (r.text or ""),
+        "_coupled": bool(getattr(r, "bill_line_id", None)),
+    }
+    if not round_trip or not (frm and to):
+        return [base]
+    out_day = (flights[0].get("arr_date") or flights[0].get("date")) if flights else r.day
+    back_day = flights[-1].get("date") if len(flights) > 1 else trip.end_date
+    first = dict(base, leg_date=max(r.day, out_day) if r.day and out_day else r.day,
+                 note=base["note"] + "; round trip ticket, leg 1 of 2")
+    second = dict(base, leg_key=f"receipt:{r.message_id}:return", from_place=to, to_place=frm,
+                  leg_date=back_day or r.day, note=base["note"] + "; round trip ticket, leg 2 of 2")
+    first["_dedupe"] = ("rt", fold_vendor(r.vendor), r.day, r.amount)
+    second["_dedupe"] = ("rt2", fold_vendor(r.vendor), r.day, r.amount)
+    return [first, second]
+
+
+def fold_vendor(v: str | None) -> str:
+    from app.data.route_km import fold
+
+    return re.sub(r"\s+", " ", fold(v)).strip()
+
+
+def ground_legs(trip: CalendarTrip, flights: list[dict], receipts: list) -> list[dict]:
+    """Tåg/buss/taxi ur kvitton. Två kvitton för samma köp (samma leverantör,
+    dag, belopp och riktning) blir EN delsträcka; den andra visas som
+    utesluten dubblett. Olika riktningar = olika resor (behålls)."""
+    legs: list[dict] = []
+    for r in receipts:
+        mode = receipt_mode(None, r.text)
+        if mode in ("train", "bus"):
+            legs += _resolve_ground(r, mode, trip, flights)
+            continue
+        km = parse_km(r.text)
+        legs.append({
+            "leg_key": f"receipt:{r.message_id}", "leg_date": r.day, "mode": mode,
+            "from_place": None, "to_place": None, "km": km,
+            "energy_type": "none", "energy_amount": None, "energy_unit": None,
+            "source": "receipt", "is_estimate": False,
+            "note": f"{r.vendor or 'Receipt'}" + ("" if km is not None else " - km not on receipt"),
+            "receipt_message_id": r.message_id,
+            "km_reason": None if km is not None else "no_km_on_receipt",
+        })
+    groups: dict = {}
+    for leg in legs:
+        key = leg.pop("_dedupe", None)
+        if key is not None:
+            groups.setdefault(key, []).append(leg)
+    for group in groups.values():
+        if len(group) < 2:
+            continue
+        group.sort(key=lambda x: (not x.get("_coupled"), bool(x.get("_summary")),
+                                  str(x["receipt_message_id"])))
+        keep = group[0]
+        for dup in group[1:]:
+            dup["excluded"] = True
+            dup["note"] = (f"{dup['note']}; duplicate of receipt {keep['receipt_message_id']} "
+                           "(same vendor, day, amount and route) - not counted")
+    for leg in legs:
+        leg.pop("_summary", None)
+        leg.pop("_coupled", None)
+        leg.setdefault("excluded", False)
+    return legs
+
+
 # ---------------------------------------------------------------- bygg
 
 
@@ -321,17 +527,25 @@ def build_auto_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTri
     legs: list[dict] = []
 
     flights = _trip_flights(db, trip)
+    flight_m = _flight_receipt(db, trip) if flights else None
+    flight_mid = flight_m.message_id if flight_m is not None else None
     for i, f in enumerate(flights):
         km, note = flight_km(f["origin"], f["dest"])
         fno = (f.get("flight_no") or "").replace(" ", "") or None
+        inferred = f.get("inferred")
+        if inferred:
+            note += f"; {inferred} airport inferred from the trip (estimate)"
         legs.append({
             "leg_key": f"flight:{i}:{fno or '-'}:{f['origin'] or '?'}-{f['dest'] or '?'}",
             "leg_date": f["date"], "mode": "flight",
             "from_place": f["origin"], "to_place": f["dest"], "km": km,
             "energy_type": "jet_fuel", "energy_amount": None, "energy_unit": None,
-            "source": "airport_table", "is_estimate": False,
+            "source": "assumption" if inferred else "airport_table",
+            "is_estimate": bool(inferred),
             "note": f"{f.get('flight_no') or 'Flight'} {f['origin'] or '?'}-{f['dest'] or '?'}; {note}",
-            "flight_no": f.get("flight_no"), "flight_category": None,
+            "flight_no": f.get("flight_no"), "flight_category": flight_category(km),
+            "receipt_message_id": flight_mid,
+            "km_reason": None if km is not None else "airport_unknown",
         })
 
     starts_home = bool(flights) and flights[0]["origin"] in homes
@@ -342,22 +556,12 @@ def build_auto_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTri
             "leg_key": "flight:return_missing", "leg_date": trip.end_date, "mode": "flight",
             "from_place": flights[-1]["dest"], "to_place": None, "km": None,
             "energy_type": "jet_fuel", "energy_amount": None, "energy_unit": None,
-            "source": "manual", "is_estimate": False,
+            "source": "airport_table", "is_estimate": False,
             "note": "Return flight not in the calendar - add km manually",
-            "flight_no": None, "flight_category": None,
+            "flight_no": None, "flight_category": None, "km_reason": "no_receipt",
         })
 
-    for r in _local_receipts(db, trip, all_trips, receipts):
-        mode = receipt_mode(None, r.text)
-        km = parse_km(r.text)
-        legs.append({
-            "leg_key": f"receipt:{r.message_id}", "leg_date": r.day, "mode": mode,
-            "from_place": None, "to_place": None, "km": km,
-            "energy_type": "none", "energy_amount": None, "energy_unit": None,
-            "source": "receipt", "is_estimate": False,
-            "note": f"{r.vendor or 'Receipt'}" + ("" if km is not None else " - km not on receipt"),
-            "receipt_message_id": r.message_id,
-        })
+    legs += ground_legs(trip, flights, _local_receipts(db, trip, all_trips, receipts))
 
     if starts_home and ends_home and _has_moovy_parking(db, trip):
         cfg = car_settings()
@@ -374,12 +578,18 @@ def build_auto_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTri
 
 _FIELDS = ("seq", "leg_date", "mode", "from_place", "to_place", "km", "energy_type",
            "energy_amount", "energy_unit", "source", "is_estimate", "note", "flight_no",
-           "flight_category", "receipt_message_id")
+           "flight_category", "receipt_message_id", "km_reason", "excluded")
+
+
+def _locked(row: TripLeg) -> bool:
+    """Mikkos rader rörs aldrig: set_by='user' eller km han skrivit in (manual)."""
+    return row.set_by == "user" or (row.source == "manual" and row.km is not None)
 
 
 def sync_trip_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip] | None = None,
                    receipts=None) -> tuple[list[TripLeg], list[str]]:
-    """Räkna om auto-raderna och spara. Mikkos rader (set_by='user') rörs inte."""
+    """Räkna om auto-raderna och spara. Mikkos rader (set_by='user' eller
+    source='manual' med km) skrivs aldrig över."""
     auto, flags = build_auto_legs(db, trip, all_trips, receipts)
     existing = {r.leg_key: r for r in db.query(TripLeg).filter(TripLeg.trip_id == trip.id).all()}
     keys = set()
@@ -390,12 +600,15 @@ def sync_trip_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip
             row = TripLeg(trip_id=trip.id, leg_key=leg["leg_key"], set_by="auto", excluded=False)
             db.add(row)
             existing[leg["leg_key"]] = row
-        if row.set_by == "user":
+        if _locked(row):
             continue
         for f in _FIELDS:
-            setattr(row, f, leg.get(f))
+            v = leg.get(f)
+            if f == "excluded":
+                v = bool(v)
+            setattr(row, f, v)
     for key, row in list(existing.items()):
-        if key not in keys and row.set_by != "user":
+        if key not in keys and not _locked(row):
             db.delete(row)
             existing.pop(key)
     db.commit()
@@ -408,8 +621,41 @@ def sync_trip_legs(db: Session, trip: CalendarTrip, all_trips: list[CalendarTrip
 # ---------------------------------------------------------------- vy
 
 
-def leg_dict(r: TripLeg) -> dict:
-    return {
+def flight_category_of_km(r) -> str | None:
+    return flight_category(r.km) if getattr(r, "mode", None) == "flight" else None
+
+
+ADMIN_KEYS = ("short_flights_km", "medium_flights_km", "long_flights_km", "train_km",
+              "bus_km", "non_company_car_km", "hotel_nights")
+ADMIN_LABELS = {
+    "short_flights_km": "Short flights km",
+    "medium_flights_km": "Medium flights km",
+    "long_flights_km": "Long flights km",
+    "train_km": "Train km",
+    "bus_km": "Bus km",
+    "non_company_car_km": "Non-company car km",
+    "hotel_nights": "Hotel nights",
+}
+
+
+def admin_category(r) -> str | None:
+    """Admins rad för en delsträcka. None = inte i Admins rapport
+    (tjänstebilen car_phev) eller flyg utan km (okänd kategori)."""
+    mode = r.mode
+    if mode == "flight":
+        cat = r.flight_category or flight_category(r.km)
+        return f"{cat}_flights_km" if cat else None
+    if mode == "train":
+        return "train_km"
+    if mode == "bus":
+        return "bus_km"
+    if mode in ("taxi", "car_private"):
+        return "non_company_car_km"
+    return None
+
+
+def leg_dict(r: TripLeg, receipt_info: dict | None = None) -> dict:
+    d = {
         "leg_id": r.id,
         "trip_id": r.trip_id,
         "date": r.leg_date.isoformat() if r.leg_date else None,
@@ -418,6 +664,7 @@ def leg_dict(r: TripLeg) -> dict:
         "to": r.to_place,
         "km": r.km,
         "km_missing": r.km is None,
+        "km_reason": getattr(r, "km_reason", None) if r.km is None else None,
         "energy_type": r.energy_type,
         "energy_amount": r.energy_amount,
         "energy_unit": r.energy_unit,
@@ -425,11 +672,37 @@ def leg_dict(r: TripLeg) -> dict:
         "is_estimate": bool(r.is_estimate),
         "note": r.note,
         "flight_no": r.flight_no,
-        "flight_category": r.flight_category,
+        "flight_category": r.flight_category or flight_category_of_km(r),
+        "admin_category": admin_category(r),
+        "company_car_info_only": r.mode == "car_phev",
         "receipt_message_id": r.receipt_message_id,
         "set_by": r.set_by,
         "excluded": bool(r.excluded),
     }
+    if receipt_info is not None:
+        d["receipt"] = receipt_info.get(r.receipt_message_id) if r.receipt_message_id else None
+    return d
+
+
+def receipt_infos(db: Session, rows: list[TripLeg]) -> dict:
+    """Kvitto + Bezala-utlägg bredvid varje delsträcka (bara läsning)."""
+    mids = {r.receipt_message_id for r in rows if r.receipt_message_id}
+    if not mids:
+        return {}
+    out = {}
+    for m in db.query(ProcessedMessage).filter(ProcessedMessage.message_id.in_(mids)).all():
+        out[m.message_id] = {
+            "receipt_id": m.id,
+            "message_id": m.message_id,
+            "vendor": m.vendor,
+            "amount": m.amount,
+            "currency": m.currency,
+            "date": m.receipt_date,
+            "file_name": m.file_name,
+            "drive_link": m.drive_link,
+            "bezala_transaction_id": m.bezala_transaction_id,
+        }
+    return out
 
 
 def _totals(rows: list[TripLeg]) -> dict:
@@ -458,12 +731,109 @@ def _totals(rows: list[TripLeg]) -> dict:
     return {"km": round(total_km, 1), "by_mode": by_mode}
 
 
-def trip_legs_view(db: Session, trip: CalendarTrip, all_trips=None, receipts=None) -> dict:
-    rows, flags = sync_trip_legs(db, trip, all_trips, receipts)
+def hotel_nights(db: Session, trip: CalendarTrip, receipts=None) -> dict:
+    """Nätter per resa - samma logik som get_trip_checklist (en rad per natt)."""
+    from app.services.trip_completeness import _days, _hotel_slots, load_receipts
+
+    receipts = receipts if receipts is not None else load_receipts(db)
+    slots = [s for s in _hotel_slots(trip, _days(db, trip), receipts)
+             if s.get("status") in ("found", "missing")]
+    found = sum(1 for s in slots if s["status"] == "found")
+    return {"nights": len(slots), "with_receipt": found,
+            "is_estimate": found < len(slots),
+            "nights_without_receipt": [s["slot"] for s in slots if s["status"] == "missing"]}
+
+
+def admin_totals(rows: list[TripLeg], nights: dict | None = None) -> dict:
+    """De sju Admin-raderna för en mängd delsträckor (+ hotellnätter).
+    EN funktion för Resor-vyn, get_emissions_summary och export_trip_legs."""
+    values = {k: 0.0 for k in ADMIN_KEYS}
+    estimate = {k: False for k in ADMIN_KEYS}
+    missing = {"flights": 0, "train_km": 0, "bus_km": 0, "non_company_car_km": 0}
+    car = {"km": 0.0, "kwh": 0.0, "litres": 0.0, "legs": 0}
+    for r in rows:
+        if r.excluded:
+            continue
+        if r.mode == "car_phev":
+            car["legs"] += 1
+            car["km"] += r.km or 0
+            if r.energy_unit == "kWh":
+                car["kwh"] += r.energy_amount or 0
+            elif r.energy_unit == "l":
+                car["litres"] += r.energy_amount or 0
+            continue
+        cat = admin_category(r)
+        if r.km is None:
+            key = "flights" if r.mode == "flight" else cat
+            if key in missing:
+                missing[key] += 1
+            continue
+        if cat is None:
+            continue
+        values[cat] += r.km
+        if r.is_estimate:
+            estimate[cat] = True
+    if nights is not None:
+        values["hotel_nights"] = nights["nights"]
+        estimate["hotel_nights"] = bool(nights.get("is_estimate"))
+    out = {k: (int(values[k]) if k == "hotel_nights" else round(values[k], 1))
+           for k in ADMIN_KEYS}
     return {
-        "legs": [leg_dict(r) for r in rows],
+        **out,
+        "estimate": estimate,
+        "missing": missing,
+        "legs_missing_km": sum(missing.values()),
+        "company_car_info_only": {
+            "km": round(car["km"], 1), "kwh": round(car["kwh"], 2),
+            "litres": round(car["litres"], 2), "legs": car["legs"],
+            "note": "Company car (info only, not in Admin report)",
+        },
+    }
+
+
+def sum_admin(parts: list[dict]) -> dict:
+    """Årssumma av flera resors admin_totals."""
+    total = {k: 0 for k in ADMIN_KEYS}
+    estimate = {k: False for k in ADMIN_KEYS}
+    missing = {"flights": 0, "train_km": 0, "bus_km": 0, "non_company_car_km": 0}
+    car = {"km": 0.0, "kwh": 0.0, "litres": 0.0, "legs": 0}
+    for p in parts:
+        for k in ADMIN_KEYS:
+            total[k] += p[k]
+            estimate[k] = estimate[k] or p["estimate"][k]
+        for k in missing:
+            missing[k] += p["missing"][k]
+        for k in car:
+            car[k] += p["company_car_info_only"][k]
+    out = {k: (int(total[k]) if k == "hotel_nights" else round(total[k], 1)) for k in ADMIN_KEYS}
+    return {
+        **out, "estimate": estimate, "missing": missing,
+        "legs_missing_km": sum(missing.values()),
+        "company_car_info_only": {"km": round(car["km"], 1), "kwh": round(car["kwh"], 2),
+                                  "litres": round(car["litres"], 2), "legs": car["legs"],
+                                  "note": "Company car (info only, not in Admin report)"},
+    }
+
+
+def _missing_list(rows: list[TripLeg]) -> list[dict]:
+    return [{"leg_id": r.id, "date": r.leg_date.isoformat() if r.leg_date else None,
+             "mode": r.mode, "from": r.from_place, "to": r.to_place,
+             "reason": getattr(r, "km_reason", None) or "no_receipt", "note": r.note}
+            for r in rows if r.km is None and not r.excluded]
+
+
+def trip_legs_view(db: Session, trip: CalendarTrip, all_trips=None, receipts=None) -> dict:
+    from app.services.trip_completeness import load_receipts
+
+    receipts = receipts if receipts is not None else load_receipts(db)
+    rows, flags = sync_trip_legs(db, trip, all_trips, receipts)
+    info = receipt_infos(db, rows)
+    return {
+        "legs": [leg_dict(r, info) for r in rows],
         "legs_flags": flags,
         "legs_totals": _totals(rows),
+        "admin": admin_totals(rows, hotel_nights(db, trip, receipts)),
+        "legs_missing": _missing_list(rows),
     }
 
 
@@ -497,10 +867,13 @@ def update_trip_leg(db: Session, leg_id: int, *, km: float | None = None,
         if km < 0 or km > 20000:
             raise TripEditError("km must be between 0 and 20000")
         row.km = round(float(km), 1)
+        row.km_reason = None
         if source is None:
             row.source = "manual"
+            row.is_estimate = False if is_estimate is None else row.is_estimate
     if clear_km:
         row.km = None
+        row.km_reason = "no_receipt"
     if date_ is not None:
         try:
             row.leg_date = date.fromisoformat(date_)
@@ -535,9 +908,13 @@ def update_trip_leg(db: Session, leg_id: int, *, km: float | None = None,
     if note is not None:
         row.note = note.strip() or None
     if flight_category is not None:
-        if flight_category not in ("", "short", "medium", "long"):
+        if flight_category not in ("", "short", "medium", "long"):  # "" = efter km
             raise TripEditError("flight_category must be short, medium, long or empty")
-        row.flight_category = flight_category or None
+        row.flight_category = flight_category or flight_category_of_km(row)
+    if row.mode == "flight" and km is not None and flight_category is None:
+        row.flight_category = flight_category_of_km(row)
+    if row.km is None and not row.km_reason:
+        row.km_reason = "no_receipt"
     if excluded is not None:
         row.excluded = bool(excluded)
     row.set_by = "user"
@@ -580,70 +957,108 @@ def trips_for_year(db: Session, year: int) -> list[CalendarTrip]:
             .all())
 
 
-def _year_rows(db: Session, year: int) -> list[tuple[CalendarTrip, list[TripLeg], list[str]]]:
+def _year_rows(db: Session, year: int):
+    """[(resa, delsträckor, flaggor, admin)] - samma underlag för vy, MCP och export."""
     from app.services.trip_completeness import load_receipts
 
     all_trips = db.query(CalendarTrip).all()
     receipts = load_receipts(db)
-    return [(t, *sync_trip_legs(db, t, all_trips, receipts)) for t in trips_for_year(db, year)]
+    out = []
+    for t in trips_for_year(db, year):
+        rows, flags = sync_trip_legs(db, t, all_trips, receipts)
+        out.append((t, rows, flags, admin_totals(rows, hotel_nights(db, t, receipts))))
+    return out
+
+
+def _rejected_count(db: Session, year: int) -> int:
+    start, end = date(year, 1, 1), date(year, 12, 31)
+    return (db.query(CalendarTrip)
+            .filter(CalendarTrip.status == "rejected")
+            .filter(CalendarTrip.start_date <= end, CalendarTrip.end_date >= start)
+            .count())
 
 
 def get_emissions_summary(db: Session, year: int = 2026) -> dict:
+    """Admins sju rader per resa och för året (+ tjänstebilen separat som info).
+    Resor-vyn, MCP och export_trip_legs läser alla härifrån."""
     year = int(year or 2026)
     data = _year_rows(db, year)
-    all_rows = [r for _, rows, _ in data for r in rows]
+    all_rows = [r for _, rows, _, _ in data for r in rows]
     totals = _totals(all_rows)
     trips = []
-    for t, rows, flags in data:
+    for t, rows, flags, admin in data:
         tt = _totals(rows)
         trips.append({
             "trip_id": t.id,
             "start_date": t.start_date.isoformat(),
             "end_date": t.end_date.isoformat(),
             "destination": t.destination,
-            "km": tt["km"],
+            "status": t.status,
+            "admin": admin,
+            "km": round(sum(admin[k] for k in ADMIN_KEYS if k != "hotel_nights"), 1),
             "by_mode": {m: v["km"] for m, v in tt["by_mode"].items()},
-            "kwh": round(sum(v["kwh"] for v in tt["by_mode"].values()), 2),
-            "litres": round(sum(v["litres"] for v in tt["by_mode"].values()), 2),
+            "kwh": admin["company_car_info_only"]["kwh"],
+            "litres": admin["company_car_info_only"]["litres"],
             "legs": sum(1 for r in rows if not r.excluded),
-            "legs_missing_km": sum(1 for r in rows if r.km is None and not r.excluded),
+            "legs_missing_km": admin["legs_missing_km"],
+            "missing_legs": _missing_list(rows),
             "flags": flags,
         })
+    year_admin = sum_admin([a for *_, a in data])
     active = [r for r in all_rows if not r.excluded]
+    short_max, long_min = flight_thresholds()
     return {
         "year": year,
         "trips": len(trips),
+        "trips_rejected_not_counted": _rejected_count(db, year),
+        "admin": year_admin,
+        "admin_labels": ADMIN_LABELS,
+        "flight_thresholds_km": {"short_below": short_max, "long_from": long_min},
         "legs": len(active),
+        "legs_with_km": sum(1 for r in active if r.km is not None),
         "legs_missing_km": sum(1 for r in active if r.km is None),
+        "legs_excluded": sum(1 for r in all_rows if r.excluded),
         "estimated_legs": sum(1 for r in active if r.is_estimate),
-        "total_km": totals["km"],
+        "total_km": round(sum(year_admin[k] for k in ADMIN_KEYS if k != "hotel_nights"), 1),
+        "company_car_info_only": year_admin["company_car_info_only"],
         "by_mode": totals["by_mode"],
         "per_trip": trips,
         "car_assumptions": car_settings(),
-        "note": ("Activity data only (km, kWh, litres) - no kg CO2e. Admin applies own "
-                 "emission factors. Car legs are estimates (source=assumption). "
-                 "Flights: great circle between airports, round trip = two legs."),
+        "note": ("Admin report rows: short (<700 km), medium (700-3700 km) and long "
+                 "(3700+ km) flights per flight leg, train, bus, non-company car (taxi, "
+                 "own car) and hotel nights. Company car km/kWh/litres are info only and "
+                 "not in the Admin totals. Activity data only - no kg CO2e. "
+                 "is_estimate = from route table or assumption."),
     }
 
 
-EXPORT_COLUMNS = ("trip_id", "date", "mode", "from", "to", "km", "km_missing",
-                  "energy_type", "energy_amount", "energy_unit", "is_estimate", "source",
-                  "flight_no", "flight_category", "note")
+EXPORT_COLUMNS = ("trip_id", "date", "mode", "from", "to", "km",
+                  "km_missing", "km_reason", "energy_type", "energy_amount", "energy_unit",
+                  "is_estimate", "source", "flight_no", "flight_category", "admin_category",
+                  "receipt_message_id", "bezala_transaction_id", "note")
+ADMIN_EXPORT_COLUMNS = ("trip_id", "year", "start_date", "end_date", "destination",
+                        *[ADMIN_LABELS[k] for k in ADMIN_KEYS], "Estimate", "Legs missing km")
 
 
 def _ascii_dash(v):
-    if isinstance(v, str):
-        return v.replace("–", "-").replace("—", "-").replace("→", "-")
-    return v
+    from app.data.route_km import ascii_text
+
+    return ascii_text(v)
 
 
 def export_rows(db: Session, year: int = 2026) -> list[dict]:
+    """Detaljexport: en rad per delsträcka. Tjänstebilen har admin_category tom
+    (info only)."""
     out = []
-    for t, rows, _ in _year_rows(db, year):
+    for t, rows, _, _ in _year_rows(db, year):
+        info = receipt_infos(db, rows)
         for r in rows:
             if r.excluded:
                 continue
-            d = leg_dict(r)
+            d = leg_dict(r, info)
+            d["bezala_transaction_id"] = (d.get("receipt") or {}).get("bezala_transaction_id")
+            if r.mode == "car_phev":
+                d["admin_category"] = "company_car_info_only"
             row = {k: _ascii_dash(d.get(k)) for k in EXPORT_COLUMNS}
             row["is_estimate"] = "yes" if d["is_estimate"] else "no"
             row["km_missing"] = "yes" if d["km_missing"] else "no"
@@ -651,10 +1066,49 @@ def export_rows(db: Session, year: int = 2026) -> list[dict]:
     return out
 
 
-def export_csv(db: Session, year: int = 2026) -> str:
+def admin_export_rows(db: Session, year: int = 2026) -> list[dict]:
+    """Admin-läge: en rad per resa och år med exakt de sju kolumnerna (+ Total).
+    Tjänstebilen ingår inte."""
+    data = _year_rows(db, year)
+    out = []
+
+    def row(base: dict, a: dict) -> dict:
+        r = dict(base)
+        for k in ADMIN_KEYS:
+            r[ADMIN_LABELS[k]] = a[k]
+        r["Estimate"] = ", ".join(ADMIN_LABELS[k] for k in ADMIN_KEYS if a["estimate"][k]) or "no"
+        r["Legs missing km"] = a["legs_missing_km"]
+        return {k: _ascii_dash(v) for k, v in r.items()}
+
+    for t, _, _, a in data:
+        out.append(row({"trip_id": t.id, "year": year, "start_date": t.start_date.isoformat(),
+                        "end_date": t.end_date.isoformat(), "destination": t.destination}, a))
+    out.append(row({"trip_id": "Total", "year": year, "start_date": "", "end_date": "",
+                    "destination": f"{len(data)} trips"}, sum_admin([a for *_, a in data])))
+    return out
+
+
+def route_table_rows() -> list[dict]:
+    from app.data import route_km
+
+    return [{k: _ascii_dash(r.get(k)) for k in
+             ("operator", "mode", "from", "to", "km", "symmetric", "reference")}
+            for r in route_km.routes()]
+
+
+def _csv(rows: list[dict], columns) -> str:
     buf = io.StringIO()
-    w = csv.DictWriter(buf, fieldnames=list(EXPORT_COLUMNS))
+    w = csv.DictWriter(buf, fieldnames=list(columns))
     w.writeheader()
-    for row in export_rows(db, year):
-        w.writerow({k: ("" if v is None else v) for k, v in row.items()})
+    for row in rows:
+        w.writerow({k: ("" if row.get(k) is None else row.get(k)) for k in columns})
     return buf.getvalue()
+
+
+def export_csv(db: Session, year: int = 2026, mode: str = "detail") -> str:
+    if mode == "admin":
+        return _csv(admin_export_rows(db, year), ADMIN_EXPORT_COLUMNS)
+    if mode == "route_table":
+        return _csv(route_table_rows(),
+                    ("operator", "mode", "from", "to", "km", "symmetric", "reference"))
+    return _csv(export_rows(db, year), EXPORT_COLUMNS)

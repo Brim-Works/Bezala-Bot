@@ -308,6 +308,16 @@ function CardBody({ item }) {
         <dt>Datum</dt><dd>{t.start_date} – {t.end_date}</dd>
         <dt>Tider</dt><dd>{t.travel_start_helsinki || '—'} → {t.travel_end_helsinki || '—'}</dd>
         <dt>Syfte</dt><dd>{t.purpose || '—'}</dd>
+        {item.km && (
+          <>
+            <dt>Km</dt>
+            <dd data-testid="m-trip-km">
+              {item.km.km} km{item.km.is_estimate ? ' (uppsk.)' : ''}
+              {' · '}flyg {item.km.flight_km} · mark {item.km.ground_km} · {item.km.hotel_nights} nätter
+              {item.km.legs_missing_km > 0 && <div className="m-flag">km saknas ({item.km.legs_missing_km})</div>}
+            </dd>
+          </>
+        )}
         {t.flags?.length > 0 && (<><dt>Flaggor</dt><dd>{t.flags.join(', ')}</dd></>)}
       </dl>
     );
