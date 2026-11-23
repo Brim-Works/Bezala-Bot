@@ -38,7 +38,8 @@ export function fmtRange(start, end, lang) {
 export function sumByCurrency(receipts, lang) {
   const sums = new Map();
   for (const r of receipts || []) {
-    if (r.amount == null) continue;
+    // C56: dubbletter (samma biljett två gånger) räknas en gång.
+    if (r.amount == null || r.counted === false) continue;
     const cur = r.currency || 'EUR';
     sums.set(cur, (sums.get(cur) || 0) + Number(r.amount));
   }

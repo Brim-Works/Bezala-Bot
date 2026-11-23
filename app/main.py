@@ -4867,8 +4867,8 @@ def list_trip_suggestions(
     möten, hotell och redan kopplade kvitton.
     """
     if source == "calendar":
-        from app.services.calendar_trip_store import list_trips
-        return {"source": "calendar", "trips": list_trips(db)}
+        from app.services.calendar_trip_store import list_trips, receipts_without_trip
+        return {"source": "calendar", "trips": list_trips(db), **receipts_without_trip(db)}
     return {"trips": _list_trips_filtered(db, "suggested")}
 
 

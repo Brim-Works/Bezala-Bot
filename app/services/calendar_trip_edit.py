@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from app.models import CalendarTrip, CalendarTripDay
-from app.services.calendar_trip_store import _flight_times_by_day, _linked_receipts
+from app.services.calendar_trip_store import _flight_times_by_day, receipt_totals, trip_receipts
 from app.services.trip_meals import meals_included
 from app.services.trip_english import (
     country_name,
@@ -242,11 +242,16 @@ def list_trips(
     rows = q.order_by(CalendarTrip.start_date).all()
     from app.services.trip_completeness import checklists_for
 
+    from app.services.c56_receipt_allocation import allocate, totals
+
     lists = checklists_for(db, rows)
+    allocation = allocate(db)
     out = []
     for t in rows:
         row = summary(t)
         row["completeness"] = lists[t.id]["completeness"]
+        # C56: belopp per valuta (varje kvitto på EN resa, samma biljett en gång).
+        row["receipt_totals"] = totals(allocation["by_trip"].get(t.id, []))
         day_rows = _days(db, t)
         row["free_meals"] = sum(d.free_meals or 0 for d in day_rows)
         out.append(row)
@@ -352,7 +357,8 @@ def trip_detail(db: Session, trip: CalendarTrip) -> dict:
             for f in (trip.flight_options or [])
         ],
         "days": days,
-        "receipts": _linked_receipts(db, trip.start_date, trip.end_date),
+        "receipts": (receipts := trip_receipts(db, trip)),
+        "receipt_totals": receipt_totals(receipts),
         "edited_at": trip.edited_at.isoformat() if trip.edited_at else None,
         "approved_at": trip.approved_at.isoformat() if trip.approved_at else None,
     }

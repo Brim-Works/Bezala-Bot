@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { api, ApiError, request } from '../api/client.js';
 import { useToast } from '../lib/toast.jsx';
+import { fmtAmount } from '../lib/format.js';
 import TripSuggestionCard from '../components/trips/TripSuggestionCard.jsx';
 import CalendarTripRow from '../components/trips/CalendarTripRow.jsx';
 import TripActiveCard from '../components/trips/TripActiveCard.jsx';
@@ -40,6 +41,7 @@ export default function Trips() {
   const [refreshing, setRefreshing] = useState(false);
 
   const [calendarTrips, setCalendarTrips] = useState([]);
+  const [unassigned, setUnassigned] = useState({ unassigned: [], missing_info: [] });
   const [sugg, setSugg] = useState({ suggestions: [], counts: {} });
   const [activeTrips, setActiveTrips] = useState([]);
   const [nvTexts, setNvTexts] = useState({});
@@ -66,6 +68,10 @@ export default function Trips() {
         safe(request(`/api/emissions/summary?year=${YEAR}`), { per_trip: [] }),
       ]);
       setCalendarTrips((cal && cal.trips) || []);
+      setUnassigned({
+        unassigned: (cal && cal.unassigned) || [],
+        missing_info: (cal && cal.missing_info) || [],
+      });
       setSugg(s || { suggestions: [], counts: {} });
       setActiveTrips((a && a.trips) || []);
       const texts = {};
@@ -458,6 +464,41 @@ export default function Trips() {
               </div>
             ) : null}
           </section>
+
+          {unassigned.unassigned.length || unassigned.missing_info.length ? (
+            <section className="trips-view__section" data-testid="trips-unassigned">
+              {unassigned.unassigned.length ? (
+                <details className="trips-view__hidden" open>
+                  <summary>
+                    {formatString(t.trips.unassignedTitle, { count: unassigned.unassigned.length })}
+                  </summary>
+                  <p className="muted trips-view__note">{t.trips.unassignedHint}</p>
+                  <ul>
+                    {unassigned.unassigned.map((r) => (
+                      <li key={r.message_id} data-testid={`trips-unassigned-${r.message_id}`}>
+                        <span className="mono muted">{r.receipt_date || '—'}</span>
+                        {' '}
+                        <span>{r.vendor || '—'}</span>
+                        {' '}
+                        <span className="mono">{fmtAmount(r.amount, r.currency, lang)}</span>
+                        {r.reason === 'ambiguous' && r.candidates ? (
+                          <span className="muted">
+                            {' · '}
+                            {formatString(t.trips.unassignedAmbiguous, { ids: r.candidates.join(', ') })}
+                          </span>
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
+              {unassigned.missing_info.length ? (
+                <div className="muted trips-view__note" data-testid="trips-missing-info">
+                  {formatString(t.trips.missingInfo, { count: unassigned.missing_info.length })}
+                </div>
+              ) : null}
+            </section>
+          ) : null}
 
           {calendarUngrouped.length ? (
             <details className="card card-pad cal-trips__ungrouped" data-testid="trips-calendar-ungrouped">

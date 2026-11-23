@@ -138,7 +138,8 @@ def test_receipt_warnings(db, seeded):  # noqa: F811
 
     w = _by_id(analyse(db))[seeded["s1"]]["receipt_warnings"]
     assert "same_amount_twice:Finnair:446.77" in w
-    assert "tiny_amount:Taxi:0.02" in w
+    # C56 tillägg: småbelopp (delbetalningar) ger ingen varning.
+    assert not any("0.02" in x for x in w)
 
 
 def test_dry_run_changes_nothing(db, seeded):  # noqa: F811

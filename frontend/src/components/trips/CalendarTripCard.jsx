@@ -201,8 +201,15 @@ export default function CalendarTripCard({ trip, embedded = false }) {
       ) : (
         <ul className="trip-card__receipts">
           {receipts.map((r) => (
-            <li key={r.message_id} className="trip-card__receipt">
-              <span className="vchip-mini">{r.vendor || '—'}</span>
+            <li
+              key={r.message_id}
+              className={`trip-card__receipt${r.counted === false ? ' trip-card__receipt--dup' : ''}`}
+              data-testid={`calendar-trip-receipt-${r.message_id}`}
+            >
+              <span className="vchip-mini">
+                {r.vendor || '—'}
+                {r.counted === false ? <span className="muted"> · {c.countedOnce}</span> : null}
+              </span>
               <span className="mono muted">{r.receipt_date || '—'}</span>
               <span className="mono">{fmtAmount(r.amount, r.currency, lang)}</span>
             </li>

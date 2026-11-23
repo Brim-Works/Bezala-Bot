@@ -850,6 +850,18 @@ async def list_trip_suggestions() -> dict:
 
 
 @mcp.tool()
+async def compare_trip_amounts() -> dict:
+    """C56, read-only: amount per calendar trip before (every receipt of every
+    overlapping AI suggestion) and after (each receipt on exactly one trip by
+    checklist/date/city; the same ticket captured twice counted once).
+    unassigned = receipts that fit no trip or several equally (not guessed).
+    Nothing is changed."""
+    from app.services.c56_receipt_allocation import compare
+
+    return await _run(compare)
+
+
+@mcp.tool()
 async def merge_duplicate_trip_suggestions(apply: bool = False) -> dict:
     """C56: merge duplicate AI suggestions (overlapping dates + same city) into
     the one with the most receipts; the others' receipts move there and they get
