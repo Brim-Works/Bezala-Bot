@@ -300,10 +300,11 @@ def test_non_english_warnings():
 
 
 def test_netvisor_line_description():
-    assert netvisor_line_description(["Malmö"], "SE", "Customer day Agda PS, Malmö") == (
-        "Business trip Malmö, Sweden - Customer day Agda PS")
-    assert netvisor_line_description(["Malmö", "Växjö"], "SE", None) == (
-        "Business trip Malmö and Växjö, Sweden")
+    # C55 - Riikkas format.
+    assert netvisor_line_description(["Malmö"], "Customer day Agda PS, Malmö") == (
+        "Travel for customer day Agda PS in Malmo")
+    assert netvisor_line_description(["Malmö", "Växjö"], None) == (
+        "Travel in Malmo and Vaxjo")
 
 
 def test_ui_translates_to_swedish():
@@ -391,7 +392,7 @@ def test_mcp_shows_travel_and_flight_times_and_warns(env):
     assert detail["days"][0]["flight_departure_helsinki"] == "07:15"
     assert detail["days"][0]["start_time_helsinki"] == "05:35"
     assert detail["netvisor_line_description"] == (
-        "Business trip Gothenburg, Sweden - Management meeting and team syncs")
+        "Travel for management meeting and team syncs in Gothenburg")
 
     # Manuell överstyrning av resetiden (Mikko åker från kontoret).
     out = _call(c, at, "update_trip", trip_id=gbg["id"], start="2026-11-18T06:00",

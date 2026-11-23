@@ -25,7 +25,6 @@ from app.services.trip_meals import meals_included
 from app.services.trip_english import (
     country_name,
     meals_note,
-    netvisor_line_description,
     non_english_warnings,
 )
 
@@ -256,6 +255,18 @@ def list_trips(
     return out
 
 
+def _netvisor_text(trip: CalendarTrip, day_rows: list) -> dict:
+    from app.services.netvisor_entry import travel_description_info
+
+    info = travel_description_info(trip, day_rows)
+    return {
+        "netvisor_line_description": info["text"],
+        "netvisor_description": info["text"],
+        "netvisor_description_flags": info["flags"],
+        "netvisor_description_warnings": info["warnings"],
+    }
+
+
 def trip_detail(db: Session, trip: CalendarTrip) -> dict:
     trip_country = trip.country if trip.country and "," not in trip.country else None
     flight_times = _flight_times_by_day(trip.flights or [])
@@ -305,14 +316,13 @@ def trip_detail(db: Session, trip: CalendarTrip) -> dict:
         "travel_end": _times(trip.travel_end_at),
         "flight_departure": _times(trip.start_at),
         "flight_arrival": _times(trip.end_at),
-        "netvisor_line_description": netvisor_line_description(
-            [d.destination for d in day_rows] or [trip.destination],
-            trip.country, trip.purpose,
-            meals=meals_note(
-                (d.day_date.isoformat(), d.free_meals, d.free_meal_sources,
-                 d.country or trip_country or trip.country)
-                for d in day_rows
-            ),
+        # C55 - Netvisor-texten (beskrivning = linedescription), utan måltider.
+        **_netvisor_text(trip, day_rows),
+        # Måltider bara i botens egen vy - exporteras aldrig till Netvisor.
+        "meals_note": meals_note(
+            (d.day_date.isoformat(), d.free_meals, d.free_meal_sources,
+             d.country or trip_country or trip.country)
+            for d in day_rows
         ),
         # C44 — förslag som inte skrivs in automatiskt (låsta resor):
         # resetider ur parkeringen, måltider ur kalendern, ombokade flyg.

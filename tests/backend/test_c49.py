@@ -182,9 +182,8 @@ def test_entry_93_two_days_already_created(db):
     assert r["settings"]["over_15_km"] and r["settings"]["over_5_km"]
     assert r["settings"]["night_travel"] is False
     assert r["settings"]["night_travel_check"] is None  # hotell natten 13-14
-    assert r["description"] == (
-        "Business trip Helsingborg, Sweden - Team syncs and management meeting"
-    )
+    assert r["description"] == "Travel for team syncs and management meeting in Helsingborg"
+    assert e["description"] == r["description"]
     assert any("Already created in Netvisor (created_manual, report 1655)" in w
                for w in e["warnings"])
     assert any("only approved" in w for w in e["warnings"])
@@ -220,10 +219,9 @@ def test_entry_130_description_without_duplicates(db):
     assert len(e["rows"]) == 1
     desc = e["rows"][0]["description"]
     assert desc == (
-        "Business trip Ängelholm and Ljungby, Sweden - "
-        "HRM SE leadership meeting and office meetings"
+        "Travel for HRM SE leadership meeting and office meetings in Angelholm and Ljungby"
     )
-    assert desc.count("Ljungby") == 1 and desc.count("Ängelholm") == 1
+    assert desc.count("Ljungby") == 1 and desc.count("Angelholm") == 1
     assert e["title"] == "Business trip Ängelholm and Ljungby, Sweden 20.1.2026-22.1.2026"
     assert e["rows"][0]["settings"]["night_travel_check"] is None
 

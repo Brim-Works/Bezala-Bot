@@ -140,12 +140,12 @@ def test_netvisor_line_no_duplicate_cities_and_plain_dash():
     from app.services.trip_english import netvisor_line_description
 
     text = netvisor_line_description(
-        ["Ängelholm, Ljungby", "Ljungby", "Ljungby"], "SE", "Customer visits – Agda",
+        ["Ängelholm, Ljungby", "Ljungby", "Ljungby"], "Customer visits – Agda",
     )
-    assert text == "Business trip Ängelholm and Ljungby, Sweden - Customer visits - Agda"
+    assert text == "Travel for customer visits - Agda in Angelholm and Ljungby"
     assert "–" not in text and "—" not in text
-    three = netvisor_line_description(["Malmö", "Lund → Malmö", "Växjö"], "SE", None)
-    assert three == "Business trip Malmö, Lund and Växjö, Sweden"
+    three = netvisor_line_description(["Malmö", "Lund → Malmö", "Växjö"], None)
+    assert three == "Travel in Malmo, Lund and Vaxjo"
 
 
 def test_generated_texts_use_plain_dash():

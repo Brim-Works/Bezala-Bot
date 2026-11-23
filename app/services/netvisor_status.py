@@ -139,8 +139,19 @@ def list_status(db: Session, year: int = 2026) -> list[dict]:
             "netvisor_status": r.status if r else "not_created",
             "netvisor_report_id": r.netvisor_report_id if r else None,
             "note": r.note if r else None,
+            "netvisor_description": _description(db, t),
         })
     return out
+
+
+def _description(db: Session, trip: CalendarTrip) -> str | None:
+    from app.services.netvisor_entry import netvisor_travel_description
+
+    try:
+        return netvisor_travel_description(trip, db=db)
+    except Exception:  # noqa: BLE001
+        logger.exception("C55: Netvisor-text för resa %s misslyckades", trip.id)
+        return None
 
 
 def overview(db: Session, year: int = 2026, ready_only: bool = False) -> dict:
@@ -188,3 +199,47 @@ def overview(db: Session, year: int = 2026, ready_only: bool = False) -> dict:
     if ready_only:
         rows = [r for r in rows if r["ready_for_netvisor"]]
     return {"year": year, "count": len(rows), "ready_count": ready_count, "trips": rows}
+
+
+def preview_descriptions(db: Session, year: int = 2026) -> dict:
+    """C55 Del 2 - alla aktiva (ej avvisade) resor för året med den nya
+    Netvisor-texten ('Travel for <purpose> in <city>'), så att Mikko kan
+    läsa igenom dem på en gång. Ren läsning."""
+    from app.models import CalendarTripDay
+    from app.services.netvisor_entry import travel_description_info
+
+    trips = (
+        db.query(CalendarTrip)
+        .filter(CalendarTrip.status != "rejected")
+        .filter(CalendarTrip.start_date >= date(year, 1, 1))
+        .filter(CalendarTrip.start_date <= date(year, 12, 31))
+        .order_by(CalendarTrip.start_date, CalendarTrip.id)
+        .all()
+    )
+    rows = []
+    for t in trips:
+        days = (
+            db.query(CalendarTripDay)
+            .filter(CalendarTripDay.trip_id == t.id)
+            .order_by(CalendarTripDay.day_date)
+            .all()
+        )
+        info = travel_description_info(t, days)
+        rows.append({
+            "trip_id": t.id,
+            "start_date": t.start_date.isoformat(),
+            "end_date": t.end_date.isoformat(),
+            "trip_status": t.status,
+            "purpose": t.purpose,
+            "netvisor_description": info["text"],
+            "purpose_source": info["purpose_source"],
+            "flags": info["flags"],
+            "warnings": info["warnings"],
+        })
+    return {
+        "year": year,
+        "count": len(rows),
+        "purpose_missing": [r["trip_id"] for r in rows if "purpose_missing" in r["flags"]],
+        "with_warnings": [r["trip_id"] for r in rows if r["warnings"]],
+        "trips": rows,
+    }

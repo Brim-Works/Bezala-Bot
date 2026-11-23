@@ -107,9 +107,9 @@ def test_update_trip_day_meals_on_edited_trip_and_netvisor_line(db):
     assert (day["free_meals"], day["free_meal_sources"], day["meals_source"]) == (
         1, ["dinner_kickoff"], "manual")
     assert out["status"] == "edited"
-    assert out["netvisor_line_description"] == (
-        "Business trip Båstad, Sweden - HRM SE kick-off (1 free meal: dinner)"
-    )
+    # C55 - måltider aldrig i Netvisor-texten, bara i botens meals_note.
+    assert out["netvisor_line_description"] == "Travel for HRM SE kick-off in Bastad"
+    assert out["meals_note"] == "(1 free meal: dinner)"
     with pytest.raises(edit.TripEditError):
         edit.update_trip_day(db, t.id, "2026-05-07", free_meals=4)
     with pytest.raises(edit.TripEditError):

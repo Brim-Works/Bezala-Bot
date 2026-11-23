@@ -139,7 +139,8 @@ async def get_trip(trip_id: int) -> dict:
     (flight_departure/flight_arrival), every day with travel times (UTC + Helsinki),
     arrival airport, work city (destination) and where it came from
     (destination_source), country + English name, hotel, meetings, purpose,
-    linked receipts, flight options and the prepared Netvisor line description.
+    linked receipts, flight options and the prepared Netvisor description
+    (C55: 'Travel for <purpose> in <city>').
     C53: `legs` = one row per leg (flight/train/taxi/bus/car_phev) with km, energy
     (kWh or litres), source and is_estimate; `legs_flags` (km_missing,
     home_transport_unknown, return_flight_missing) and `legs_totals`."""
@@ -205,8 +206,8 @@ async def update_trip_day(
     free_meal_sources: any of 'hotel_breakfast', 'lunch_customer_day',
     'dinner_kickoff', 'dinner_calendar', 'lunch_calendar', 'ticket'. Sources only
     → the count is calculated.
-    Works on edited trips too. Free meals are added to the Netvisor line in
-    English, e.g. '(1 free meal: dinner)'.
+    Works on edited trips too. C55: free meals are never written in the Netvisor
+    text - only via 'Inklusive kost'; the bot's own view shows meals_note.
     Returns the updated trip (with 'warnings' if a field is not in English)."""
     return await _run(edit.update_trip_day, trip_id, date, start_time=start_time,
                       end_time=end_time, destination=destination, country=country,

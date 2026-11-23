@@ -12,7 +12,7 @@ Här finns också:
   * `non_english_warnings` — varningar (blockerar inte) när syfte eller
     destination ser ut att vara på svenska/finska.
   * `netvisor_line_description` — förberedd Netvisor-text (beräknas,
-    sparas inte), t.ex. "Business trip Malmö, Sweden - Customer day Agda PS".
+    sparas inte), C55: "Travel for customer day Agda PS in Malmo".
 """
 
 from __future__ import annotations
@@ -286,38 +286,127 @@ def meals_note(days: Iterable[tuple[str, int | None, list | None, str | None]]) 
     return f"({total} free {word}: {'; '.join(parts)})"
 
 
-def netvisor_line_description(
-    cities: Iterable[str | None],
-    country: str | None,
-    purpose: str | None,
-    meals: str | None = None,
-) -> str:
-    """'Business trip Malmö, Sweden - Customer day Agda PS'.
+def _ascii(text: str) -> str:
+    """'Malmö' -> 'Malmo', 'Ängelholm' -> 'Angelholm' (versaler behålls)."""
+    text = (text or "").replace("ø", "o").replace("Ø", "O").replace("æ", "ae").replace(
+        "Æ", "Ae")
+    norm = unicodedata.normalize("NFKD", text)
+    return "".join(c for c in norm if not unicodedata.combining(c))
 
-    Beräknas när den behövs (R3), sparas inte. Orten i syftet tas bort om
-    den redan står i början ("…, Malmö" / "…, Malmö office").
-    """
-    # C46 — en dag kan ha flera orter ("Ängelholm, Ljungby"): dela upp,
-    # ta bort dubbletter och behåll ordningen.
+
+def split_cities(names: Iterable[str | None]) -> list[str]:
+    """Unika orter i ordning, engelska namn. En dag kan ha flera orter
+    ("Ängelholm, Ljungby", "Malmö → Helsingborg")."""
     uniq: list[str] = []
-    for raw in cities:
+    for raw in names:
         for part in re.split(r"\s*(?:,|→|->|/|\band\b)\s*", raw or ""):
             c = city_to_english(part.strip()) if part and part.strip() else None
             if c and c not in uniq:
                 uniq.append(c)
-    place = uniq[0] if len(uniq) == 1 else (
-        ", ".join(uniq[:-1]) + " and " + uniq[-1] if uniq else ""
-    )
-    cname = country_name(country)
-    where = ", ".join(p for p in (place, cname) if p)
-    text = "Business trip" + (f" {where}" if where else "")
-    if purpose:
-        p = purpose.strip()
-        for c in uniq:
-            p = re.sub(rf",\s*{re.escape(c)}( office)?\s*$", "", p)
-        text += f" - {p}"
-    if meals:
-        text += f" {meals}"
+    return uniq
+
+
+def join_and(items: list[str]) -> str:
+    if not items:
+        return ""
+    if len(items) == 1:
+        return items[0]
+    return ", ".join(items[:-1]) + " and " + items[-1]
+
+
+def _lower_first(text: str) -> str:
+    """'Management meeting' -> 'management meeting'; 'HRM SE kick-off' oförändrat."""
+    if not text:
+        return text
+    first = text.split(" ", 1)[0]
+    if sum(1 for ch in first if ch.isupper()) >= 2:
+        return text  # förkortning (HRM, IT, CFO)
+    return text[0].lower() + text[1:]
+
+
+_GENERIC_PURPOSES = {"meeting", "meetings"}
+
+
+def netvisor_purpose(purpose: str | None, cities: Iterable[str] = ()) -> str | None:
+    """C55 - syftet i Netvisor-beskrivningen: gemen början, utan ort,
+    'office', avslutande punkt eller tankstreck.
+
+    'Internal audit and management meeting, Oslo office'
+    -> 'internal audit and management meeting'.
+    Flera poster (';') slås ihop; poster som ingår i en annan och ett
+    generiskt 'Meetings' bredvid något mer specifikt tas bort."""
     from app.services.text_clean import plain_dashes
 
-    return plain_dashes(text)
+    if not purpose or not purpose.strip():
+        return None
+    city_folds = {_fold(c) for c in cities if c}
+    cores: list[str] = []
+    for part in purpose.split(";"):
+        p = (plain_dashes(part) or "").strip().rstrip(".").strip()
+        if "," in p:
+            head, tail = p.rsplit(",", 1)
+            ftail = _fold(tail)
+            if re.search(r"\boffices?\b", ftail) or any(
+                re.search(rf"(?<![a-z]){re.escape(c)}(?![a-z])", ftail) for c in city_folds
+            ):
+                p = head.strip()
+        p = re.sub(r"\s+", " ", p)
+        if p:
+            p = _lower_first(p)
+            if _fold(p) not in {_fold(c) for c in cores}:
+                cores.append(p)
+    if not cores:
+        return None
+    folded = [_fold(c) for c in cores]
+    keep = []
+    for i, (core, f) in enumerate(zip(cores, folded)):
+        others = [o for j, o in enumerate(folded) if j != i]
+        if len(cores) > 1 and f in _GENERIC_PURPOSES:
+            continue
+        if any(re.search(rf"(?<![a-z0-9]){re.escape(f)}(?![a-z0-9])", o) for o in others):
+            continue
+        keep.append(core)
+    keep = keep or cores[:1]
+    return join_and(keep)
+
+
+def netvisor_line_description(
+    cities: Iterable[str | None],
+    purpose: str | None,
+) -> str:
+    """C55 (Riikka) - 'Travel for <purpose> in <city>'.
+
+    Samma text används som reseräkningens beskrivning och som
+    linedescription på varje dagpenningsrad. Inga länder, datum, km,
+    utsläpp eller måltider. Orter på engelska utan diakritiska tecken
+    ('Malmo and Helsingborg'). Utan syfte: 'Travel in <city>'.
+    """
+    from app.services.text_clean import plain_dashes
+
+    uniq = split_cities(cities)
+    place = join_and([_ascii(c) for c in uniq]) or "unknown destination"
+    core = netvisor_purpose(purpose, [*uniq, *(_ascii(c) for c in uniq)])
+    text = f"Travel for {core} in {place}" if core else f"Travel in {place}"
+    return plain_dashes(re.sub(r"\s+", " ", text).strip())
+
+
+NETVISOR_DESCRIPTION_RE = re.compile(r"^Travel (for .+ )?in .+$")
+_KM_LIKE_RE = re.compile(r"\d+([.,]\d+)?\s*(km|kilomet)|\b\d{2,}\b", re.IGNORECASE)
+_LONG_DASH_RE = re.compile("[\u2010\u2011\u2012\u2013\u2014\u2015\u2212]")
+
+
+def netvisor_description_warnings(text: str | None) -> list[str]:
+    """C55 Del 2 - varningar för Netvisor-beskrivningen (blockerar inte)."""
+    if not text:
+        return ["Netvisor description is empty."]
+    out = []
+    if not NETVISOR_DESCRIPTION_RE.match(text):
+        out.append("Netvisor description does not match 'Travel for <purpose> in <city>'.")
+    if _LONG_DASH_RE.search(text):
+        out.append("Netvisor description contains a long dash; use a plain '-'.")
+    if _KM_LIKE_RE.search(text):
+        out.append("Netvisor description contains numbers (km, dates?) - remove them.")
+    if "free meal" in text.lower():
+        out.append("Netvisor description contains 'free meal' - meals go in "
+                   "'Inklusive kost', not in the text.")
+    return out

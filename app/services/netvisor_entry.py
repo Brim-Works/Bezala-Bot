@@ -23,11 +23,14 @@ from app.models import CalendarTrip, CalendarTripDay
 from app.services.calendar_trip_edit import TripEditError, _aware
 from app.services.text_clean import plain_dashes
 from app.services.trip_english import (
-    city_to_english,
+    combine_purposes,
     country_name,
+    generate_purpose,
     meals_note,
+    netvisor_description_warnings,
     netvisor_line_description,
     non_english_warnings,
+    split_cities,
 )
 from app.services.trip_meals import meals_included
 
@@ -71,13 +74,7 @@ def _midnight(d: date) -> datetime:
 
 
 def _cities(names) -> list[str]:
-    uniq: list[str] = []
-    for raw in names:
-        for part in re.split(r"\s*(?:,|→|->|/|\band\b)\s*", raw or ""):
-            c = city_to_english(part.strip()) if part and part.strip() else None
-            if c and c not in uniq:
-                uniq.append(c)
-    return uniq
+    return split_cities(names)
 
 
 def _join(cities: list[str]) -> str:
@@ -86,6 +83,42 @@ def _join(cities: list[str]) -> str:
     if len(cities) == 1:
         return cities[0]
     return ", ".join(cities[:-1]) + " and " + cities[-1]
+
+
+def travel_description_info(trip: CalendarTrip, days: list[CalendarTripDay]) -> dict:
+    """C55 - Netvisor-beskrivningen + varifrån syftet kom.
+
+    Syftet tas ur resans `purpose`, annars ur dagarnas syften, annars ur
+    kalenderns möten. Hittas inget: 'Travel in <city>' + purpose_missing
+    (boten gissar inte - Mikko sätter syftet i Resor-vyn)."""
+    purpose, source = (trip.purpose or "").strip() or None, "trip"
+    cities_raw = [d.destination for d in days] or [trip.destination]
+    if not purpose:
+        purpose = combine_purposes([d.purpose for d in days], split_cities(cities_raw))
+        source = "days"
+    if not purpose:
+        meetings = [m for d in days for m in (d.meetings or [])]
+        cities = split_cities(cities_raw)
+        purpose = generate_purpose(meetings, None, extra_cities=cities) if meetings else None
+        if purpose and purpose.strip().lower() == "meetings":
+            purpose = None  # bara generiska möten - gissa inte
+        source = "calendar"
+    text = netvisor_line_description(cities_raw, purpose)
+    flags = [] if purpose else ["purpose_missing"]
+    return {
+        "text": text,
+        "purpose_source": source if purpose else None,
+        "flags": flags,
+        "warnings": netvisor_description_warnings(text),
+    }
+
+
+def netvisor_travel_description(trip: CalendarTrip, days: list[CalendarTripDay] | None = None,
+                                db: Session | None = None) -> str:
+    """C55 - 'Travel for <purpose> in <city>' för en resa."""
+    if days is None:
+        days = _days(db, trip) if db is not None else list(getattr(trip, "days", []) or [])
+    return travel_description_info(trip, days)["text"]
 
 
 def compensation_type(country: str | None, hours: float) -> str | None:
@@ -178,8 +211,14 @@ def build_entry(db: Session, trip_id: int) -> dict:
             warnings.append(
                 f"{field} contains a long dash ('–'); Netvisor text uses a plain '-'."
             )
-    if not (trip.purpose or "").strip():
-        warnings.append("Purpose is missing (Netvisor description must be in English).")
+    desc_info = travel_description_info(trip, days)
+    description = desc_info["text"]
+    if "purpose_missing" in desc_info["flags"]:
+        warnings.append(
+            "Purpose is missing (Netvisor description must be in English) - "
+            "set it in the Trips view."
+        )
+    warnings += desc_info["warnings"]
     warnings += non_english_warnings("purpose", trip.purpose)
     warnings += non_english_warnings("destination", trip.destination)
 
@@ -211,13 +250,12 @@ def build_entry(db: Session, trip_id: int) -> dict:
         hours = (g_end - g_start).total_seconds() / 3600 if g_start and g_end else 0.0
         cc = g["country"]
         g_days = g["days"]
-        g_cities = [d.destination for d in g_days] or [trip.destination]
-        desc = netvisor_line_description(
-            g_cities, cc, trip.purpose,
-            meals=meals_note(
-                (d.day_date.isoformat(), d.free_meals, d.free_meal_sources, d.country or cc)
-                for d in g_days
-            ),
+        # C55 - samma text på varje rad som reseräkningens beskrivning.
+        # Måltider står i "Inklusive kost" (och internt i meals_note), aldrig i texten.
+        desc = description
+        g_meals = meals_note(
+            (d.day_date.isoformat(), d.free_meals, d.free_meal_sources, d.country or cc)
+            for d in g_days
         )
         incl_days = [fmt_date(d.day_date) for d in g_days if meals_included(d.free_meals)]
         night = _night_without_hotel(g_days, trip.end_date)
@@ -230,7 +268,9 @@ def build_entry(db: Session, trip_id: int) -> dict:
             "start_time": g_start.strftime("%H:%M") if g_start else None,
             "end_date": fmt_date(g_end.date()) if g_end else None,
             "end_time": g_end.strftime("%H:%M") if g_end else None,
-            "description": plain_dashes(desc),
+            "description": desc,
+            # Bara i botens vy - exporteras inte till Netvisor.
+            "meals_note": g_meals,
             "settings": {
                 "over_15_km": True,
                 "over_5_km": True,
@@ -275,7 +315,9 @@ def build_entry(db: Session, trip_id: int) -> dict:
         "trip_status": trip.status,
         "netvisor_status": nv,
         "title": title,
-        "description": plain_dashes((trip.purpose or "").strip()) or None,
+        "description": description,
+        "purpose_source": desc_info["purpose_source"],
+        "flags": desc_info["flags"],
         "time_zone": "Europe/Helsinki",
         "travel_start": start.strftime("%Y-%m-%d %H:%M") if start else None,
         "travel_end": end.strftime("%Y-%m-%d %H:%M") if end else None,

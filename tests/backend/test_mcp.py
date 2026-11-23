@@ -290,7 +290,8 @@ def test_valid_token_works(env):
         "get_emissions_summary", "update_trip_leg", "add_trip_leg", "export_trip_legs",
         "list_suggestable_booking_confirmations",
         # C49
-        "get_netvisor_entry", "list_netvisor_status", "set_netvisor_status",
+        "get_netvisor_entry", "list_netvisor_status", "preview_netvisor_descriptions",
+        "set_netvisor_status",
         # C50
         "list_bot_bezala_writes", "inspect_bezala_transaction", "list_probably_handled_receipts", "get_c50_rerun_report",
     }
