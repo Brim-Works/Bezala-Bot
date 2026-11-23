@@ -9,6 +9,7 @@ test.beforeEach(async ({ page }) => {
 
 async function openPerDiemModal(page) {
   await page.goto('/trips');
+  await page.getByTestId('trips-tab-approved').click();
   await page.getByTestId('trip-active-2').click();
   await expect(page.getByTestId('trip-drawer-2')).toBeVisible();
   await page.getByTestId('trip-drawer-per-diem').click();
@@ -17,6 +18,7 @@ async function openPerDiemModal(page) {
 
 test('Drawer på aktiv resa visar Beräkna traktamente-knapp', async ({ page }) => {
   await page.goto('/trips');
+  await page.getByTestId('trips-tab-approved').click();
   await page.getByTestId('trip-active-2').click();
   await expect(page.getByTestId('trip-drawer-2')).toBeVisible();
   await expect(page.getByTestId('trip-drawer-per-diem')).toBeVisible();
