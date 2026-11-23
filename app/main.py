@@ -255,6 +255,21 @@ def _run_c48_migrations() -> None:
         db.close()
 
 
+def _run_c58_migrations() -> None:
+    """C58 - Mikkos två svar för hotellnätter (130 natt 21 jan, 135 natt 22 apr)."""
+    from app.db import SessionLocal
+    from app.services.c58_migrations import apply_mikko_answers
+
+    db = SessionLocal()
+    try:
+        apply_mikko_answers(db)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("C58: startjobb misslyckades")
+    finally:
+        db.close()
+
+
 def _run_c50_rerun() -> None:
     """C50 Del 2/3 — kör om ignored_private_source / no_transaction / väntande
     kvitton med Apple- och redan-hanterat-reglerna. En gång, i bakgrunden
@@ -300,6 +315,7 @@ async def lifespan(app: FastAPI):
     _run_c46_migrations()
     _run_c47_migrations()
     _run_c48_migrations()
+    _run_c58_migrations()
     if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":
         _run_c50_rerun()
         # C51 — läs momsen från öppna kvitton (en gång, i bakgrunden).

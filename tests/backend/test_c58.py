@@ -391,3 +391,31 @@ def test_postgres_migration_and_choices(pg_url):  # noqa: F811
         with engine.begin() as c:
             c.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
         engine.dispose()
+
+
+# ---------------------------------------------------------------- engångsjobb
+
+
+def test_startup_sets_mikkos_two_answers_once(db):  # noqa: F811
+    from app.models import CalendarTrip
+    from app.services.c58_migrations import apply_mikko_answers
+
+    db.add(CalendarTrip(id=130, start_date=date(2026, 1, 20), end_date=date(2026, 1, 22),
+                        destination="Ängelholm", status="suggested", flights=ANG, hotels=[],
+                        source_event_ids=[], flags=[], time_source="parking"))
+    db.add(CalendarTrip(id=135, start_date=date(2026, 4, 22), end_date=date(2026, 4, 23),
+                        destination="Malmö", status="suggested", flights=[], hotels=[],
+                        source_event_ids=[], flags=[], time_source="parking"))
+    db.commit()
+    _receipt(db, date(2026, 1, 21), "Riverside Hotel", 890.0, "SEK", waiting=False,
+             category="Hotell")
+    out = apply_mikko_answers(db)
+    assert [(r["trip_id"], r["status"]) for r in out] == [
+        (130, "invoiced_to_company"), (135, "invoiced_to_company")]
+    n130 = _hotel(tc.get_trip_checklist(db, 130), "2026-01-21")
+    n135 = _hotel(tc.get_trip_checklist(db, 135), "2026-04-22")
+    assert n130["status"] == n135["status"] == "found"
+    assert "Terazza" in n135["note"] and "Riverside" in n130["note"]
+    # Natt 20 jan rörs inte (Riverside-kvittot).
+    assert _hotel(tc.get_trip_checklist(db, 130), "2026-01-20")["resolution"] is None
+    assert apply_mikko_answers(db) is None  # bara en gång; Ångra skrivs inte över
