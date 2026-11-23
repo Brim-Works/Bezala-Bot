@@ -78,7 +78,10 @@ INSTRUCTIONS = (
     "No kg CO2e - Admin applies own factors. C54: Admin's seven rows (short/medium/long "
     "flights km, train, bus, non-company car km, hotel nights); company car is info only; "
     "ground km from a route table (route_table, is_estimate) - receipt km and Mikko's "
-    "manual km always win; export_trip_legs(mode='admin'|'detail'|'route_table')."
+    "manual km always win; export_trip_legs(mode='admin'|'detail'|'route_table'). "
+    "C56: list_trip_suggestions shows the receipt-based AI suggestions and which are "
+    "covered by a calendar trip, old or duplicates; merge_duplicate_trip_suggestions "
+    "is a dry-run unless apply=true - only after Mikko says yes to the list."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -823,6 +826,39 @@ async def get_receipt_inbox_info() -> dict:
     from app.services.kvitto_mail import inbox_info
 
     return await _run(inbox_info)
+
+
+@mcp.tool()
+async def list_trip_suggestions() -> dict:
+    """C56, read-only: every receipt-based AI suggestion (the 'Suggestions' list
+    on /trips) with title, dates, amount, receipt count, whether a calendar trip
+    already covers it (covered_by = overlapping dates + same city), whether it is
+    before 2026 (old), empty, a duplicate of another suggestion (duplicate_of),
+    and receipt_warnings (same amount twice, tiny amounts). merge_plan shows what
+    merge_duplicate_trip_suggestions would do. Nothing is changed."""
+    from app.services.c56_trip_suggestions import analyse
+
+    def slim(db):
+        data = analyse(db)
+        for r in data["suggestions"]:
+            r["receipts"] = [
+                {"vendor": m["vendor"], "amount": m["amount"], "currency": m["currency"],
+                 "receipt_date": m["receipt_date"]} for m in r.pop("messages")]
+        return data
+
+    return await _run(slim)
+
+
+@mcp.tool()
+async def merge_duplicate_trip_suggestions(apply: bool = False) -> dict:
+    """C56: merge duplicate AI suggestions (overlapping dates + same city) into
+    the one with the most receipts; the others' receipts move there and they get
+    status 'merged' (no rows deleted). apply=false (default) = dry-run. Only use
+    apply=true after Mikko has seen the dry-run list and said yes. Nothing is
+    sent to Bezala or Netvisor."""
+    from app.services.c56_trip_suggestions import merge_duplicates
+
+    return await _run(merge_duplicates, apply)
 
 
 @mcp.tool()

@@ -283,6 +283,7 @@ def test_valid_token_works(env):
         "list_subscriptions",
         # C48
         "list_bezala_accounts", "set_subscription_account", "get_receipt_inbox_info",
+        "list_trip_suggestions", "merge_duplicate_trip_suggestions",
         "get_cleanup_report", "investigate_vendor", "list_receipts_without_amount",
         "run_bolt_description_test", "get_vat_read_report", "list_already_handled_candidates",
         "mark_already_handled",

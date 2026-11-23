@@ -4396,6 +4396,137 @@ html[data-theme='B'] {
   gap: 8px;
 }
 
+/* C56 — kompakta resrader */
+.trips-view__summary {
+  margin: 0;
+  font-size: 14px;
+  color: var(--text-2);
+}
+
+.trips-view__tabs {
+  align-self: flex-start;
+  flex-wrap: wrap;
+}
+
+.trips-list--compact {
+  gap: 6px;
+}
+
+.trip-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 12px;
+}
+
+.trip-row__main {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.trip-row__toggle {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  flex: 1 1 220px;
+  min-width: 0;
+  background: transparent;
+  border: 0;
+  padding: 2px 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trip-row__chevron {
+  color: var(--muted);
+  width: 12px;
+}
+
+.trip-row__city {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.trip-row__date {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.trip-row__amount {
+  font-size: 14px;
+  font-weight: 600;
+  white-space: nowrap;
+  min-width: 110px;
+  text-align: right;
+}
+
+.trip-row__pills {
+  display: inline-flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.trip-row__actions {
+  display: inline-flex;
+  gap: 6px;
+  margin-left: auto;
+}
+
+.trip-row__nv {
+  font-size: 12.5px;
+  padding-left: 20px;
+  overflow-wrap: anywhere;
+}
+
+.trip-row__details {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 8px 0 4px 20px;
+  border-top: 1px solid var(--border);
+  margin-top: 4px;
+}
+
+.trip-row__warnings {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+  font-size: 13px;
+}
+
+.cal-trip--embedded {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.btn.btn-sm {
+  padding: 3px 10px;
+  font-size: 12.5px;
+}
+
+.trips-view__hidden summary {
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.trips-view__hidden ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.trips-view__note {
+  font-size: 13px;
+}
+
 .vchip-mini {
   font-size: 13px;
   font-weight: 500;

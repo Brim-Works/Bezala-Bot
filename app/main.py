@@ -360,6 +360,10 @@ app.include_router(netvisor_router)
 from app.routers.emissions import router as emissions_router  # noqa: E402
 
 app.include_router(emissions_router)
+# C56 - kompakt Resor-vy (förslag efter städning, Godkänn-knapp).
+from app.routers.c56 import router as c56_router  # noqa: E402
+
+app.include_router(c56_router)
 
 
 def require_auth(request: Request) -> None:

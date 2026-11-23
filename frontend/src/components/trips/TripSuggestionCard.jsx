@@ -1,16 +1,18 @@
+import { useState } from 'react';
 import { useI18n } from '../../i18n/useI18n.jsx';
 import { fmtAmount } from '../../lib/format.js';
+import { fill, fmtRange, suggestionCity } from './tripFormat.js';
 
-function formatString(template, params) {
-  if (!template) return '';
-  return template.replace(/\{(\w+)\}/g, (_, key) =>
-    params && params[key] != null ? params[key] : '',
-  );
-}
+/* C56 — AI-förslag (kvittogrupp) som en hopfälld rad. Acceptera/Avvisa
+ * står på samma rad som rubriken; beskrivning, kvitton, Justera och Visa
+ * syns först när man klickar. */
 
-function dateRangeLabel(start, end) {
-  if (!start || !end) return '—';
-  return `${start} – ${end}`;
+function warningText(t, w, lang) {
+  const [kind, vendor, amount] = String(w).split(':');
+  const amt = fmtAmount(amount, null, lang);
+  if (kind === 'same_amount_twice') return fill(t.trips.warnSameAmountTwice, { vendor, amount: amt });
+  if (kind === 'tiny_amount') return fill(t.trips.warnTinyAmount, { vendor, amount: amt });
+  return w;
 }
 
 export default function TripSuggestionCard({
@@ -21,96 +23,114 @@ export default function TripSuggestionCard({
   onShow,
 }) {
   const { t, lang } = useI18n();
-  const totalLabel = fmtAmount(trip.total_amount, trip.base_currency || 'EUR', lang);
-  const receiptsCount = (trip.messages || []).length;
+  const [open, setOpen] = useState(false);
+  const c = t.trips.calendar;
+  const messages = trip.messages || [];
+  const receiptsCount = trip.receipt_count ?? messages.length;
+  const totalLabel = fmtAmount(trip.total_amount, trip.base_currency || trip.currency || 'EUR', lang);
+  const warnings = trip.receipt_warnings || [];
+  const dupes = (trip.duplicates || []).length;
 
   return (
     <article
-      className="card card-pad trip-card trip-card--suggestion"
+      className="card trip-row trip-row--suggestion"
       data-testid={`trip-suggestion-${trip.id}`}
     >
-      <header className="trip-card__head">
-        <div className="trip-card__title-block">
-          <span className="pill pill--accent mono">
-            {t.trips.aiSuggestionLabel}
+      <div className="trip-row__main">
+        <button
+          type="button"
+          className="trip-row__toggle"
+          aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}
+          data-testid={`trip-suggestion-toggle-${trip.id}`}
+        >
+          <span className="trip-row__chevron" aria-hidden="true">{open ? '▾' : '▸'}</span>
+          <span className="trip-row__city">{suggestionCity(c, trip)}</span>
+          <span className="trip-row__date mono muted">
+            {fmtRange(trip.start_date, trip.end_date, lang)}
           </span>
-          <h4 className="trip-card__title">{trip.title}</h4>
-          <div className="trip-card__meta mono muted">
-            {dateRangeLabel(trip.start_date, trip.end_date)}
-            {trip.destination ? ` · ${trip.destination}` : ''}
-          </div>
-        </div>
-        <div className="trip-card__totals">
-          <div
-            className="pill pill--muted mono"
-            data-testid={`trip-confidence-${trip.id}`}
-          >
-            {formatString(t.trips.confidenceLabel, {
-              percent: trip.ai_confidence ?? 0,
-            })}
-          </div>
-          <div className="trip-card__amount mono">{totalLabel}</div>
-          <div className="trip-card__count mono muted">
-            {formatString(t.trips.receiptsCount, { count: receiptsCount })}
-          </div>
-        </div>
-      </header>
-
-      {trip.description ? (
-        <p className="trip-card__description">{trip.description}</p>
-      ) : null}
-
-      <ul className="trip-card__receipts">
-        {(trip.messages || []).slice(0, 5).map((m) => (
-          <li key={m.message_id} className="trip-card__receipt">
-            <span className="vchip-mini">{m.vendor || '—'}</span>
-            <span className="mono muted">{m.receipt_date || '—'}</span>
-            <span className="mono">
-              {fmtAmount(m.amount, m.currency, lang)}
+        </button>
+        <span className="trip-row__amount mono">{totalLabel}</span>
+        <span className="trip-row__pills">
+          <span className="pill pill--accent mono">{t.trips.aiSuggestionLabel}</span>
+          <span className="pill pill--muted mono">
+            {fill(t.trips.receiptsCount, { count: receiptsCount })}
+          </span>
+          <span className="pill pill--muted mono" data-testid={`trip-confidence-${trip.id}`}>
+            {fill(t.trips.confidenceLabel, { percent: trip.ai_confidence ?? 0 })}
+          </span>
+          {dupes ? (
+            <span className="pill pill--muted mono" data-testid={`trip-duplicates-${trip.id}`}>
+              {fill(t.trips.duplicatesMerged, { count: dupes })}
             </span>
-          </li>
-        ))}
-        {receiptsCount > 5 ? (
-          <li className="trip-card__receipt muted mono">
-            +{receiptsCount - 5}
-          </li>
-        ) : null}
-      </ul>
+          ) : null}
+          {warnings.length ? (
+            <span className="pill pill--warn mono" title={warnings.map((w) => warningText(t, w, lang)).join('\n')}>
+              ⚠ {warnings.length}
+            </span>
+          ) : null}
+        </span>
+        <span className="trip-row__actions">
+          <button
+            type="button"
+            className="btn primary btn-sm"
+            onClick={onAccept}
+            data-testid={`trip-accept-${trip.id}`}
+          >
+            ✓ {t.trips.accept}
+          </button>
+          <button
+            type="button"
+            className="btn btn-sm"
+            onClick={onReject}
+            data-testid={`trip-reject-${trip.id}`}
+          >
+            ✗ {t.trips.reject}
+          </button>
+        </span>
+      </div>
 
-      <footer className="trip-card__actions">
-        <button
-          type="button"
-          className="btn primary"
-          onClick={onAccept}
-          data-testid={`trip-accept-${trip.id}`}
-        >
-          ✓ {t.trips.accept}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={onReject}
-          data-testid={`trip-reject-${trip.id}`}
-        >
-          ✗ {t.trips.reject}
-        </button>
-        <button
-          type="button"
-          className="btn"
-          onClick={onEdit}
-          data-testid={`trip-edit-${trip.id}`}
-        >
-          ✏ {t.trips.edit}
-        </button>
-        <button
-          type="button"
-          className="btn ghost"
-          onClick={onShow}
-          data-testid={`trip-show-${trip.id}`}
-        >
-          {t.trips.show}
-        </button>
-      </footer>
+      {open ? (
+        <div className="trip-row__details">
+          {trip.description ? (
+            <p className="trip-card__description">{trip.description}</p>
+          ) : null}
+          {warnings.length ? (
+            <ul className="trip-row__warnings">
+              {warnings.map((w) => (
+                <li key={w} className="muted">⚠ {warningText(t, w, lang)}</li>
+              ))}
+            </ul>
+          ) : null}
+          <ul className="trip-card__receipts">
+            {messages.map((m) => (
+              <li key={m.message_id} className="trip-card__receipt">
+                <span className="vchip-mini">{m.vendor || '—'}</span>
+                <span className="mono muted">{m.receipt_date || '—'}</span>
+                <span className="mono">{fmtAmount(m.amount, m.currency, lang)}</span>
+              </li>
+            ))}
+          </ul>
+          <div className="trip-card__actions">
+            <button
+              type="button"
+              className="btn"
+              onClick={onEdit}
+              data-testid={`trip-edit-${trip.id}`}
+            >
+              ✏ {t.trips.edit}
+            </button>
+            <button
+              type="button"
+              className="btn ghost"
+              onClick={onShow}
+              data-testid={`trip-show-${trip.id}`}
+            >
+              {t.trips.show}
+            </button>
+          </div>
+        </div>
+      ) : null}
     </article>
   );
 }

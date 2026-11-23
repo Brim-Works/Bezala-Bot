@@ -71,6 +71,7 @@ test.beforeEach(async ({ page }) => {
 
 test('Netvisor-översikten visar status och filtret Klara för Netvisor', async ({ page }) => {
   await page.goto('/trips');
+  await page.getByTestId('trips-tab-netvisor').click();
   const ov = page.getByTestId('netvisor-overview');
   await expect(page.getByTestId('netvisor-overview-93')).toContainText('#1655');
   await expect(page.getByTestId('netvisor-overview-79')).toBeVisible();
@@ -81,6 +82,8 @@ test('Netvisor-översikten visar status och filtret Klara för Netvisor', async 
 
 test('Netvisor-fliken visar två kalkylatorrader med kost-flagga', async ({ page }) => {
   await page.goto('/trips');
+  await page.getByTestId('trips-tab-approved').click();
+  await page.getByTestId('trip-row-toggle-79').click();
   const panel = page.getByTestId('netvisor-panel-79');
   await panel.locator('summary').first().click();
   await expect(panel).toContainText('Business trip Båstad, Sweden 7.5.2026-8.5.2026');

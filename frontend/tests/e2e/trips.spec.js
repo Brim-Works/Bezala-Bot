@@ -23,24 +23,27 @@ test('Sidebar har en Resor-flik och navigerar till /trips', async ({ page }) => 
 test('Resor-vyn visar förslag och aktiva resor', async ({ page }) => {
   await page.goto('/trips');
   await expect(page.getByTestId('trips-view')).toBeVisible();
-  await expect(page.getByTestId('trip-suggestion-1')).toBeVisible();
+  const row = page.getByTestId('trip-suggestion-1');
+  await expect(row).toBeVisible();
+  await expect(row).toContainText('Stockholm');
+  await expect(row).toContainText('30 apr – 2 maj 2026');
+  await page.getByTestId('trips-tab-approved').click();
   await expect(page.getByTestId('trip-active-2')).toBeVisible();
-  await expect(
-    page.getByText('Stockholm 30 apr - 2 maj 2026', { exact: false }),
-  ).toBeVisible();
 });
 
 test('Acceptera-knappen flyttar förslag till aktiva resor', async ({ page }) => {
   await page.goto('/trips');
   const accept = page.getByTestId('trip-accept-1');
   await accept.click();
-  // Suggestion försvinner, ny aktiv resa dyker upp
+  // Suggestion försvinner, ny aktiv resa dyker upp under Godkända
   await expect(page.getByTestId('trip-suggestion-1')).toHaveCount(0);
+  await page.getByTestId('trips-tab-approved').click();
   await expect(page.getByTestId('trip-active-1')).toBeVisible();
 });
 
 test('Justera-knappen öppnar edit-modal med förfyllda värden', async ({ page }) => {
   await page.goto('/trips');
+  await page.getByTestId('trip-suggestion-toggle-1').click();
   await page.getByTestId('trip-edit-1').click();
   await expect(page.getByTestId('trip-edit-modal-1')).toBeVisible();
   const titleInput = page.getByTestId('trip-edit-title');
@@ -52,6 +55,7 @@ test('Justera-knappen öppnar edit-modal med förfyllda värden', async ({ page 
 
 test('Visa-knappen öppnar drawer med kvitton', async ({ page }) => {
   await page.goto('/trips');
+  await page.getByTestId('trip-suggestion-toggle-1').click();
   await page.getByTestId('trip-show-1').click();
   await expect(page.getByTestId('trip-drawer-1')).toBeVisible();
   await expect(page.getByTestId('trip-drawer-receipt-gmail-msg-1')).toBeVisible();
@@ -61,6 +65,7 @@ test('Visa-knappen öppnar drawer med kvitton', async ({ page }) => {
 
 test('Drawer: ta bort kvitto från resa', async ({ page }) => {
   await page.goto('/trips');
+  await page.getByTestId('trip-suggestion-toggle-1').click();
   await page.getByTestId('trip-show-1').click();
   const reqPromise = page.waitForRequest(
     (req) =>
@@ -74,6 +79,7 @@ test('Drawer: ta bort kvitto från resa', async ({ page }) => {
 
 test('Drawer: bad-feedback öppnar modal och POST:ar feedback', async ({ page }) => {
   await page.goto('/trips');
+  await page.getByTestId('trip-suggestion-toggle-1').click();
   await page.getByTestId('trip-show-1').click();
   await page.getByTestId('trip-drawer-bad-feedback').click();
   await expect(page.getByTestId('trip-feedback-modal-1')).toBeVisible();
@@ -98,13 +104,13 @@ test('Refresh-knappen anropar refresh-suggestions', async ({ page }) => {
   await reqPromise;
 });
 
-test('Tom suggestions-lista visar empty-state', async ({ page }) => {
+test('Tom väntelista visar empty-state', async ({ page }) => {
   apiState = await setupApiMocks(page, {
     tripSuggestions: [],
     activeTrips: [buildActiveTrip()],
   });
   await page.goto('/trips');
-  await expect(page.getByTestId('trips-suggestions-empty')).toBeVisible();
+  await expect(page.getByTestId('trips-waiting-empty')).toBeVisible();
 });
 
 test('Tom active-lista visar empty-state', async ({ page }) => {
@@ -113,6 +119,7 @@ test('Tom active-lista visar empty-state', async ({ page }) => {
     activeTrips: [],
   });
   await page.goto('/trips');
+  await page.getByTestId('trips-tab-approved').click();
   await expect(page.getByTestId('trips-active-empty')).toBeVisible();
 });
 
@@ -155,6 +162,7 @@ test('Trip-drawer skiljer AI-förslag från manuellt tillagda kvitton', async ({
     ],
   });
   await page.goto('/trips');
+  await page.getByTestId('trips-tab-approved').click();
   await page.getByTestId('trip-active-5').click();
   await expect(page.getByTestId('trip-drawer-ai-label')).toBeVisible();
   await expect(page.getByTestId('trip-drawer-manual-label')).toBeVisible();
@@ -199,9 +207,14 @@ const CAL_TRIP = {
 test('Kalenderresor visas som kort med tider, hotell, möten och kvitton', async ({ page }) => {
   await setupApiMocks(page, { calendarTrips: [CAL_TRIP] });
   await page.goto('/trips');
+  const row = page.getByTestId('trip-row-7');
+  await expect(row).toContainText('Stockholm');
+  await expect(row).toContainText('250,00 EUR');
+  // Detaljer först vid klick
+  await expect(page.getByTestId('calendar-trip-7')).toHaveCount(0);
+  await page.getByTestId('trip-row-toggle-7').click();
   const card = page.getByTestId('calendar-trip-7');
   await expect(card).toBeVisible();
-  await expect(card).toContainText('Stockholm');
   await expect(card).toContainText('Avresa hemifrån 16:00');
   await expect(card).toContainText('Hemma 20:05');
   await expect(card).toContainText('Scandic Klara');
@@ -220,8 +233,9 @@ test('C40: kalenderkortet visar status, flaggor, land och syfte från chatten', 
   };
   await setupApiMocks(page, { calendarTrips: [edited] });
   await page.goto('/trips');
+  await expect(page.getByTestId('trip-row-status-8')).toHaveText('Redigerad');
+  await page.getByTestId('trip-row-toggle-8').click();
   const card = page.getByTestId('calendar-trip-8');
-  await expect(card).toContainText('Redigerad');
   await expect(page.getByTestId('calendar-trip-review-8')).toHaveText('Välj flyg');
   // C41: landskoden visas som namn (SE → Sverige)
   await expect(card).toContainText('Sverige');
@@ -233,7 +247,6 @@ test('Läs kalendern utan consent visar Återanslut Gmail', async ({ page }) => 
     calendarRefreshResponse: { status: 'consent_required', detail: 'x' },
   });
   await page.goto('/trips');
-  await expect(page.getByTestId('trips-calendar-empty')).toBeVisible();
   await page.getByTestId('trips-calendar-refresh').click();
   const notice = page.getByTestId('trips-calendar-notice');
   await expect(notice).toBeVisible();
@@ -253,6 +266,111 @@ test('Läs kalendern visar nya resor och ogrupperade event', async ({ page }) =>
   });
   await page.goto('/trips');
   await page.getByTestId('trips-calendar-refresh').click();
-  await expect(page.getByTestId('calendar-trip-7')).toBeVisible();
+  await expect(page.getByTestId('trip-row-7')).toBeVisible();
   await expect(page.getByTestId('trips-calendar-ungrouped')).toContainText('Kunde inte grupperas (1)');
+});
+
+// ---------- C56 — kort och tydlig ----------
+
+const C56_HIDDEN = [
+  {
+    id: 41, title: 'Oslo 21 oktober 2026', destination: null,
+    start_date: '2026-10-21', end_date: '2026-10-22', total_amount: 668,
+    currency: 'EUR', receipt_count: 2, messages: [], visible: false, old: false,
+    covered_by: { trip_id: 140, destination: 'Oslo', status: 'suggested' },
+    duplicates: [], receipt_warnings: [],
+  },
+  {
+    id: 42, title: 'Köpenhamn & Malmö 20-21 Mar 2025', destination: null,
+    start_date: '2025-03-20', end_date: '2025-03-21', total_amount: 300,
+    currency: 'EUR', receipt_count: 1, messages: [], visible: false, old: true,
+    covered_by: null, duplicates: [], receipt_warnings: [],
+  },
+];
+
+test('C56: sammanfattning, flikar och dolda förslag', async ({ page }) => {
+  await setupApiMocks(page, {
+    calendarTrips: [
+      { ...CAL_TRIP, id: 140, destination: 'Oslo', start_date: '2026-10-21', end_date: '2026-10-22' },
+      { ...CAL_TRIP, id: 9, status: 'approved' },
+    ],
+    c56Hidden: C56_HIDDEN,
+    emissionsPerTrip: [
+      { trip_id: 140, km: 1580, legs_missing_km: 1, flags: [] },
+      { trip_id: 9, km: 820.4, legs_missing_km: 0, flags: [] },
+    ],
+    netvisorDescriptions: [
+      { trip_id: 140, netvisor_description: 'Travel for internal audit in Oslo' },
+    ],
+  });
+  await page.goto('/trips');
+  // 2 resor; väntar = resa 140 + AI-förslag 1; 1 saknar km
+  await expect(page.getByTestId('trips-stats-summary')).toHaveText(
+    '2 resor · 2 väntar på ditt beslut · 1 saknar km',
+  );
+  await expect(page.getByTestId('trips-tab-waiting')).toHaveAttribute('aria-selected', 'true');
+  await expect(page.getByTestId('trip-row-140')).toBeVisible();
+  await expect(page.getByTestId('trip-row-9')).toHaveCount(0);
+  await expect(page.getByTestId('trip-row-km-140')).toHaveText('km saknas');
+  await expect(page.getByTestId('trip-row-nv-140')).toContainText('Travel for internal audit in Oslo');
+  // Täckt förslag visas inte som förslag, bara i listan "redan täckta"
+  await expect(page.getByTestId('trip-suggestion-41')).toHaveCount(0);
+  await expect(page.getByTestId('trips-covered')).toContainText('1 förslag är redan täckta av resor');
+  await page.getByTestId('trips-covered').locator('summary').click();
+  await expect(page.getByTestId('trips-covered-41')).toContainText('Redan täckt av resa 140');
+  await expect(page.getByTestId('trip-suggestion-42')).toHaveCount(0);
+  await expect(page.getByTestId('trips-old-hidden')).toContainText('1 förslag före 2026 är dolda');
+  // Godkända
+  await page.getByTestId('trips-tab-approved').click();
+  await expect(page.getByTestId('trip-row-9')).toBeVisible();
+  await expect(page.getByTestId('trip-row-km-9')).toHaveText('820 km');
+});
+
+test('C56: Acceptera/Avvisa står på rubrikraden och Säkerhet på svenska', async ({ page }) => {
+  await page.goto('/trips');
+  const row = page.getByTestId('trip-suggestion-1');
+  const head = row.locator('.trip-row__main');
+  await expect(head.getByTestId('trip-accept-1')).toBeVisible();
+  await expect(head.getByTestId('trip-reject-1')).toBeVisible();
+  await expect(page.getByTestId('trip-confidence-1')).toHaveText('Säkerhet: 85%');
+  // Detaljerna är hopfällda
+  await expect(page.getByTestId('trip-edit-1')).toHaveCount(0);
+});
+
+test('C56: Godkänn på raden ändrar bara status (efter bekräftelse)', async ({ page }) => {
+  const state = await setupApiMocks(page, {
+    calendarTrips: [{ ...CAL_TRIP, status: 'edited' }],
+    netvisorDescriptions: [{ trip_id: 7, netvisor_description: 'Travel for workshop in Stockholm' }],
+  });
+  await page.goto('/trips');
+  let dialogText = '';
+  page.once('dialog', (d) => { dialogText = d.message(); d.accept(); });
+  await page.getByTestId('trip-approve-7').click();
+  await expect(page.getByTestId('trip-row-7')).toHaveCount(0);
+  expect(dialogText).toContain('Travel for workshop in Stockholm');
+  expect(state.lastTripRequest).toEqual({ kind: 'approve', id: 7 });
+  await page.getByTestId('trips-tab-approved').click();
+  await expect(page.getByTestId('trip-row-status-7')).toHaveText('Godkänd');
+});
+
+test('C56: engelska — inga svenska etiketter', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('bb_lang', 'en'));
+  await setupApiMocks(page, {
+    calendarTrips: [{ ...CAL_TRIP, status: 'edited', destination: 'Gothenburg' }],
+    tripSuggestions: [buildTripSuggestion({ destination: 'Köpenhamn, Danmark' })],
+  });
+  await page.goto('/trips');
+  await expect(page.getByTestId('trips-stats-summary')).toHaveText(
+    '1 trips · 2 waiting for your decision · 0 missing km',
+  );
+  await expect(page.getByTestId('trip-row-7')).toContainText('Gothenburg');
+  await expect(page.getByTestId('trip-row-7')).toContainText('14–15 Apr 2026');
+  const sugg = page.getByTestId('trip-suggestion-1');
+  await expect(sugg).toContainText('Copenhagen');
+  await expect(page.getByTestId('trip-confidence-1')).toHaveText('Confidence: 85%');
+  const text = await page.getByTestId('trips-view').innerText();
+  for (const word of ['Acceptera', 'Avvisa', 'Justera', 'Säkerhet', 'AI-förslag', 'Hittat',
+    'Checklista', 'Godkänn', 'Väntar', 'Redigerad', 'Köpenhamn']) {
+    expect(text).not.toContain(word);
+  }
 });

@@ -9,7 +9,7 @@ import './netvisor.css';
  * varningar. Bara läsning. */
 
 export default function NetvisorOverview({ year = 2026 }) {
-  const { lang } = useI18n();
+  const { lang, t } = useI18n();
   const s = nvStrings(lang);
   const [data, setData] = useState(null);
   const [error, setError] = useState(null);
@@ -58,7 +58,7 @@ export default function NetvisorOverview({ year = 2026 }) {
                   <td className="mono">{r.start_date}{r.end_date !== r.start_date ? ` – ${r.end_date}` : ''}</td>
                   <td>{r.destination || '—'}</td>
                   <td className="mono">{r.country || '—'}</td>
-                  <td className="mono">{r.trip_status}</td>
+                  <td className="mono">{t.trips.calendar[r.trip_status] || r.trip_status}</td>
                   <td className="mono">
                     {s.nvStatus[r.netvisor_status] || r.netvisor_status}
                     {r.netvisor_report_id ? ` #${r.netvisor_report_id}` : ''}

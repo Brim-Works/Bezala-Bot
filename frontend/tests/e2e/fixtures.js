@@ -422,6 +422,10 @@ export async function setupApiMocks(page, overrides = {}) {
     tripSuggestions: overrides.tripSuggestions || [buildTripSuggestion()],
     activeTrips: overrides.activeTrips || [buildActiveTrip()],
     calendarTrips: overrides.calendarTrips || [],
+    // C56
+    c56Hidden: overrides.c56Hidden || [],
+    netvisorDescriptions: overrides.netvisorDescriptions || [],
+    emissionsPerTrip: overrides.emissionsPerTrip || [],
     calendarRefreshResponse: overrides.calendarRefreshResponse || {
       status: 'ok', stats: { trips: 0 }, ungrouped: [], trips: [],
     },
@@ -510,6 +514,50 @@ export async function setupApiMocks(page, overrides = {}) {
 
   await page.route('**/api/feedback/stats', (route) =>
     route.fulfill(jsonResponse(state.feedbackStats)),
+  );
+
+  // --- C56 — kompakt Resor-vy ---
+  await page.route('**/api/c56/**', async (route) => {
+    const request = route.request();
+    const method = request.method();
+    const pathname = new URL(request.url()).pathname;
+    if (method === 'GET' && pathname.endsWith('/api/c56/suggestions')) {
+      const live = state.tripSuggestions.map((t) => ({
+        ...t,
+        receipt_count: (t.messages || []).length,
+        visible: true,
+        covered_by: null,
+        old: false,
+        duplicates: t.duplicates || [],
+        receipt_warnings: t.receipt_warnings || [],
+      }));
+      const suggestions = [...live, ...state.c56Hidden];
+      return route.fulfill(jsonResponse({
+        counts: {
+          total: suggestions.length,
+          visible: live.length,
+          covered: state.c56Hidden.filter((s) => s.covered_by && !s.old).length,
+          old: state.c56Hidden.filter((s) => s.old).length,
+        },
+        merge_plan: [],
+        suggestions,
+      }));
+    }
+    const m = pathname.match(/\/api\/c56\/calendar-trips\/(\d+)\/(approve|unapprove)$/);
+    if (method === 'POST' && m) {
+      const trip = state.calendarTrips.find((t) => t.id === Number(m[1]));
+      if (!trip) return route.fulfill(jsonResponse({ detail: 'not found' }, 404));
+      trip.status = m[2] === 'approve' ? 'approved' : 'edited';
+      state.lastTripRequest = { kind: m[2], id: trip.id };
+      return route.fulfill(jsonResponse(trip));
+    }
+    return route.fulfill(jsonResponse({ detail: 'not mocked' }, 404));
+  });
+  await page.route('**/api/netvisor/descriptions**', (route) =>
+    route.fulfill(jsonResponse({ trips: state.netvisorDescriptions })),
+  );
+  await page.route('**/api/emissions/summary**', (route) =>
+    route.fulfill(jsonResponse({ per_trip: state.emissionsPerTrip })),
   );
 
   // --- FAS 11.1 — Resor ---
