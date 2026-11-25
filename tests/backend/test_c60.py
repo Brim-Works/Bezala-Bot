@@ -574,3 +574,22 @@ def test_postgres_unverified_status_and_fill_log(pg_url, monkeypatch):  # noqa: 
     finally:
         s.close()
         engine.dispose()
+
+
+def test_finnair_nok_fare_draft_gets_card_line_amount(bound_db):
+    """5594781: Bezala tog "Fare : NOK 3790"; kvitto och kortrad är 380,21 EUR."""
+    line = _line(bound_db, "2513381", date(2026, 11, 16), 380.21,
+                 desc="MIKKO KEINONEN: FINNAIR, VANTAA, FI 380.21 EUR")
+    m = _receipt(bound_db, date(2026, 11, 28), "Finnair", 380.21, waiting=False,
+                 category="Flyg", bezala_transaction_id="5594781",
+                 flight_segments=[{"flight_no": "AY 914", "origin": "OSL", "dest": "HEL",
+                                   "date": "2026-11-28"}],
+                 ai_description_en="Finnair flight Oslo-Helsinki, 16 November 2026")
+    line.bezala_transaction_id = "5594781"
+    bound_db.commit()
+    plan = c60.plan_fill(bound_db, m, line, _draft(
+        "5594781", date="2026-11-16", original_amount="3790.00",
+        original_amount_currency="NOK"), accounts=ACCOUNTS)
+    assert plan["changes"]["original_amount"] == "380.21"
+    assert plan["changes"]["original_amount_currency"] == "EUR"
+    assert plan["changes"]["description"] == "Finnair flight Oslo-Helsinki, 28 November 2026"

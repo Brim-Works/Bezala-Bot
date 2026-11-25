@@ -278,7 +278,15 @@ def _run_c60_migrations() -> None:
 
     db = SessionLocal()
     try:
-        reset_broken_card_lines(db)
+        done = reset_broken_card_lines(db)
+        if done is not None:
+            # Läs om de 8 utkasten (GET; fylls bara om BEZALA_DRAFT_FILL_ENABLED).
+            # 7 av 8 kopplades av Bezala efter handrättning 2026-11-26 - de blir
+            # resolved här, resten coupling_unverified.
+            from app.services.c60_draft import BROKEN_DRAFTS_2026_11_25, schedule_verification
+
+            for i, (tx_id, bid) in enumerate(BROKEN_DRAFTS_2026_11_25.items()):
+                schedule_verification(tx_id, bill_line_id=bid, attempt=2, delay=30 + 3 * i)
     except Exception:  # noqa: BLE001
         db.rollback()
         logger.exception("C60: startjobb misslyckades")
