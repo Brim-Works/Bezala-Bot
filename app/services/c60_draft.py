@@ -51,15 +51,16 @@ BROKEN_DRAFTS_2026_11_25: dict[str, str] = {
     "5594775": "2504861",  # Skånetrafiken 22,81 (0)
 }
 
-# Bezalas momsval → vat_lines[].tax_percentage (läst med GET på Mikkos egna
-# utkast 2026-11-25: 25,5 % = "0.255", 0 % = "0.0", vat_code_id = null).
-# "Purchases Abroad (EU/Non-EU)" syns inte som egen kod i API:t ännu (Lovable
-# 5594767: tax_percentage "0.0", vat_code_id null) - skrivs därför inte.
-_VAT_TO_TAX_PERCENTAGE = {
-    "0%": "0.0",
-    "10%": "0.10",
-    "13,5%": "0.135",
-    "25,5%": "0.255",
+# Bezalas momsval → momsrad. Läst med GET på Mikkos egna utkast 2026-11-25/26:
+#   0 %        → vat_id 1,    tax_percentage "0.0"   (Arlanda 5594765)
+#   25,5 %     → vat_id 864,  tax_percentage "0.255" (Moovy 5594768)
+#   Purchases Abroad (Non-EU) → vat_id 1914, tax_percentage "0.0" (Lovable 5594767)
+# vat_code_id är alltid null. Övriga val (EU, 10 %, 13,5 %) har okänt vat_id
+# och skrivs inte - Mikko väljer dem själv.
+_VAT_TO_LINE = {
+    "0%": {"vat_id": 1, "tax_percentage": "0.0"},
+    "25,5%": {"vat_id": 864, "tax_percentage": "0.255"},
+    "Purchases Abroad (Non-EU)": {"vat_id": 1914, "tax_percentage": "0.0"},
 }
 
 FILL_LOG_KEYS = ("description", "date", "original_amount", "original_amount_currency",
@@ -203,8 +204,9 @@ def verify_coupling(tx: dict, line: CardLine | None) -> dict:
     t = guard._unwrap(tx)
     problems: list[str] = []
     snap = guard.status_snapshot(tx)
-    if not guard.is_draft(snap):
-        problems.append(f"Utkastet är inte längre ett utkast (state={guard.draft_state(snap)!r})")
+    # Ett utlägg som lämnat utkastläget (t.ex. skickat för attest i Bezalas
+    # gränssnitt) kan ändå vara rätt kopplat - state är inget kopplingsfel.
+    # Boten skriver aldrig till det (guarded_put kräver "draft").
     if t.get("connected_to_bill_line") is not True:
         problems.append("Utkastet är inte kopplat till kortraden i Bezala")
     if not t.get("bill_id"):
@@ -457,11 +459,13 @@ def plan_fill(db: Session, row: ProcessedMessage, line: CardLine | None, tx: dic
                 new["expense_account_id"] = acc["account_id"]
             else:
                 skipped.append("Konto: inget säkert förslag - fyll i själv")
-            pct = _VAT_TO_TAX_PERCENTAGE.get(fill.get("vat") or "")
-            if pct is not None:
-                new["tax_percentage"] = pct
+            vat_line = _VAT_TO_LINE.get(fill.get("vat") or "")
+            if vat_line is not None and not ln.get("vat_id"):
+                new.update(vat_line)
+            elif vat_line is not None:
+                skipped.append("Moms: redan vald i Bezala - rörs inte")
             elif fill.get("vat"):
-                skipped.append(f"Moms: '{fill['vat']}' kan inte skrivas via API:t än - "
+                skipped.append(f"Moms: '{fill['vat']}' har inget känt vat_id - "
                                "välj den själv i Bezala")
             else:
                 skipped.append("Moms: okänd - välj den själv i Bezala")
@@ -611,6 +615,18 @@ def repair_broken_drafts(db: Session, *, apply: bool = False, client=None) -> di
 # ================================================================ engångsjobb
 
 TASK_RESET = "c60_reset_unverified_v1"
+TASK_REVERIFY = "c60_reverify_v2"
+
+
+def needs_reverify(db: Session) -> bool:
+    """Engång: läs om de 8 efter hotfixen (state räknas inte som kopplingsfel)."""
+    from app.models import MaintenanceTask
+
+    if db.query(MaintenanceTask).filter(MaintenanceTask.name == TASK_REVERIFY).first():
+        return False
+    db.add(MaintenanceTask(name=TASK_REVERIFY))
+    db.commit()
+    return True
 
 
 def reset_broken_card_lines(db: Session, *, force: bool = False) -> list[dict] | None:

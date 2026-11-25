@@ -278,8 +278,10 @@ def _run_c60_migrations() -> None:
 
     db = SessionLocal()
     try:
+        from app.services.c60_draft import needs_reverify
+
         done = reset_broken_card_lines(db)
-        if done is not None:
+        if done is not None or needs_reverify(db):
             # Läs om de 8 utkasten (GET; fylls bara om BEZALA_DRAFT_FILL_ENABLED).
             # 7 av 8 kopplades av Bezala efter handrättning 2026-11-26 - de blir
             # resolved här, resten coupling_unverified.

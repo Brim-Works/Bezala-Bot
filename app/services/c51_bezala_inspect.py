@@ -24,7 +24,7 @@ _COMPARE_KEYS = (
     "current_approvers_ids", "approved_by", "transaction_approvers", "not_connected_to_card",
     "total", "account_id", "credit_account_id", "cost_center_id", "cost_center_ids",
     "bill_id", "bill_line_id", "connected_to_bill_line", "approvers", "approver_id",
-    "taxable", "reimbursement_type", "is_amount_mismatch", "exchange_rate", "vendor_id",
+    "taxable", "reimbursement_type", "emissions", "participants", "is_amount_mismatch", "exchange_rate", "vendor_id",
     "current_approver", "submitted_at", "sent_at", "created_at", "updated_at",
 )
 
