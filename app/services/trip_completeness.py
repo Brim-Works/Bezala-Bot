@@ -925,8 +925,10 @@ def sync_card_lines(db: Session, raw_rows: list[dict]) -> dict:
             existing[bid] = row
             added += 1
         elif row.status == "resolved":
+            # Kortraden saknar fortfarande kvitto i Bezala.
             row.status = "missing"
             row.resolved_at = None
+        # C60 — 'coupling_unverified' behålls tills verifieringen avgör.
         row.txn_date = _parse_day(n.get("date"))
         row.description = n.get("description")
         row.vendor = _vendor_from_description(n.get("description"))
@@ -1056,6 +1058,13 @@ def card_line_dict(c: CardLine, today: date, trip: CalendarTrip | None = None) -
         "status": c.status,
         "note": c.note,
     }
+    if c.status == "coupling_unverified" or (c.status == "missing" and c.bezala_transaction_id):
+        # C60 — ett utkast finns i Bezala men är inte (verifierat) kopplat.
+        out["bezala_transaction_id"] = c.bezala_transaction_id
+        out["coupling"] = ("Utkast skapat, koppling inte verifierad än"
+                           if c.status == "coupling_unverified" else
+                           "Utkast finns i Bezala men är inte kopplat till kortraden - "
+                           "använd fill_bezala_drafts / repair_unverified_drafts")
     if c.status == "private_expense":
         from app.services.bill_line_status import private_expense_description
 
@@ -1067,7 +1076,9 @@ def card_line_dict(c: CardLine, today: date, trip: CalendarTrip | None = None) -
 
 
 def list_card_lines(db: Session, *, include_not_available: bool = False) -> list[dict]:
-    statuses = CARD_LINE_STATUSES if include_not_available else ("missing",)
+    # C60 — utkast skapat men kopplingen inte verifierad: visas också.
+    statuses = (CARD_LINE_STATUSES + ("coupling_unverified",) if include_not_available
+                else ("missing", "coupling_unverified"))
     rows = (
         db.query(CardLine)
         .filter(CardLine.status.in_(statuses))
@@ -1164,8 +1175,10 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
     try:
         from app.services.card_line_coupling import suggest_receipts
 
+        # C60 — rader med ett utkast i Bezala får inget nytt kvittoförslag.
         rows = db.query(CardLine).filter(
-            CardLine.bill_line_id.in_([c["bill_line_id"] for c in cards])
+            CardLine.bill_line_id.in_([c["bill_line_id"] for c in cards
+                                       if not c.get("bezala_transaction_id")])
         ).all()
         sugg = suggest_receipts(db, rows) if rows else {}
     except Exception:  # noqa: BLE001 — förslagen får aldrig fälla listan
@@ -1210,6 +1223,8 @@ def list_missing(db: Session, older_than_days: int = 5, sync: bool = True) -> di
                    "overdue_refunds": len(refunds),
                    "card_lines_with_suggested_receipt": with_sugg,
                    "card_lines_without_candidate": len(cards) - with_sugg,
+                   "card_lines_coupling_unverified": sum(
+                       1 for c in cards if c.get("bezala_transaction_id")),
                    "unconfirmed_trips": len(unconfirmed)},
         # C43 — parkering utanför resa → fråga Mikko om privat.
         "possible_private_count": sum(1 for c in cards if c.get("flags")),

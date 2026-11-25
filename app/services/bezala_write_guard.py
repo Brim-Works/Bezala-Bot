@@ -40,6 +40,13 @@ ALLOWED_TRANSACTION_FIELDS = frozenset({
     "cost_lines_attributes", "transaction_lines_attributes",
 })
 
+# C60 — utkastifyllning (BEZALA_DRAFT_FILL_ENABLED) får dessutom rätta belopp,
+# valuta och datum som Bezala läst fel ur kvittot. Bara via guarded_put med
+# allowed=DRAFT_FILL_FIELDS (läsning av state före och efter).
+DRAFT_FILL_FIELDS = ALLOWED_TRANSACTION_FIELDS | frozenset({
+    "date", "original_amount", "original_amount_currency",
+})
+
 # Fält i POST /attachments-formuläret (kvitto/bilaga). C51: `state` skickas
 # ALDRIG i någon skrivning (Arlanda m.fl. fick `state=unapproved` i både POST
 # och PUT och hamnade i `reviewing`). `description` skickas inte heller.
@@ -337,14 +344,26 @@ def verify_new_draft(client, transaction_id, *, bill_line_id=None,
     return after
 
 
-def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None) -> dict:
+def _values(tx: dict | None, keys) -> dict:
+    t = _unwrap(tx)
+    return {k: t.get(k) for k in keys or ()}
+
+
+def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None,
+                allowed=ALLOWED_TRANSACTION_FIELDS, log_keys=None,
+                operation: str = "put") -> dict:
     """PUT /transactions/{id} med bara tillåtna fält, läsning före och efter.
-    Statusändring → CRITICAL + kill switch + BezalaWriteBlocked."""
-    check_fields(fields)
+    Statusändring → CRITICAL + kill switch + BezalaWriteBlocked.
+
+    C60: `log_keys` = fält vars värden före/efter sparas i loggen (visas i
+    list_bot_bezala_writes och kvittovyn). Statusjämförelsen gäller fortfarande
+    bara statusfälten."""
+    check_fields(fields, allowed)
     ensure_writes_allowed(db)
-    before = status_snapshot(client.get_transaction(transaction_id))
+    raw_before = client.get_transaction(transaction_id)
+    before = status_snapshot(raw_before)
     if not is_draft(before):
-        record_write(operation="put", transaction_id=transaction_id, fields=fields,
+        record_write(operation=operation, transaction_id=transaction_id, fields=fields,
                      before=before, outcome="blocked",
                      detail=f"state {draft_state(before)!r} is not a draft state - PUT refused",
                      db=db)
@@ -353,10 +372,14 @@ def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None) -> d
             f"(state={draft_state(before)!r}, draft = {sorted(DRAFT_STATES)}) - not writing to it."
         )
     result = client._put_transaction_unchecked(transaction_id, fields)
-    after = status_snapshot(client.get_transaction(transaction_id))
+    raw_after = client.get_transaction(transaction_id)
+    after = status_snapshot(raw_after)
     changed = status_changed(before, after)
+    if log_keys:
+        before = {**before, "values": _values(raw_before, log_keys)}
+        after = {**after, "values": _values(raw_after, log_keys)}
     if changed or not is_draft(after):
-        record_write(operation="put", transaction_id=transaction_id, fields=fields,
+        record_write(operation=operation, transaction_id=transaction_id, fields=fields,
                      before=before, after=after, outcome="status_changed",
                      detail=f"changed: {changed}", db=db)
         trip_kill_switch(
@@ -367,6 +390,8 @@ def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None) -> d
             f"Bezala transaction {transaction_id} changed status after the write "
             f"({changed}) - kill switch on, all Bezala writes stopped."
         )
-    record_write(operation="put", transaction_id=transaction_id, fields=fields,
+    record_write(operation=operation, transaction_id=transaction_id, fields=fields,
                  before=before, after=after, db=db)
+    if log_keys:
+        result = {**(result or {}), "after_values": after.get("values")}
     return result

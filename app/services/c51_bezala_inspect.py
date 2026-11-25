@@ -24,6 +24,7 @@ _COMPARE_KEYS = (
     "current_approvers_ids", "approved_by", "transaction_approvers", "not_connected_to_card",
     "total", "account_id", "credit_account_id", "cost_center_id", "cost_center_ids",
     "bill_id", "bill_line_id", "connected_to_bill_line", "approvers", "approver_id",
+    "taxable", "reimbursement_type", "is_amount_mismatch", "exchange_rate", "vendor_id",
     "current_approver", "submitted_at", "sent_at", "created_at", "updated_at",
 )
 
@@ -34,11 +35,12 @@ def _compact(tx: dict) -> dict:
     for key in ("vat_lines", "vat_lines_attributes", "lines"):
         lines = inner.get(key)
         if isinstance(lines, list):
+            # C60 — hela momsraden (id, taxable, vat_code_id …) så att det syns
+            # hur Bezala sparar t.ex. "Purchases Abroad (Non-EU)".
             out[key] = [
-                {k: ln.get(k) for k in ("expense_account_id", "vat_code_id", "tax_percentage",
-                                        "amount", "sum", "cost_center_ids", "vat_name")
-                 if isinstance(ln, dict) and k in ln}
-                for ln in lines[:10]
+                {k: v for k, v in ln.items() if not isinstance(v, (dict, list)) or k in (
+                    "cost_center_ids",)}
+                for ln in lines[:10] if isinstance(ln, dict)
             ]
     return out
 

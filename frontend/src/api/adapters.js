@@ -39,6 +39,9 @@ export function deriveStatuses(message) {
   switch (message?.bezala_upload_status) {
     case 'success':
       return { file, bezala: 'transferred' };
+    case 'coupling_unverified':
+      // C60 — utkast skapat men kopplingen till kortraden inte verifierad.
+      return { file, bezala: 'unverified' };
     case 'pending':
       return { file, bezala: 'pending' };
     case 'failed':

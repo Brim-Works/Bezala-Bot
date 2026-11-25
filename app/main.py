@@ -270,6 +270,30 @@ def _run_c58_migrations() -> None:
         db.close()
 
 
+def _run_c60_migrations() -> None:
+    """C60 - de 8 okopplade utkasten från 2026-11-25: kortraderna tillbaka
+    till 'missing' i botens egen tabell (inget skrivs till Bezala)."""
+    from app.db import SessionLocal
+    from app.services.c60_draft import reset_broken_card_lines
+
+    db = SessionLocal()
+    try:
+        done = reset_broken_card_lines(db)
+        if done is not None:
+            # Läs om de 8 utkasten (GET; fylls bara om BEZALA_DRAFT_FILL_ENABLED).
+            # 7 av 8 kopplades av Bezala efter handrättning 2026-11-26 - de blir
+            # resolved här, resten coupling_unverified.
+            from app.services.c60_draft import BROKEN_DRAFTS_2026_11_25, schedule_verification
+
+            for i, (tx_id, bid) in enumerate(BROKEN_DRAFTS_2026_11_25.items()):
+                schedule_verification(tx_id, bill_line_id=bid, attempt=2, delay=30 + 3 * i)
+    except Exception:  # noqa: BLE001
+        db.rollback()
+        logger.exception("C60: startjobb misslyckades")
+    finally:
+        db.close()
+
+
 def _run_c50_rerun() -> None:
     """C50 Del 2/3 — kör om ignored_private_source / no_transaction / väntande
     kvitton med Apple- och redan-hanterat-reglerna. En gång, i bakgrunden
@@ -316,6 +340,7 @@ async def lifespan(app: FastAPI):
     _run_c47_migrations()
     _run_c48_migrations()
     _run_c58_migrations()
+    _run_c60_migrations()
     if os.environ.get("C44_STARTUP_ENABLED", "true").lower() != "false":
         _run_c50_rerun()
         # C51 — läs momsen från öppna kvitton (en gång, i bakgrunden).
@@ -3486,8 +3511,9 @@ def _do_match_to_bezala(
 
     description_override = row.ai_description_en or row.summary
     # C50 — beskrivningens datum kommer alltid från kortradens/kvittots datum.
-    from app.services.c50_accounts import fix_description_date
-    description_override = fix_description_date(description_override, effective_date)
+    # C60 — flyg: flygens datum, aldrig köp-/kortradens datum.
+    from app.services.c60_draft import description_for as _c60_description
+    description_override = _c60_description(db, row, effective_date)
 
     # C43 — privat utlägg: kommentaren i Bezala ska säga det (engelska).
     from app.services import bill_line_status as _bls
@@ -3596,6 +3622,27 @@ def get_bot_bezala_writes(
     return list_bot_bezala_writes(db, days)
 
 
+@app.get("/api/messages/{msg_id}/bezala-writes")
+def get_message_bezala_writes(
+    msg_id: int,
+    db: Session = Depends(get_db),
+    _: None = Depends(require_auth),
+):
+    """C60 — kvittovyn: vad boten skrivit till kvittots Bezala-utkast (före/efter)."""
+    from app.services.c60_draft import writes_for
+
+    row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    return {
+        "message_id": row.id,
+        "bezala_transaction_id": row.bezala_transaction_id,
+        "bezala_upload_status": row.bezala_upload_status,
+        "note": row.bezala_error_message,
+        "writes": writes_for(db, row.bezala_transaction_id),
+    }
+
+
 @app.get("/api/bezala/kill-switch")
 def get_bezala_kill_switch(db: Session = Depends(get_db), _: None = Depends(require_auth)):
     from app.services.bezala_write_guard import kill_switch_status
@@ -3650,6 +3697,16 @@ def match_message_to_bezala(
         _do_match_to_bezala(
             row=row, bill_line_id=bill_line_id, db=db, bezala=bezala,
         )
+        # C60 — inte "success" förrän utkastet lästs om och kopplingen
+        # verifierats i Bezala (ca 75 s).
+        from app.services import c60_draft
+        from app.models import CardLine as _CL
+
+        _line = db.query(_CL).filter(_CL.bill_line_id == bill_line_id).first()
+        c60_draft.mark_unverified(
+            db, _line, row,
+            f"Utkast {row.bezala_transaction_id} skapat - koppling inte verifierad än")
+        c60_draft.schedule_verification(row.bezala_transaction_id, bill_line_id=bill_line_id)
         return _serialize_message(row)
     except BezalaError as exc:
         logger.exception(

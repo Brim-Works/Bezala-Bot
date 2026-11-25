@@ -145,6 +145,10 @@ export default {
       retrying: 'Retrying…',
       retrySucceeded: 'Bezala transfer complete',
       retryFailed: 'Retry failed',
+      unverifiedTitle: 'Draft created - coupling not verified',
+      unverifiedBody:
+        'Bezala has a draft, but the bot has not seen it coupled to the card line (amount, date, card line). The bot reads the draft again after about 75 seconds.',
+      writesTitle: 'Bot writes to the draft',
       naTitle: 'No Bezala transfer',
       naBody:
         'Step was skipped — the file never reached Drive, or the mail is not a receipt.',
@@ -224,6 +228,7 @@ export default {
     needs_download: 'Download',
   },
   bezalaStatus: {
+    unverified: 'Not verified',
     transferred: 'Uploaded',
     pending: 'Pending',
     error: 'Error',
