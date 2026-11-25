@@ -577,6 +577,11 @@ def fill_drafts(db: Session, transaction_ids: list[str] | None = None, *, apply:
                 continue
             plan = plan_fill(db, row, line, tx, accounts=accounts)
             plan["coupling_before"] = verify_coupling(tx, line)
+            try:
+                plan["distance"] = plan_distance(db, row, tx)
+            except Exception as exc:  # noqa: BLE001 - km-förslaget får aldrig fälla verktyget
+                db.rollback()
+                plan["distance"] = {"error": str(exc)[:200]}
             if apply:
                 plan = apply_fill(client, tx_id, plan, db=db)
                 try:
@@ -691,3 +696,96 @@ def writes_for(db: Session, transaction_id: str | None, limit: int = 20) -> list
         if isinstance(r.state_after, dict) else None,
         "detail": r.detail,
     } for r in rows]
+
+
+# ================================================================ Del 3b: km, Vehicle, passagerare
+#
+# Bezalas GET /transactions/{id} visar bara `emissions` (kg CO2e, text, t.ex.
+# "24.77" på Arlanda Express 5594765 = ca 0,454 kg/EUR, alltså beloppsbaserat)
+# och `participants` (null). Fälten "Sträcka (km)" och "Vehicle" syns inte i
+# API-svaret, så fältnamnen är okända. Boten skriver dem därför INTE - den
+# visar bara vad den skulle fylla i (torrkörning) tills fältnamnen är kända.
+
+LEG_MODE_TO_VEHICLE = {
+    "flight": "Flyg",
+    "train": "Tåg",
+    "bus": "Buss",
+    "taxi": "Taxi",
+    "car_phev": "Bil (laddhybrid)",
+}
+
+
+def _flight_no_key(no: str | None) -> str | None:
+    m = re.match(r"^\s*([A-Z0-9]{2})\s*0*(\d{1,4})\s*$", (no or "").upper())
+    return f"{m.group(1)}{int(m.group(2))}" if m else None
+
+
+def legs_for_receipt(db: Session, row: ProcessedMessage) -> list:
+    """Ben som hör till kvittot: ben med kvittots message_id, och för flyg
+    ben med samma flygnummer (samma eller närliggande datum)."""
+    from app.models import TripLeg
+
+    legs = (db.query(TripLeg)
+            .filter(TripLeg.receipt_message_id == row.message_id)
+            .filter(TripLeg.excluded.is_(False)).all())
+    seen = {lg.id for lg in legs}
+    segs = segments_for(db, row) if row.category == "Flyg" or row.flight_segments else []
+    for seg in segs:
+        key = _flight_no_key(seg.get("flight_no"))
+        d = _as_date(seg.get("date"))
+        if not key:
+            continue
+        q = db.query(TripLeg).filter(TripLeg.mode == "flight").filter(TripLeg.excluded.is_(False))
+        for lg in q.all():
+            if lg.id in seen or _flight_no_key(lg.flight_no) != key:
+                continue
+            if d is not None and lg.leg_date is not None and abs((lg.leg_date - d).days) > 1:
+                continue
+            legs.append(lg)
+            seen.add(lg.id)
+    return sorted(legs, key=lambda lg: (lg.leg_date or date.min, lg.seq or 0))
+
+
+def plan_distance(db: Session, row: ProcessedMessage, tx: dict | None = None) -> dict:
+    """Km, Vehicle och passagerare för utkastet (bara förslag, skrivs inte).
+    Gissar aldrig km: saknas km, är det en uppskattning (utan Mikkos ja) eller
+    är riktningen okänd blir km tomt. Mikkos manuella km vinner alltid."""
+    t = guard._unwrap(tx) if tx else {}
+    legs = legs_for_receipt(db, row)
+    out: dict = {
+        "legs": [{"leg_id": lg.id, "trip_id": lg.trip_id,
+                  "date": lg.leg_date.isoformat() if lg.leg_date else None,
+                  "mode": lg.mode, "from": lg.from_place, "to": lg.to_place, "km": lg.km,
+                  "source": lg.source, "is_estimate": bool(lg.is_estimate),
+                  "km_reason": getattr(lg, "km_reason", None), "flight_no": lg.flight_no}
+                 for lg in legs],
+        "km": None, "vehicle": None, "passengers": 1,
+        "bezala_emissions_kg": t.get("emissions"),
+        "bezala_participants": t.get("participants"),
+        "written": False,
+        "why_not_written": ("Bezalas API visar inte fälten Sträcka (km) och Vehicle - "
+                            "fältnamnen är okända, så boten skriver dem inte än."),
+        "notes": [],
+    }
+    if not legs:
+        out["notes"].append("Inget ben kopplat till kvittot - km saknas")
+        return out
+    modes = {lg.mode for lg in legs}
+    out["vehicle"] = LEG_MODE_TO_VEHICLE.get(next(iter(modes))) if len(modes) == 1 else None
+    if len(modes) > 1:
+        out["notes"].append(f"Flera färdsätt ({', '.join(sorted(modes))}) - Vehicle lämnas tomt")
+    allow_est = guard._env_bool("C60_ALLOW_ESTIMATED_KM", False)
+    total = 0.0
+    for lg in legs:
+        reason = getattr(lg, "km_reason", None)
+        if lg.km is None:
+            out["notes"].append(f"km saknas ({lg.from_place}-{lg.to_place} {lg.leg_date}"
+                                f"{', ' + reason if reason else ''})")
+            return out
+        if lg.is_estimate and lg.source != "manual" and not allow_est:
+            out["notes"].append(f"km saknas: {lg.from_place}-{lg.to_place} är en uppskattning "
+                                "(fylls bara i om Mikko godkänt uppskattningar)")
+            return out
+        total += float(lg.km)
+    out["km"] = round(total, 1)
+    return out
