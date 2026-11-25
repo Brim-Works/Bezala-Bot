@@ -331,7 +331,8 @@ def test_empty_draft_is_planned_and_filled(bound_db, monkeypatch):
     assert ch["original_amount"] == "446.77" and ch["original_amount_currency"] == "EUR"
     assert ch["date"] == "2026-10-29"
     assert ch["description"] == "Finnair flight Helsinki-Stockholm round trip, 3 November 2026"
-    assert ch["vat_lines_attributes"] == [{"expense_account_id": 67100, "tax_percentage": "0.0",
+    assert ch["vat_lines_attributes"] == [{"expense_account_id": 67100, "vat_id": 1,
+                                          "tax_percentage": "0.0",
                                           "cost_center_ids": [927151]}]
     assert item["before"]["original_amount"] == "418.00"
     assert item["after"]["original_amount"] == "446.77"
@@ -421,6 +422,7 @@ def test_vat_parking_moovy_is_25_5(bound_db):
     plan = c60.plan_fill(bound_db, m, line, _draft("5594768"), accounts=ACCOUNTS)
     assert plan["vat"] == v.VAT_25_5
     assert plan["changes"]["vat_lines_attributes"][0]["tax_percentage"] == "0.255"
+    assert plan["changes"]["vat_lines_attributes"][0]["vat_id"] == 864
     assert plan["changes"]["vat_lines_attributes"][0]["expense_account_id"] == 67113
 
 
@@ -436,7 +438,7 @@ def test_vat_flight_international_from_segments_is_0():
     assert r["vat"] == v.VAT_0 and v.FLAG_FLIGHT_ROUTE not in r["flags"]
 
 
-def test_vat_subscription_non_eu_is_not_written(bound_db):
+def test_vat_subscription_non_eu_uses_vat_id_1914(bound_db):
     line = _line(bound_db, "3", date(2026, 11, 5), 100.0,
                  desc="MIKKO KEINONEN: LOVABLE, SAN FRANCISCO, US 100.0 EUR")
     m = _receipt(bound_db, date(2026, 11, 5), "Lovable", 100.0, waiting=False,
@@ -444,8 +446,9 @@ def test_vat_subscription_non_eu_is_not_written(bound_db):
     plan = c60.plan_fill(bound_db, m, line, _draft("5594767"), accounts=ACCOUNTS)
     assert plan["vat"] == v.VAT_NON_EU
     vl = plan["changes"]["vat_lines_attributes"][0]
-    assert vl["expense_account_id"] == 166648 and "tax_percentage" not in vl
-    assert any("Purchases Abroad (Non-EU)" in s for s in plan["skipped"])
+    # Lovable 5594767 (Mikkos val): vat_id 1914, tax_percentage "0.0".
+    assert vl["expense_account_id"] == 166648
+    assert vl["vat_id"] == 1914 and vl["tax_percentage"] == "0.0"
 
 
 def test_change_fee_uses_booking_segments(bound_db):
@@ -593,3 +596,32 @@ def test_finnair_nok_fare_draft_gets_card_line_amount(bound_db):
     assert plan["changes"]["original_amount"] == "380.21"
     assert plan["changes"]["original_amount_currency"] == "EUR"
     assert plan["changes"]["description"] == "Finnair flight Oslo-Helsinki, 28 November 2026"
+
+
+def test_coupled_but_sent_for_approval_counts_as_coupled(bound_db):
+    """Prod 2026-11-26: Finnair-utkasten skickades för attest i Bezalas
+    gränssnitt (reviewing). Kopplade = kortraden löst; boten skriver inget."""
+    line, m = _finnair(bound_db)
+    line.status = "missing"
+    bound_db.commit()
+    import os as _os
+    _os.environ["BEZALA_DRAFT_FILL_ENABLED"] = "true"
+    try:
+        client = FakeBezala({"5594776": _draft(
+            "5594776", state="reviewing", approvers=["X"], connected_to_bill_line=True,
+            bill_id=339638, date="2026-10-29", billed_amount="446.77",
+            billed_amount_currency="EUR")})
+        out = c60.verify_and_update(bound_db, "5594776", client=client)
+    finally:
+        del _os.environ["BEZALA_DRAFT_FILL_ENABLED"]
+    assert out["verified"] is True and client.puts == []
+    bound_db.refresh(line)
+    assert line.status == "resolved"
+
+
+def test_mikkos_vat_choice_is_kept(bound_db):
+    line, m = _finnair(bound_db)
+    tx = _draft("5594776", vat_lines=[{"id": 7, "expense_account_id": None, "vat_id": 864}])
+    plan = c60.plan_fill(bound_db, m, line, tx, accounts=ACCOUNTS)
+    vl = plan["changes"]["vat_lines_attributes"][0]
+    assert "vat_id" not in vl and vl["expense_account_id"] == 67100
