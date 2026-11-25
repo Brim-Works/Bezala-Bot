@@ -625,3 +625,82 @@ def test_mikkos_vat_choice_is_kept(bound_db):
     plan = c60.plan_fill(bound_db, m, line, tx, accounts=ACCOUNTS)
     vl = plan["changes"]["vat_lines_attributes"][0]
     assert "vat_id" not in vl and vl["expense_account_id"] == 67100
+
+
+# ================================================================ Del 3b: km/Vehicle (bara förslag)
+
+
+def _trip_leg(db, **kw):
+    from app.models import CalendarTrip, TripLeg
+
+    t = db.query(CalendarTrip).first()
+    if t is None:
+        t = CalendarTrip(start_date=date(2026, 11, 24), end_date=date(2026, 11, 25),
+                         destination="Stockholm", country="SE", status="approved",
+                         source_event_ids=[], hotels=[])
+        db.add(t)
+        db.commit()
+    lg = TripLeg(trip_id=t.id, leg_key=kw.pop("leg_key", f"k{kw.get('seq', 0)}"),
+                 energy_type="none", **kw)
+    db.add(lg)
+    db.commit()
+    return lg
+
+
+def test_distance_train_with_km(bound_db):
+    m = _receipt(bound_db, date(2026, 11, 24), "Arlanda Express", 598.0, "SEK", waiting=False,
+                 category="Kollektivtrafik")
+    _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 24), mode="train", from_place="ARN",
+              to_place="Stockholm C", km=39.0, source="route_table",
+              receipt_message_id=m.message_id)
+    _trip_leg(bound_db, seq=2, leg_date=date(2026, 11, 25), mode="train",
+              from_place="Stockholm C", to_place="ARN", km=39.0, source="route_table",
+              receipt_message_id=m.message_id)
+    p = c60.plan_distance(bound_db, m, {"emissions": "24.77", "participants": None})
+    assert p["km"] == 78.0 and p["vehicle"] == "Tåg" and p["passengers"] == 1
+    assert p["written"] is False and p["bezala_emissions_kg"] == "24.77"
+
+
+def test_distance_flight_by_flight_number(bound_db):
+    m = _receipt(bound_db, date(2026, 11, 24), "Finnair", 540.79, waiting=False,
+                 category="Flyg", flight_segments=SEG_8LXVP2, booking_ref="8LXVP2")
+    _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 24), mode="flight", from_place="HEL",
+              to_place="ARN", km=397.0, source="airport_table", flight_no="AY0803")
+    _trip_leg(bound_db, seq=2, leg_date=date(2026, 11, 25), mode="flight", from_place="ARN",
+              to_place="HEL", km=397.0, source="airport_table", flight_no="AY 814")
+    p = c60.plan_distance(bound_db, m)
+    assert p["km"] == 794.0 and p["vehicle"] == "Flyg"
+
+
+def test_distance_leg_without_km_stays_empty(bound_db):
+    m = _receipt(bound_db, date(2026, 11, 5), "Skånetrafiken", 150.0, "SEK", waiting=False,
+                 category="Kollektivtrafik")
+    _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 5), mode="train", from_place="CPH",
+              to_place=None, km=None, source="receipt", km_reason="direction_unknown",
+              receipt_message_id=m.message_id)
+    p = c60.plan_distance(bound_db, m)
+    assert p["km"] is None and any("km saknas" in n for n in p["notes"])
+
+
+def test_distance_estimate_not_used_but_manual_wins(bound_db):
+    m = _receipt(bound_db, date(2026, 11, 5), "Taxi", 30.0, waiting=False, category="Taxi")
+    lg = _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 5), mode="taxi", from_place="A",
+                   to_place="B", km=12.0, source="route_table", is_estimate=True,
+                   receipt_message_id=m.message_id)
+    assert c60.plan_distance(bound_db, m)["km"] is None
+    lg.source = "manual"  # Mikkos egen km vinner
+    bound_db.commit()
+    assert c60.plan_distance(bound_db, m)["km"] == 12.0
+
+
+def test_distance_is_never_written(bound_db, monkeypatch):
+    monkeypatch.setenv("BEZALA_DRAFT_FILL_ENABLED", "true")
+    line, m = _finnair(bound_db)
+    client = FakeBezala({"5594776": _draft("5594776", description="x", date="2026-10-29",
+                                           original_amount="446.77",
+                                           original_amount_currency="EUR",
+                                           vat_lines=[{"expense_account_id": 67100,
+                                                       "vat_id": 1}])})
+    out = c60.fill_drafts(bound_db, ["5594776"], client=client, apply=True)
+    assert client.puts == []
+    assert out["items"][0]["distance"]["written"] is False
