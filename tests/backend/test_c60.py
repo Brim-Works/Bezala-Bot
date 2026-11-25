@@ -610,7 +610,9 @@ def test_coupled_but_sent_for_approval_counts_as_coupled(bound_db):
         client = FakeBezala({"5594776": _draft(
             "5594776", state="reviewing", approvers=["X"], connected_to_bill_line=True,
             bill_id=339638, date="2026-10-29", billed_amount="446.77",
-            billed_amount_currency="EUR")})
+            billed_amount_currency="EUR",
+            # C61: belopp 0 räknas som fel (Skånetrafiken), så utkastet har beloppet.
+            original_amount="446.77", original_amount_currency="EUR")})
         out = c60.verify_and_update(bound_db, "5594776", client=client)
     finally:
         del _os.environ["BEZALA_DRAFT_FILL_ENABLED"]

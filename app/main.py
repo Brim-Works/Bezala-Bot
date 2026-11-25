@@ -3449,6 +3449,15 @@ def _do_match_to_bezala(
         file_name=row.file_name,
     )
 
+    # C61 — Skånetrafiken: Bezala läste "Varav moms 0,0%: 0 SEK" som totalen.
+    # En sidhuvudsrad "Sammanfattning av Bezala Bot: Total: 150.00 SEK" läggs
+    # i övre marginalen på sida 1 (mejlets innehåll ändras inte).
+    from app.services.receipt_total import is_skanetrafiken, stamp_pdf_total
+    if is_skanetrafiken(row.vendor, row.sender, row.subject, row.file_name):
+        pdf_bytes, _c61_total = stamp_pdf_total(pdf_bytes)
+        logger.info("C61: Skånetrafiken-PDF msg_id=%s total=%s", row.id,
+                    _c61_total.text() if _c61_total else None)
+
     snap = bill_line_snapshot or {}
     effective_amount = snap.get("amount") if snap.get("amount") is not None else row.amount
     effective_currency = (snap.get("currency") or row.currency or "EUR")
@@ -3631,17 +3640,20 @@ def get_message_bezala_writes(
     _: None = Depends(require_auth),
 ):
     """C60 — kvittovyn: vad boten skrivit till kvittots Bezala-utkast (före/efter)."""
-    from app.services.c60_draft import writes_for
+    from app.services.c60_draft import amount_fix, writes_for
 
     row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
     if row is None:
         raise HTTPException(status_code=404, detail="Meddelandet finns inte")
+    writes = writes_for(db, row.bezala_transaction_id)
     return {
         "message_id": row.id,
         "bezala_transaction_id": row.bezala_transaction_id,
         "bezala_upload_status": row.bezala_upload_status,
         "note": row.bezala_error_message,
-        "writes": writes_for(db, row.bezala_transaction_id),
+        "writes": writes,
+        # C61 — "Boten rättade beloppet i Bezala: 0.00 SEK → 150.00 SEK".
+        "amount_fix": amount_fix(writes),
     }
 
 
