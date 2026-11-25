@@ -1686,7 +1686,7 @@ class CardMatchingEndpointsTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
-        self.assertEqual(body["bezala_upload_status"], "success")
+        self.assertEqual(body["bezala_upload_status"], "coupling_unverified")  # C60: verifieras efter ca 75 s
         # FAS 5.27 — det riktiga transaction_id från attach_file, INTE
         # bill_line_id. Tidigare lagrade vi "2163467" (bill_line_id) här
         # vilket fick PUT /transactions/{id} att 403:a.

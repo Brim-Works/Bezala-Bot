@@ -168,8 +168,9 @@ def test_rule6_unknown_rate_is_flagged_not_guessed():
 
 
 def test_rule7_finnish_card_slip_account_default_and_flag():
-    r = vat(category="Parkering", card_description=MOOVY, card_amount=37.49,
-            vat_info={"lines": [], "document": "card_slip"})
+    # C60: Moovy/Finavia är 25,5 % (Mikko); annan finsk parkering → kontots standard.
+    r = vat(category="Parkering", card_description="X: EUROPARK, HELSINKI, FI 9.0 EUR",
+            card_amount=9.0, vat_info={"lines": [], "document": "card_slip"})
     assert r["vat"] == v.VAT_ACCOUNT_DEFAULT
     assert v.FLAG_NO_BREAKDOWN in r["flags"]
 
@@ -181,7 +182,8 @@ def test_rule7_finnish_hotel_card_slip_flags_folio():
 
 
 def test_rule7_vat_not_read_yet_is_flagged_differently():
-    r = vat(category="Parkering", card_description=MOOVY, card_amount=37.49)
+    r = vat(category="Parkering", card_description="X: EUROPARK, HELSINKI, FI 9.0 EUR",
+            card_amount=9.0)
     assert r["vat"] == v.VAT_ACCOUNT_DEFAULT and v.FLAG_VAT_NOT_READ in r["flags"]
 
 

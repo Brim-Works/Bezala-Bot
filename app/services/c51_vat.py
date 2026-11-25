@@ -55,6 +55,9 @@ FLAG_VAT_NOT_READ = "VAT not read from the receipt yet - check the receipt"
 
 REFUND_PREFIX = "Refund - "
 
+# C60 — finska parkeringsbolag med 25,5 % moms (Mikko bekräftade).
+_FI_PARKING = re.compile(r"moovy|finavia", re.IGNORECASE)
+
 # Anthropic: VAT-nr satt av Mikko → reverse charge från fakturan 14 dec 2026.
 ANTHROPIC_REVERSE_CHARGE_FROM = date(2026, 12, 14)
 
@@ -175,7 +178,9 @@ def _flight_international(segments: Any, *texts: str | None) -> bool | None:
     places: list[str] = []
     for seg in segments or []:
         if isinstance(seg, dict):
-            for k in ("from", "to", "origin", "destination", "dep", "arr",
+            # C60 — flight_segments heter "origin"/"dest" (receipt_details).
+            # "dest" saknades: HEL→ARN blev bara ["HEL"] = inrikes.
+            for k in ("from", "to", "origin", "dest", "destination", "destination_iata",
                       "departure_airport", "arrival_airport"):
                 if seg.get(k):
                     places.append(str(seg[k]))
@@ -317,6 +322,12 @@ def suggest_vat(*, category: str | None = None, texts: Iterable[str | None] = ()
             lines[0]["amount"] = card_amount if card_amount is not None else lines[0]["amount"]
         vat = lines[0]["vat"] if len({ln["vat"] for ln in lines}) == 1 else "Several rates"
         return done(vat, "6: Finnish purchase - rate(s) from the receipt", lines)
+
+    # C60 — Moovy/Finavia-parkering i Finland: 25,5 % (Mikko bekräftade
+    # 2026-11-25). Används när kvittot saknar momsspecifikation, i stället
+    # för "Account default".
+    if country == "FI" and category == "Parkering" and _FI_PARKING.search(hay):
+        return done(VAT_25_5, "7b: Moovy/Finavia parking in Finland - 25.5% (Mikko confirmed)")
 
     # Regel 7 — kortslip/kvitto utan momsspecifikation.
     if country == "FI":

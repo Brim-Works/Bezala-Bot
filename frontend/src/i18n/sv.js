@@ -145,6 +145,10 @@ export default {
       retrying: 'Försöker…',
       retrySucceeded: 'Bezala-överföring klar',
       retryFailed: 'Försöket misslyckades',
+      unverifiedTitle: 'Utkast skapat - koppling inte verifierad',
+      unverifiedBody:
+        'Bezala har ett utkast, men boten har inte sett att det är kopplat till kortraden (belopp, datum, kortrad). Boten läser utkastet igen efter ca 75 sekunder.',
+      writesTitle: 'Botens skrivningar till utkastet',
       naTitle: 'Ingen Bezala-överföring',
       naBody:
         'Steget hoppades över — filen nådde aldrig Drive, eller mailet är inte ett kvitto.',
@@ -224,6 +228,7 @@ export default {
     needs_download: 'Ladda ned',
   },
   bezalaStatus: {
+    unverified: 'Ej verifierad',
     transferred: 'Uppladdad',
     pending: 'Väntar',
     error: 'Fel',

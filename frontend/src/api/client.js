@@ -152,6 +152,7 @@ export const api = {
       body: overrides || {},
     }),
   bezalaMissingReceipts: () => request('/api/bezala/missing-receipts'),
+  messageBezalaWrites: (id) => request(`/api/messages/${id}/bezala-writes`),
   bezalaMatchSuggestions: () => request('/api/bezala/match-suggestions'),
   bezalaMatchSuggestionsAll: () =>
     request('/api/bezala/match-suggestions?include_all_messages=true'),

@@ -464,7 +464,7 @@ class ManualUploadCouplingTest(unittest.TestCase):
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
         self.assertEqual(body["upload_source"], "manual_upload")
-        self.assertEqual(body["bezala_upload_status"], "success")
+        self.assertEqual(body["bezala_upload_status"], "coupling_unverified")  # C60: verifieras efter ca 75 s
         self.assertEqual(body["bezala_transaction_id"], "tx-501")
         # attach_file fick PDF-bytes och filename oförändrade
         bezala.attach_file.assert_called_once()
@@ -490,7 +490,7 @@ class ManualUploadCouplingTest(unittest.TestCase):
 
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
-        self.assertEqual(body["bezala_upload_status"], "success")
+        self.assertEqual(body["bezala_upload_status"], "coupling_unverified")  # C60: verifieras efter ca 75 s
         # attach_file ska ha fått den konverterade PDFen, inte JPG-bytena
         bezala.attach_file.assert_called_once()
         args, _kwargs = bezala.attach_file.call_args
@@ -536,7 +536,7 @@ class ManualUploadCouplingTest(unittest.TestCase):
         resp, _drive, bezala = self._post_match(mid)
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
-        self.assertEqual(body["bezala_upload_status"], "success")
+        self.assertEqual(body["bezala_upload_status"], "coupling_unverified")  # C60: verifieras efter ca 75 s
         # Description ska komma från ai_description_en (vår seed-default)
         # eller fallback via build_description — aldrig krascha.
         bezala.attach_file.assert_called_once()

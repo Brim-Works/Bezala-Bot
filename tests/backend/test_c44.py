@@ -260,7 +260,10 @@ def test_couple_receipt_runs_match_to_bezala_flow(db):
     assert out["bezala_transaction_id"] == "5550001"
     assert "draft" in out["bezala_state"]
     from app.models import CardLine
-    assert db.query(CardLine).filter_by(bill_line_id="2100001").one().status == "resolved"
+    # C60 — inte löst förrän kopplingen verifierats i Bezala.
+    assert db.query(CardLine).filter_by(bill_line_id="2100001").one().status == \
+        "coupling_unverified"
+    assert out["status"] == "utkast skapat, koppling inte verifierad än"
 
 
 def test_get_card_line_yalla_go(db):

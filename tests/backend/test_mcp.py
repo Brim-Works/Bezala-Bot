@@ -275,7 +275,8 @@ def test_valid_token_works(env):
         # C43
         "mark_private_expense",
         # C44
-        "couple_receipt", "get_card_line", "search_receipts", "list_duplicate_receipts",
+        "couple_receipt", "verify_coupling", "fill_bezala_drafts", "repair_unverified_drafts",
+        "get_card_line", "search_receipts", "list_duplicate_receipts",
         # C46
         "list_private_senders", "add_private_sender", "remove_private_sender",
         "reject_trip", "unreject_trip",

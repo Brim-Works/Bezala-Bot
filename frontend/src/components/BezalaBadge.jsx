@@ -4,6 +4,7 @@ import { useI18n } from '../i18n/useI18n.jsx';
 const KIND = {
   transferred: 'ok',
   pending: 'warn',
+  unverified: 'warn',
   error: 'err',
 };
 

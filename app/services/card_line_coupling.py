@@ -17,6 +17,8 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
+import time
 from datetime import date, timedelta
 
 from sqlalchemy.orm import Session
@@ -167,11 +169,6 @@ def _find_message(db: Session, message_id: str) -> ProcessedMessage:
 def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
     """Koppla kvittot till kortraden via befintligt match-to-bezala-flöde
     (skapar/uppdaterar ett Bezala-UTKAST, aldrig attest)."""
-    from fastapi import HTTPException
-
-    from app.main import _do_match_to_bezala
-    from app.services.bezala_client import BezalaClient, BezalaError
-
     bid = str(bill_line_id).strip()
     if not bid.isdigit():
         raise CouplingError("bill_line_id must be the numeric Bezala card line id.")
@@ -192,38 +189,27 @@ def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
         )
     if not row.drive_file_id or not row.file_name:
         raise CouplingError("The receipt has no Drive file — cannot couple it to Bezala.")
-    try:
-        bezala = BezalaClient()
-    except BezalaError as exc:
-        raise CouplingError(f"Bezala unavailable: {exc}") from exc
-    try:
-        _do_match_to_bezala(row=row, bill_line_id=bid, db=db, bezala=bezala)
-    except HTTPException as exc:
-        db.rollback()
-        detail = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
-        raise CouplingError(f"Not coupled: {detail}") from exc
-    except BezalaError as exc:
-        db.rollback()
-        row.bezala_upload_status = "failed"
-        row.bezala_error_message = str(exc)[:2000]
-        db.commit()
-        raise CouplingError(f"Bezala refused the coupling: {exc}") from exc
-    finally:
-        bezala.close()
+    # C60 — kopplingar körs en i taget (prod 2026-11-25: 19 parallella gav 8
+    # utkast som Bezala inte kopplade), med kort paus och max 2 försök vid
+    # Bezala-fel som inte skapade något utkast.
+    with _COUPLE_LOCK:
+        _couple_with_retry(db, row, bid)
+        time.sleep(_pause_seconds())
     line = db.query(CardLine).filter(CardLine.bill_line_id == bid).first()
-    if line is not None and line.status == "missing":
-        from datetime import datetime
+    from app.services import c60_draft
 
-        line.status = "resolved"
-        line.resolved_at = datetime.utcnow()
-        line.note = f"Coupled via Bezala Bot to {row.message_id}"
-        line.bezala_transaction_id = row.bezala_transaction_id
-        db.commit()
+    # C60 — kortraden är INTE löst förrän utkastet lästs om och kopplingen
+    # verifierats (connected_to_bill_line, bill_id, belopp, datum).
+    c60_draft.mark_unverified(
+        db, line, row,
+        f"Utkast {row.bezala_transaction_id} skapat - koppling inte verifierad än")
     if row.waiting_status in ("waiting_for_transaction", "no_transaction"):
         row.waiting_status = "coupled"
         db.commit()
-    logger.info("[c44-couple] bill_line=%s ← message=%s (Bezala draft, unapproved)",
+    c60_draft.schedule_verification(row.bezala_transaction_id, bill_line_id=bid)
+    logger.info("[c44-couple] bill_line=%s ← message=%s (Bezala draft, verifieras om ca 75 s)",
                 bid, row.message_id)
+    fill_on = c60_draft.draft_fill_enabled()
     return {
         "bill_line_id": bid,
         "message_id": row.message_id,
@@ -232,20 +218,88 @@ def couple_receipt(db: Session, bill_line_id: str, message_id: str) -> dict:
         "currency": row.currency,
         "bezala_transaction_id": row.bezala_transaction_id,
         "bezala_state": "draft — not submitted for approval",
-        # C50 — beskrivningen skrivs inte via API (kunde skicka för attest).
-        # Mikko klistrar in den själv i Bezala.
+        "status": "utkast skapat, koppling inte verifierad än",
+        "coupling_status": c60_draft.STATUS_UNVERIFIED,
+        "verification": ("Boten läser utkastet igen om ca 75 s. Kortraden blir löst först "
+                         "när Bezala visar kopplingen, beloppet och datumet."),
+        # C60 — beskrivning/konto/moms skrivs till utkastet vid verifieringen
+        # bara när BEZALA_DRAFT_FILL_ENABLED=true (och bara tomma fält).
         "bezala_description_written": False,
+        "draft_fill_enabled": fill_on,
+        "draft_fill": ("Fylls i vid verifieringen (bara tomma fält, bara utkast)" if fill_on
+                       else "Av (BEZALA_DRAFT_FILL_ENABLED=false) - klistra in själv"),
         "description_to_paste": _description_to_paste(row, line),
         "account_suggestion": _account_suggestion(row, line),
         "bezala_fill": _bezala_fill(row, line),
     }
 
 
+_COUPLE_LOCK = threading.Lock()
+
+
+def _pause_seconds() -> float:
+    import os
+
+    try:
+        return float(os.environ.get("C60_COUPLE_PAUSE_SECONDS", "") or 2.0)
+    except ValueError:
+        return 2.0
+
+
+def _retryable(exc) -> bool:
+    code = getattr(exc, "status_code", None)
+    text = str(exc).lower()
+    if "kill switch" in text or "not a draft" in text or "left draft" in text:
+        return False
+    return code is None or code == 429 or code >= 500
+
+
+def _couple_with_retry(db: Session, row: ProcessedMessage, bid: str, attempts: int = 2) -> None:
+    from fastapi import HTTPException
+
+    from app.main import _do_match_to_bezala
+    from app.services.bezala_client import BezalaClient, BezalaError
+
+    last: Exception | None = None
+    for n in range(1, attempts + 1):
+        try:
+            bezala = BezalaClient()
+        except BezalaError as exc:
+            raise CouplingError(f"Bezala unavailable: {exc}") from exc
+        tx_before = row.bezala_transaction_id
+        try:
+            _do_match_to_bezala(row=row, bill_line_id=bid, db=db, bezala=bezala)
+            return
+        except HTTPException as exc:
+            db.rollback()
+            detail = exc.detail.get("message") if isinstance(exc.detail, dict) else exc.detail
+            raise CouplingError(f"Not coupled: {detail}") from exc
+        except BezalaError as exc:
+            db.rollback()
+            last = exc
+            created = row.bezala_transaction_id and row.bezala_transaction_id != tx_before
+            if n < attempts and not created and _retryable(exc):
+                logger.warning("C60: Bezala-fel vid koppling %s (försök %d) - provar igen: %s",
+                               bid, n, exc)
+                time.sleep(_pause_seconds())
+                continue
+            row.bezala_upload_status = "failed"
+            row.bezala_error_message = str(exc)[:2000]
+            db.commit()
+            raise CouplingError(f"Bezala refused the coupling: {exc}") from exc
+        finally:
+            bezala.close()
+    raise CouplingError(f"Bezala refused the coupling: {last}")
+
+
 def _description_to_paste(row: ProcessedMessage, line: CardLine | None) -> str | None:
-    from app.services.c50_accounts import fix_description_date
+    """C60 — flyg: flygens datum (aldrig köp-/kortradens datum)."""
+    from sqlalchemy.orm import object_session
+
+    from app.services.c60_draft import description_for
 
     d = (line.txn_date if line is not None and line.txn_date else None) or row.receipt_date
-    return fix_description_date(row.ai_description_en or row.summary, d)
+    return description_for(object_session(row), row, d)
 
 
 def _account_suggestion(row: ProcessedMessage, line: CardLine | None) -> dict:
@@ -270,9 +324,18 @@ def _bezala_fill(row: ProcessedMessage, line: CardLine | None,
         card_description=line.description if line is not None else row.bezala_payment_merchant,
         card_amount=(line.amount if line is not None else row.bezala_payment_amount),
         receipt_date=(line.txn_date if line is not None and line.txn_date else row.receipt_date),
-        vat_info=row.vat_info, flight_segments=row.flight_segments,
+        vat_info=row.vat_info, flight_segments=_segments(row),
         description=_description_to_paste(row, line),
     )
+
+
+def _segments(row: ProcessedMessage) -> list:
+    """C60 — egna flygsegment eller samma bokningsnummers (ändringsavgift)."""
+    from sqlalchemy.orm import object_session
+
+    from app.services.c60_draft import segments_for
+
+    return segments_for(object_session(row), row)
 
 
 # ---------- get_card_line ----------
@@ -304,12 +367,26 @@ def _receipt_info(m: ProcessedMessage) -> dict:
             "date": m.bezala_payment_date,
         } if m.bezala_payment_merchant or m.bezala_payment_amount else None,
         "duplicate_of": m.duplicate_of,
+        "bezala_error_message": m.bezala_error_message,
+        # C60 — vad boten skrivit till utkastet (före/efter).
+        "bot_bezala_writes": _writes(m),
     }
+
+
+def _writes(m: ProcessedMessage) -> list[dict]:
+    from sqlalchemy.orm import object_session
+
+    from app.services.c60_draft import writes_for
+
+    s = object_session(m)
+    return writes_for(s, m.bezala_transaction_id) if s is not None else []
 
 
 def _how(m: ProcessedMessage) -> str:
     if m.upload_source == "manual_upload":
         return "manual upload in Travel Tinder (coupled on upload)"
+    if m.bezala_upload_status == "coupling_unverified":
+        return "utkast skapat i Bezala, koppling inte verifierad än"
     if m.matched_at is not None:
         return "coupled to the card line (Travel Tinder / match-to-bezala)"
     if m.bezala_transaction_id:

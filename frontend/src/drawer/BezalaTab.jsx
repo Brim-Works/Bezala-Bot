@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useI18n } from '../i18n/useI18n.jsx';
 import { api } from '../api/client.js';
 import { useToast } from '../lib/toast.jsx';
@@ -28,10 +28,23 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
   const toast = useToast();
   const { navigate } = useRouter();
   const [retrying, setRetrying] = useState(false);
+  const [writes, setWrites] = useState([]);
+
+  const status = message?.bezala_status;
+  const msgId = message?.id;
+  const hasTx = Boolean(message?.bezala_transaction_id);
+
+  // C60 — botens skrivningar till utkastet (före/efter).
+  useEffect(() => {
+    let alive = true;
+    if (!msgId || !hasTx || !api.messageBezalaWrites) return undefined;
+    api.messageBezalaWrites(msgId)
+      .then((r) => { if (alive) setWrites(r?.writes || []); })
+      .catch(() => { if (alive) setWrites([]); });
+    return () => { alive = false; };
+  }, [msgId, hasTx]);
 
   if (!message) return null;
-
-  const status = message.bezala_status;
 
   async function retry() {
     setRetrying(true);
@@ -91,6 +104,46 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
               </Row>
             </dl>
           </div>
+        </div>
+      ) : null}
+
+      {status === 'unverified' ? (
+        <div
+          className="drawer-banner drawer-banner--warn"
+          data-testid="bezala-banner-unverified"
+        >
+          <IconBezala className="icon" />
+          <div className="drawer-banner__body">
+            <div className="drawer-banner__title">{t.drawer.bezala.unverifiedTitle}</div>
+            <p>{t.drawer.bezala.unverifiedBody}</p>
+            {message.bezala_error_message ? (
+              <pre className="drawer-banner__error mono">
+                {message.bezala_error_message}
+              </pre>
+            ) : null}
+            <dl className="drawer-kv-list">
+              <Row label={t.drawer.bezala.transactionId}>
+                <span className="mono">{message.bezala_transaction_id || '—'}</span>
+              </Row>
+            </dl>
+          </div>
+        </div>
+      ) : null}
+
+      {writes.length ? (
+        <div className="drawer-kv-list" data-testid="bezala-bot-writes">
+          <div className="drawer-banner__title">{t.drawer.bezala.writesTitle}</div>
+          {writes.map((w, i) => (
+            <Row key={`${w.when}-${i}`} label={`${(w.when || '').slice(0, 16)} ${w.operation}`}>
+              <span className="mono">
+                {w.outcome}
+                {w.fields ? ` · ${Object.keys(w.fields).join(', ')}` : ''}
+                {w.before && w.after
+                  ? ` · ${Object.keys(w.fields || {}).map((k) => { const v = k === 'vat_lines_attributes' ? 'vat_lines' : k; return `${v}: ${JSON.stringify(w.before[v] ?? null)} → ${JSON.stringify(w.after[v] ?? null)}`; }).join('; ')}`
+                  : ''}
+              </span>
+            </Row>
+          ))}
         </div>
       ) : null}
 

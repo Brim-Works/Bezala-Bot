@@ -86,7 +86,13 @@ INSTRUCTIONS = (
     "refund receipt, same vendor and booking/amount) is 'cancelled': not in trip totals, "
     "checklists or 'receipts without a trip'; shown collapsed as 'Cancelled and refunded "
     "(not counted)'. list_cancelled_bookings; set_cancelled_booking(cancelled=false) "
-    "counts it again (undo). get_trip 'questions' = things to ask Mikko (never guess)."
+    "counts it again (undo). get_trip 'questions' = things to ask Mikko (never guess). "
+    "C60: couple_receipt one at a time, never in parallel; its answer is 'utkast skapat, "
+    "koppling inte verifierad än' and the card line stays 'coupling_unverified' until the "
+    "bot has read the draft again (~75 s) and Bezala shows connected_to_bill_line, bill_id, "
+    "the card line amount and a date. fill_bezala_drafts / repair_unverified_drafts are "
+    "dry runs; apply=true only after Mikko says yes in the chat (needs "
+    "BEZALA_DRAFT_FILL_ENABLED=true; only state 'draft'; only empty fields)."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -425,12 +431,55 @@ async def mark_private_expense(
 async def couple_receipt(bill_line_id: str, message_id: str) -> dict:
     """Couple a receipt in Bezala Bot to a Bezala card line (bill_line) using the
     normal match-to-Bezala flow: the receipt PDF is attached and the Bezala
-    expense stays a DRAFT (unapproved) — it is never submitted for approval.
+    expense stays a DRAFT — it is never submitted for approval.
     Only when Mikko explicitly asks. Use list_missing (suggested_receipt) or
-    get_card_line to find the message_id first."""
+    get_card_line to find the message_id first. C60: couplings run one at a time
+    (call them one after another, not in parallel). The answer says "utkast
+    skapat, koppling inte verifierad än": the bot reads the draft again after
+    ~75 s and only then marks the card line resolved (else coupling_unverified)."""
     from app.services.card_line_coupling import couple_receipt as _couple
 
     return await _run(_couple, bill_line_id, message_id)
+
+
+@mcp.tool()
+async def verify_coupling(transaction_id: str, bill_line_id: str | None = None) -> dict:
+    """C60: read a Bezala draft again (GET) and check the coupling to the card
+    line: connected_to_bill_line, bill_id, amount = card line, date set. The card
+    line becomes 'resolved' only when everything matches, otherwise
+    'coupling_unverified'. With BEZALA_DRAFT_FILL_ENABLED=true empty fields of the
+    draft are filled first (state draft only). Never submits for approval."""
+    from app.services.c60_draft import verify_and_update
+
+    return await _run(verify_and_update, transaction_id, bill_line_id=bill_line_id)
+
+
+@mcp.tool()
+async def fill_bezala_drafts(transaction_ids: list[str] | None = None, days: int = 7,
+                             apply: bool = False) -> dict:
+    """C60: fill Bezala drafts with description, account, VAT, cost center (and
+    amount/currency/date when Bezala read them wrong). Default is a DRY RUN that
+    shows before/after per draft. Only empty fields or Bezala defaults are filled -
+    Mikko's own text is never overwritten. apply=true writes ONLY after Mikko said
+    yes in the chat, and only when BEZALA_DRAFT_FILL_ENABLED=true; state is read
+    before and after and only state "draft" is written. Nothing is deleted or
+    submitted for approval. Without transaction_ids: drafts coupled in the last
+    `days` days."""
+    from app.services.c60_draft import fill_drafts
+
+    return await _run(fill_drafts, transaction_ids, apply=apply, days=days)
+
+
+@mcp.tool()
+async def repair_unverified_drafts(apply: bool = False) -> dict:
+    """C60: the 8 drafts from 2026-11-25 that Bezala did not couple to the card
+    line (Finnair 446,77/732,57/380,21/209,48, Skånetrafiken 14,01 x2/22,80/22,81).
+    DRY RUN by default: before/after per transaction (amount, currency, date,
+    description, account, VAT). apply=true only after Mikko said yes in the chat
+    (and BEZALA_DRAFT_FILL_ENABLED=true). Drafts are never deleted or submitted."""
+    from app.services.c60_draft import repair_broken_drafts
+
+    return await _run(repair_broken_drafts, apply=apply)
 
 
 @mcp.tool()
