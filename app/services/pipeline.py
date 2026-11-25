@@ -33,6 +33,9 @@ from app.services.drive_client import DriveClient
 from app.services.gmail_client import Attachment, DONE_LABEL, GmailClient, GmailMessage
 from app.services.html_pdf_converter import HtmlToPdfError, html_to_pdf
 from app.services.pdf_validator import looks_like_pdf
+from app.services.receipt_total import (
+    SUMMARY_TITLE, add_summary_header, is_skanetrafiken, parse_total,
+)
 from app.services.receipt_analyzer import (
     AnalyzerError,
     ReceiptAnalysis,
@@ -827,6 +830,7 @@ def _process_one_message(
             logger.exception("Kunde inte sätta etikett på %s", message_id)
         return
 
+    receipt_total = None  # C61 — totalraden ur mejlets text (Skånetrafiken)
     pdf_attachments = [
         a for a in msg.attachments if looks_like_pdf(a.filename, a.mime_type, a.data)
     ]
@@ -863,11 +867,20 @@ def _process_one_message(
                 logger.exception("Kunde inte sätta etikett på %s", message_id)
             return
 
+        # C61 — Skånetrafiken: "Summa betalt: 150 SEK" (utan decimaler) och
+        # "Varav moms 0,0%: 0 SEK". En sidhuvudsrad "Sammanfattning av Bezala
+        # Bot: Total: 150.00 SEK" läggs överst; mejlets innehåll ändras inte.
+        _pdf_html, _pdf_text = msg.body_html or None, msg.body_text or None
+        if is_skanetrafiken(msg.sender, msg.subject):
+            receipt_total = parse_total(msg.body_text, msg.body_html)
+            if receipt_total is not None:
+                if _pdf_html:
+                    _pdf_html = add_summary_header(_pdf_html, receipt_total)
+                elif _pdf_text:
+                    _pdf_text = (f"{SUMMARY_TITLE}: Total: {receipt_total.text()}\n\n"
+                                 f"{_pdf_text}")
         try:
-            pdf_bytes = html_to_pdf(
-                msg.body_html or None,
-                plain_text_fallback=msg.body_text or None,
-            )
+            pdf_bytes = html_to_pdf(_pdf_html, plain_text_fallback=_pdf_text)
         except HtmlToPdfError as exc:
             result.skipped += 1
             _record_filtered(
@@ -992,6 +1005,8 @@ def _process_one_message(
 
         if apple is not None and analysis is not None:
             _apply_apple_receipt(analysis, apple, msg)
+        if receipt_total is not None and analysis is not None:
+            _apply_receipt_total(analysis, receipt_total, msg)
 
         # Samma kvitto redan sparat från det andra Gmail-kontot? Samma regel
         # som C44:s dubblettkontroll (belopp + datum + leverantör + biljett-/
@@ -1184,6 +1199,18 @@ def _apply_reply_receipt(analysis: ReceiptAnalysis, match, msg) -> None:
         analysis.currency = match.currency
     analysis.vendor = analysis.vendor or match.rule.vendor
     analysis.description_en = match.description_en()
+
+
+def _apply_receipt_total(analysis: ReceiptAnalysis, total, msg) -> None:
+    """C61 — Skånetrafiken: totalraden ("Summa betalt: 150 SEK") vinner över
+    AI:ns belopp. Momsraden ("Varav moms 0,0%: 0 SEK") tas aldrig som total."""
+    if analysis.amount is not None and abs(float(analysis.amount) - total.amount) < 0.005 \
+            and (analysis.currency or "").upper() == total.currency:
+        return
+    logger.info("[c61-total] %s: AI-belopp %s %s -> %s (%r)", msg.message_id,
+                analysis.amount, analysis.currency, total.text(), total.line)
+    analysis.amount = total.amount
+    analysis.currency = total.currency
 
 
 def _apply_apple_receipt(analysis: ReceiptAnalysis, apple, msg) -> None:

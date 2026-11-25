@@ -198,6 +198,13 @@ def _same_amount(a, cur_a, b, cur_b) -> bool:
     return abs(abs(a) - abs(b)) < 0.011
 
 
+def bezala_read_zero(t: dict) -> bool:
+    """C61 — Bezala läste 0 (eller inget) som kvittots belopp."""
+    t = guard._unwrap(t)
+    v = _num(t.get("original_amount"))
+    return v is None or abs(v) < 0.005
+
+
 def verify_coupling(tx: dict, line: CardLine | None) -> dict:
     """Kontroll efter koppling: kopplad till kortraden, bill_id satt, belopp
     stämmer med kortraden, datum satt. Problem beskrivs på enkel svenska."""
@@ -216,6 +223,9 @@ def verify_coupling(tx: dict, line: CardLine | None) -> dict:
                            line.amount, line.currency)
               or _same_amount(t.get("original_amount"), t.get("original_amount_currency"),
                               line.amount, line.currency))
+        if ok and bezala_read_zero(t) and abs(float(line.amount)) >= 0.005:
+            problems.append(f"Bezala läste 0 som belopp ({t.get('original_amount')} "
+                            f"{t.get('original_amount_currency') or ''})".replace("  ", " "))
         if not ok:
             problems.append(
                 f"Beloppet i Bezala ({t.get('original_amount')} "
@@ -389,8 +399,13 @@ def plan_amount(db: Session, row: ProcessedMessage, line: CardLine | None,
     if line is None or line.amount is None or row.amount is None:
         notes.append("Belopp: kortrad eller kvittobelopp saknas - ändras inte")
         return changes, notes
-    if _same_amount(t.get("billed_amount"), t.get("billed_amount_currency"),
-                    line.amount, line.currency):
+    if abs(float(row.amount)) < 0.005:
+        notes.append("Belopp: kvittots belopp är 0 i boten - ändras inte (gissas aldrig)")
+        return changes, notes
+    # C61 — Skånetrafiken: Bezala läste "Varav moms 0,0%: 0 SEK" som totalen.
+    # billed_amount kan ändå visa kortradens belopp, så 0 räknas alltid som fel.
+    if not bezala_read_zero(t) and _same_amount(
+            t.get("billed_amount"), t.get("billed_amount_currency"), line.amount, line.currency):
         pass
     elif (row.currency or "").upper() == (line.currency or "").upper():
         if _same_amount(row.amount, row.currency, line.amount, line.currency):
@@ -478,7 +493,13 @@ def plan_fill(db: Session, row: ProcessedMessage, line: CardLine | None, tx: dic
                 new = {"id": ln["id"], **new}
             changes["vat_lines_attributes"] = [new]
 
-    before = {k: t.get(k) for k in FILL_LOG_KEYS}
+    # C61 Del 2 — km, Vehicle, passagerare (bara när Bezalas fältnamn är kända).
+    if distance_field_names():
+        dw = plan_distance_write(db, row, tx)
+        changes.update(dw["changes"])
+        skipped.extend(dw["skipped"])
+
+    before = {k: t.get(k) for k in FILL_LOG_KEYS + tuple(sorted(distance_field_names()))}
     after = dict(before)
     for k, v in changes.items():
         if k == "vat_lines_attributes":
@@ -504,7 +525,8 @@ def apply_fill(client, transaction_id: str, plan: dict, *, db=None) -> dict:
         return out
     try:
         res = guard.guarded_put(client, transaction_id, dict(plan["changes"]), db=db,
-                                allowed=guard.DRAFT_FILL_FIELDS, log_keys=FILL_LOG_KEYS,
+                                allowed=guard.DRAFT_FILL_FIELDS | distance_field_names(),
+                                log_keys=FILL_LOG_KEYS + tuple(sorted(distance_field_names())),
                                 operation="draft_fill")
     except guard.BezalaWriteBlocked as exc:
         out["written"] = {}
@@ -698,6 +720,27 @@ def writes_for(db: Session, transaction_id: str | None, limit: int = 20) -> list
     } for r in rows]
 
 
+def _money(amount, currency) -> str:
+    v = _num(amount)
+    return f"{v:.2f} {currency or ''}".strip() if v is not None else f"tomt {currency or ''}".strip()
+
+
+def amount_fix(writes: list[dict]) -> dict | None:
+    """C61 — kvittovyn: senaste gången boten rättade beloppet (före/efter)."""
+    for w in writes or []:
+        fields = w.get("fields") or {}
+        if w.get("outcome") != "ok" or "original_amount" not in fields:
+            continue
+        b, a = w.get("before") or {}, w.get("after") or {}
+        before = _money(b.get("original_amount"), b.get("original_amount_currency"))
+        after = _money(a.get("original_amount") or fields.get("original_amount"),
+                       a.get("original_amount_currency")
+                       or fields.get("original_amount_currency"))
+        return {"when": w.get("when"), "before": before, "after": after,
+                "text": f"Boten rättade beloppet i Bezala: {before} → {after}"}
+    return None
+
+
 # ================================================================ Del 3b: km, Vehicle, passagerare
 #
 # Bezalas GET /transactions/{id} visar bara `emissions` (kg CO2e, text, t.ex.
@@ -788,4 +831,73 @@ def plan_distance(db: Session, row: ProcessedMessage, tx: dict | None = None) ->
             return out
         total += float(lg.km)
     out["km"] = round(total, 1)
+    # C61 — Bezalas utsläppssiffra är beloppsbaserad; visa kg per km som jämförelse.
+    kg = _num(t.get("emissions"))
+    if kg is not None and total > 0:
+        out["bezala_kg_per_km"] = round(kg / total, 3)
     return out
+
+
+# ================================================================ C61 Del 2: skriva km, Vehicle, passagerare
+#
+# Bezalas API-svar (GET /transactions/{id}, alla toppnycklar lästa 2026-11-26 på
+# 5594772-5594775) och Bezalas API-dokumentation (help.bezala.com, "Receipts
+# (API)") har inga fält för Sträcka (km), Vehicle eller Antal passagerare på
+# ett kvitto. Liknande fält finns bara på resor/milersättning (/api/trips:
+# distance_km, vehicle, number_of_people) - det är en annan sak och används
+# inte här. `participants` på momsraden är deltagare (representation), inte
+# passagerare.
+#
+# Fältnamnen fylls i här när Mikko visat vilket anrop webbformuläret gör
+# (Chrome DevTools → Nätverk). Tills dess är de None och boten skriver inget.
+DISTANCE_FIELDS: dict[str, str | None] = {"km": None, "vehicle": None, "passengers": None}
+# Bezalas värden för Vehicle (okända tills Mikko visat dem). Benets mode → värde.
+VEHICLE_VALUES: dict[str, str] = {}
+
+
+def distance_field_names() -> set[str]:
+    return {v for v in DISTANCE_FIELDS.values() if v}
+
+
+def _empty(v) -> bool:
+    return v is None or (isinstance(v, str) and not v.strip()) or v == [] or v == 0 \
+        or v == "0"
+
+
+def plan_distance_write(db: Session, row: ProcessedMessage, tx: dict) -> dict:
+    """Vad boten skulle skriva i Sträcka (km), Vehicle och Antal passagerare.
+    Bara utkast (state draft), bara tomma fält. Km gissas aldrig: saknas km,
+    är det en uppskattning eller är riktningen okänd lämnas fältet tomt
+    ("km saknas"). Flygbiljetter först när flygets km är känt."""
+    t = guard._unwrap(tx)
+    snap = guard.status_snapshot(tx)
+    if not guard.is_draft(snap):
+        return {"changes": {}, "skipped": [
+            f"Inte ett utkast (state={guard.draft_state(snap)!r}) - boten skriver inte"],
+            "notes": []}
+    d = plan_distance(db, row, tx)
+    modes = {lg["mode"] for lg in d["legs"]}
+    vehicle = None
+    if len(modes) == 1:
+        vehicle = VEHICLE_VALUES.get(next(iter(modes))) or d.get("vehicle")
+    wanted = {"km": d.get("km"), "vehicle": vehicle, "passengers": 1 if d["legs"] else None}
+    changes: dict = {}
+    skipped: list[str] = []
+    notes = list(d.get("notes") or [])
+    if d.get("km") is None:
+        notes.append("km saknas")
+        if "flight" in modes:
+            return {"changes": {}, "skipped": ["Flyg: km saknas - inget skrivs"], "notes": notes,
+                    "distance": d}
+    for key, value in wanted.items():
+        field = DISTANCE_FIELDS.get(key)
+        if not field:
+            skipped.append(f"{key}: Bezalas fältnamn okänt - skrivs inte")
+            continue
+        if value is None:
+            continue
+        if not _empty(t.get(field)):
+            skipped.append(f"{key}: värdet i Bezala behålls ({t.get(field)!r})")
+            continue
+        changes[field] = value
+    return {"changes": changes, "skipped": skipped, "notes": notes, "distance": d}

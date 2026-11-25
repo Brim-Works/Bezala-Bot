@@ -29,6 +29,7 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
   const { navigate } = useRouter();
   const [retrying, setRetrying] = useState(false);
   const [writes, setWrites] = useState([]);
+  const [amountFix, setAmountFix] = useState(null);
 
   const status = message?.bezala_status;
   const msgId = message?.id;
@@ -39,8 +40,8 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
     let alive = true;
     if (!msgId || !hasTx || !api.messageBezalaWrites) return undefined;
     api.messageBezalaWrites(msgId)
-      .then((r) => { if (alive) setWrites(r?.writes || []); })
-      .catch(() => { if (alive) setWrites([]); });
+      .then((r) => { if (alive) { setWrites(r?.writes || []); setAmountFix(r?.amount_fix || null); } })
+      .catch(() => { if (alive) { setWrites([]); setAmountFix(null); } });
     return () => { alive = false; };
   }, [msgId, hasTx]);
 
@@ -126,6 +127,20 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
                 <span className="mono">{message.bezala_transaction_id || '—'}</span>
               </Row>
             </dl>
+          </div>
+        </div>
+      ) : null}
+
+      {amountFix ? (
+        <div className="drawer-banner" data-testid="bezala-amount-fix">
+          <div className="drawer-banner__body">
+            <div className="drawer-banner__title">{t.drawer.bezala.amountFixTitle}</div>
+            <p>
+              {t.drawer.bezala.amountFixBefore}: <span className="mono">{amountFix.before}</span>
+              {' → '}
+              {t.drawer.bezala.amountFixAfter}: <span className="mono">{amountFix.after}</span>
+              {amountFix.when ? ` (${amountFix.when.slice(0, 16).replace('T', ' ')})` : ''}
+            </p>
           </div>
         </div>
       ) : null}

@@ -149,6 +149,9 @@ export default {
       unverifiedBody:
         'Bezala har ett utkast, men boten har inte sett att det är kopplat till kortraden (belopp, datum, kortrad). Boten läser utkastet igen efter ca 75 sekunder.',
       writesTitle: 'Botens skrivningar till utkastet',
+      amountFixTitle: 'Boten rättade beloppet i Bezala',
+      amountFixBefore: 'Före',
+      amountFixAfter: 'Efter',
       naTitle: 'Ingen Bezala-överföring',
       naBody:
         'Steget hoppades över — filen nådde aldrig Drive, eller mailet är inte ett kvitto.',

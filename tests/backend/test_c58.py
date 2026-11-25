@@ -198,7 +198,11 @@ def test_each_choice(db, choice, status, counted, nights):  # noqa: F811
 def test_receipt_coming_warns_again_after_a_week(db):  # noqa: F811
     t = _seed_130(db)
     tc.set_hotel_night_choice(db, t.id, "2026-01-21", "receipt_coming")
-    with patch("app.services.trip_completeness._today", return_value=TODAY + timedelta(days=8)):
+    # resolved_at sparas med dagens riktiga datum (utcnow), så "en vecka
+    # senare" räknas från det - inte från testets fasta TODAY (C61: testet
+    # fallerade från 2026-11-25).
+    later = datetime.utcnow().date() + timedelta(days=8)
+    with patch("app.services.trip_completeness._today", return_value=later):
         cl = tc.get_trip_checklist(db, t.id)
     assert "hotel 2026-01-21" in cl["completeness"]["missing_kinds"]
     assert cl["completeness"]["waiting"] == 0
