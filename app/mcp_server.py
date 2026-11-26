@@ -97,10 +97,19 @@ INSTRUCTIONS = (
     "verified coupling (account, VAT, description, sign, empty 0-rows, km). The "
     "automation runs only with BEZALA_DRAFT_FILL_ENABLED=true AND set_auto_fill(on=true), "
     "which is called ONLY after Mikko says yes in the chat. Bezala defaults (account "
-    "4060, VAT 1913/1914) are replaced only on untouched drafts; Mikko's values never."
+    "4060, VAT 1913/1914) are replaced only on untouched drafts; Mikko's values never. "
+    "C65 views (MCP Apps, read-only): list_pending_decisions and show_match show the "
+    "'Matchning' view, get_card_line and list_missing the status chain, "
+    "fill_bezala_drafts the before/after table. The JSON answers are unchanged."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
+
+# C65 — MCP Apps: tre ui://-vyer. Verktygens JSON-svar ändras inte.
+from app import mcp_apps  # noqa: E402
+from app.mcp_apps import ui_meta  # noqa: E402
+
+mcp_apps.register(mcp)
 
 
 async def _run(fn: Callable[..., Any], *args, **kwargs) -> Any:
@@ -369,7 +378,7 @@ async def get_hotel_night_tips(trip_id: int) -> dict:
     return await _run(hotel_night_tips, trip_id)
 
 
-@mcp.tool()
+@mcp.tool(meta=ui_meta("list_missing"))
 async def list_missing(older_than_days: int = 5) -> dict:
     """Everything missing: checklist items with status 'missing' on trips that
     ended at least `older_than_days` days ago, plus Bezala card payments
@@ -459,7 +468,7 @@ async def verify_coupling(transaction_id: str, bill_line_id: str | None = None) 
     return await _run(verify_and_update, transaction_id, bill_line_id=bill_line_id)
 
 
-@mcp.tool()
+@mcp.tool(meta=ui_meta("fill_bezala_drafts"))
 async def fill_bezala_drafts(transaction_ids: list[str] | None = None, days: int = 7,
                              apply: bool = False) -> dict:
     """C60: fill Bezala drafts with description, account, VAT, cost center (and
@@ -517,7 +526,7 @@ async def set_auto_fill(on: bool) -> dict:
     return await _run(_set, bool(on))
 
 
-@mcp.tool()
+@mcp.tool(meta=ui_meta("get_card_line"))
 async def get_card_line(bill_line_id: str) -> dict:
     """Read-only: a Bezala card line (bill_line) with its status in Bezala Bot,
     the receipt coupled to it (if any), the match score and when/how the coupling
@@ -526,6 +535,19 @@ async def get_card_line(bill_line_id: str) -> dict:
     from app.services.card_line_coupling import get_card_line as _get
 
     return await _run(_get, bill_line_id)
+
+
+@mcp.tool(meta=ui_meta("show_match"))
+async def show_match(bill_line_id: str, message_id: str | None = None) -> dict:
+    """C65 read-only: compare a Bezala card line with a receipt field by field
+    (vendor, amount, currency, date, place) with the match score split into
+    amount/date/vendor/place, and notes when the receipt is a duplicate or is
+    already used on another row (e.g. shared with a refund). Without message_id:
+    the coupled receipt, else the suggested one. In Claude it is shown as the
+    'Matchning' view. Nothing is written anywhere."""
+    from app.services.c65_views import match_details
+
+    return await _run(match_details, bill_line_id, message_id)
 
 
 @mcp.tool()
@@ -611,7 +633,7 @@ async def remove_private_sender(address: str) -> dict:
 # ---------- C47: svep-kön, prenumerationer, återbetalningar ----------
 
 
-@mcp.tool()
+@mcp.tool(meta=ui_meta("list_pending_decisions"))
 async def list_pending_decisions(limit: int = 20, offset: int = 0) -> dict:
     """The decision queue (same as the Travel Tinder swipe view), one card per
     pending decision, most urgent first: 'receipt' (couple this receipt to this
