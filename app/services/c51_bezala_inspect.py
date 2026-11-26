@@ -147,7 +147,16 @@ def inspect(transaction_id: str | None = None, bill_line_id: str | None = None,
             except Exception as exc:  # noqa: BLE001
                 out.append({"transaction_id": tid, "error": str(exc)[:300]})
                 continue
-            out.append({"transaction_id": tid, **describe(tx)})
+            item = {"transaction_id": tid, **describe(tx)}
+            # C62 — var kan Vehicle/km/passagerare läsas? (bara GET)
+            if transaction_id and hasattr(client, "get_raw"):
+                try:
+                    from app.services.c62_conditional import probe_reads
+
+                    item["conditional_probe"] = probe_reads(tid, client=client)
+                except Exception as exc:  # noqa: BLE001
+                    item["conditional_probe"] = {"error": str(exc)[:300]}
+            out.append(item)
         return {"bill_line_id": bill_line_id, "found_via": found_via, "listing": listing,
                 "draft_states": sorted(guard.DRAFT_STATES), "transactions": out,
                 "note": "Read-only (GET). Nothing was written to Bezala."}

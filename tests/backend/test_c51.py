@@ -356,6 +356,10 @@ def test_inspect_is_read_only():
             self.calls.append(("GET", "list"))
             return [{"id": 5580000, "bill_line_id": 2513372, "state": "draft"}]
 
+        def get_raw(self, path):  # C62: bara GET
+            self.calls.append(("GET", path))
+            raise RuntimeError("404")
+
         def __getattr__(self, name):  # any write method would blow up
             raise AssertionError(f"unexpected call {name}")
 
