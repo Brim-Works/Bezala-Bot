@@ -779,6 +779,18 @@ async def inspect_bezala_transaction(transaction_id: str | None = None,
 
 
 @mcp.tool()
+async def probe_bezala_conditional_fields(transaction_id: str) -> dict:
+    """C62 read-only (GET only): try a fixed list of Bezala GET addresses to find
+    where a draft's Vehicle / Sträcka (km) / Antal passagerare (conditional_values,
+    field_id 1/2/3) can be read. Nothing is written to Bezala."""
+    import asyncio
+
+    from app.services.c62_conditional import probe_reads
+
+    return await asyncio.to_thread(probe_reads, str(transaction_id))
+
+
+@mcp.tool()
 async def list_probably_handled_receipts() -> dict:
     """Read-only review list (not the swipe queue): receipts older than 14 days
     without an open company card line and without a match in Bezala - probably

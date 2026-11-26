@@ -553,6 +553,13 @@ class BezalaClient:
         except guard.BezalaWriteBlocked as exc:
             raise BezalaError(str(exc)) from exc
 
+    def get_raw(self, path: str) -> httpx.Response:
+        """C62 — bara GET (läsning) mot en adress under API-basen. Används för
+        att hitta var Bezala visar conditional_values. Skriver aldrig."""
+        if not path.startswith("/") or ".." in path:
+            raise BezalaError(f"get_raw: ogiltig sökväg {path!r}")
+        return self._request("GET", path)
+
     def get_transaction(self, transaction_id: str | int) -> dict[str, Any]:
         """GET /transactions/{tx_id} — läser nuvarande state för en
         transaktion. Används av /api/debug/test-bezala-draft-flow för
