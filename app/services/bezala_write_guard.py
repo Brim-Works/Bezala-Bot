@@ -45,6 +45,8 @@ ALLOWED_TRANSACTION_FIELDS = frozenset({
 # allowed=DRAFT_FILL_FIELDS (läsning av state före och efter).
 DRAFT_FILL_FIELDS = ALLOWED_TRANSACTION_FIELDS | frozenset({
     "date", "original_amount", "original_amount_currency",
+    # C62 — Vehicle, Sträcka (km), Antal passagerare (Bezalas ConditionalField).
+    "conditional_values_attributes",
 })
 
 # Fält i POST /attachments-formuläret (kvitto/bilaga). C51: `state` skickas
@@ -349,15 +351,29 @@ def _values(tx: dict | None, keys) -> dict:
     return {k: t.get(k) for k in keys or ()}
 
 
+def _extra(extra_read, client, transaction_id):
+    if extra_read is None:
+        return None
+    try:
+        return extra_read(client, transaction_id)
+    except Exception as exc:  # noqa: BLE001 — läsningen får aldrig fälla skrivningen
+        logger.warning("C62: extra läsning av tx %s misslyckades: %s", transaction_id, exc)
+        return None
+
+
 def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None,
                 allowed=ALLOWED_TRANSACTION_FIELDS, log_keys=None,
-                operation: str = "put") -> dict:
+                operation: str = "put", extra_read=None) -> dict:
     """PUT /transactions/{id} med bara tillåtna fält, läsning före och efter.
     Statusändring → CRITICAL + kill switch + BezalaWriteBlocked.
 
     C60: `log_keys` = fält vars värden före/efter sparas i loggen (visas i
     list_bot_bezala_writes och kvittovyn). Statusjämförelsen gäller fortfarande
-    bara statusfälten."""
+    bara statusfälten.
+
+    C62: `extra_read(client, transaction_id)` = extra läsning (GET) före och
+    efter, sparas i loggen under values["conditional"] (Vehicle/km/passagerare
+    syns inte i GET /transactions/{id})."""
     check_fields(fields, allowed)
     ensure_writes_allowed(db)
     raw_before = client.get_transaction(transaction_id)
@@ -371,6 +387,7 @@ def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None,
             f"Bezala transaction {transaction_id} is not a draft "
             f"(state={draft_state(before)!r}, draft = {sorted(DRAFT_STATES)}) - not writing to it."
         )
+    extra_before = _extra(extra_read, client, transaction_id)
     result = client._put_transaction_unchecked(transaction_id, fields)
     raw_after = client.get_transaction(transaction_id)
     after = status_snapshot(raw_after)
@@ -378,6 +395,9 @@ def guarded_put(client, transaction_id, fields: dict[str, Any], *, db=None,
     if log_keys:
         before = {**before, "values": _values(raw_before, log_keys)}
         after = {**after, "values": _values(raw_after, log_keys)}
+        if extra_read is not None:
+            before["values"]["conditional"] = extra_before
+            after["values"]["conditional"] = _extra(extra_read, client, transaction_id)
     if changed or not is_draft(after):
         record_write(operation=operation, transaction_id=transaction_id, fields=fields,
                      before=before, after=after, outcome="status_changed",

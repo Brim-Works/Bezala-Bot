@@ -464,7 +464,9 @@ async def fill_bezala_drafts(transaction_ids: list[str] | None = None, days: int
     yes in the chat, and only when BEZALA_DRAFT_FILL_ENABLED=true; state is read
     before and after and only state "draft" is written. Nothing is deleted or
     submitted for approval. Without transaction_ids: drafts coupled in the last
-    `days` days."""
+    `days` days plus every Bezala draft (state draft). C62: also Vehicle,
+    Sträcka (km) and Antal passagerare (conditional_values) - only empty fields,
+    km never guessed ("km saknas"); shows Bezala's emissions before/after."""
     from app.services.c60_draft import fill_drafts
 
     return await _run(fill_drafts, transaction_ids, apply=apply, days=days)

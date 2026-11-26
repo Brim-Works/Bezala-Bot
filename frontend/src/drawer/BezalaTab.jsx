@@ -30,6 +30,7 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
   const [retrying, setRetrying] = useState(false);
   const [writes, setWrites] = useState([]);
   const [amountFix, setAmountFix] = useState(null);
+  const [distanceFix, setDistanceFix] = useState(null);
 
   const status = message?.bezala_status;
   const msgId = message?.id;
@@ -40,8 +41,14 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
     let alive = true;
     if (!msgId || !hasTx || !api.messageBezalaWrites) return undefined;
     api.messageBezalaWrites(msgId)
-      .then((r) => { if (alive) { setWrites(r?.writes || []); setAmountFix(r?.amount_fix || null); } })
-      .catch(() => { if (alive) { setWrites([]); setAmountFix(null); } });
+      .then((r) => {
+        if (alive) {
+          setWrites(r?.writes || []);
+          setAmountFix(r?.amount_fix || null);
+          setDistanceFix(r?.distance_fix || null);
+        }
+      })
+      .catch(() => { if (alive) { setWrites([]); setAmountFix(null); setDistanceFix(null); } });
     return () => { alive = false; };
   }, [msgId, hasTx]);
 
@@ -141,6 +148,30 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
               {t.drawer.bezala.amountFixAfter}: <span className="mono">{amountFix.after}</span>
               {amountFix.when ? ` (${amountFix.when.slice(0, 16).replace('T', ' ')})` : ''}
             </p>
+          </div>
+        </div>
+      ) : null}
+
+      {distanceFix ? (
+        <div className="drawer-banner" data-testid="bezala-distance-fix">
+          <div className="drawer-banner__body">
+            <div className="drawer-banner__title">{t.drawer.bezala.distanceFixTitle}</div>
+            {distanceFix.fields.map((f) => (
+              <p key={f.field}>
+                {t.drawer.bezala.distanceField[f.field] || f.field}:{' '}
+                <span className="mono">{f.before || t.drawer.bezala.empty}</span>
+                {' → '}
+                <span className="mono">{f.after || t.drawer.bezala.empty}</span>
+              </p>
+            ))}
+            {distanceFix.emissions_after ? (
+              <p>
+                {t.drawer.bezala.emissions}:{' '}
+                <span className="mono">{distanceFix.emissions_before ?? '–'} kg</span>
+                {' → '}
+                <span className="mono">{distanceFix.emissions_after} kg</span>
+              </p>
+            ) : null}
           </div>
         </div>
       ) : null}

@@ -148,14 +148,14 @@ def inspect(transaction_id: str | None = None, bill_line_id: str | None = None,
                 out.append({"transaction_id": tid, "error": str(exc)[:300]})
                 continue
             item = {"transaction_id": tid, **describe(tx)}
-            # C62 — var kan Vehicle/km/passagerare läsas? (bara GET)
+            # C62 — Vehicle, Sträcka (km), Antal passagerare (bara GET).
             if transaction_id and hasattr(client, "get_raw"):
                 try:
-                    from app.services.c62_conditional import probe_reads
+                    from app.services.c62_conditional import read_values
 
-                    item["conditional_probe"] = probe_reads(tid, client=client)
+                    item["conditional_values"] = read_values(client, tid)
                 except Exception as exc:  # noqa: BLE001
-                    item["conditional_probe"] = {"error": str(exc)[:300]}
+                    item["conditional_values"] = {"error": str(exc)[:300]}
             out.append(item)
         return {"bill_line_id": bill_line_id, "found_via": found_via, "listing": listing,
                 "draft_states": sorted(guard.DRAFT_STATES), "transactions": out,
