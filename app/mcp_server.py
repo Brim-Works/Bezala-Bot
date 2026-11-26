@@ -466,7 +466,10 @@ async def fill_bezala_drafts(transaction_ids: list[str] | None = None, days: int
     submitted for approval. Without transaction_ids: drafts coupled in the last
     `days` days plus every Bezala draft (state draft). C62: also Vehicle,
     Sträcka (km) and Antal passagerare (conditional_values) - only empty fields,
-    km never guessed ("km saknas"); shows Bezala's emissions before/after."""
+    km never guessed ("km saknas"); shows Bezala's emissions before/after. C63:
+    route-table km (estimate) is used for train/bus/taxi and marked "km
+    uppskattat, rutttabell"; flights are always "Airplane: Large ~ 900km/h"
+    unless the aircraft is known to be a small propeller plane."""
     from app.services.c60_draft import fill_drafts
 
     return await _run(fill_drafts, transaction_ids, apply=apply, days=days)

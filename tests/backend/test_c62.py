@@ -126,8 +126,9 @@ PASSENGER_DEFAULT = {"5594772": [_cv_row("5594772", 3, "1", 266932)]}
 
 def _train(db, km=30.4, **leg):
     line, m = _skane(db)
+    leg.setdefault("source", "route_table")
     _trip_leg(db, seq=1, leg_date=date(2026, 11, 5), mode="train", from_place="CPH",
-              to_place="Malmö C", km=km, source="route_table",
+              to_place="Malmö C", km=km,
               receipt_message_id=m.message_id, **leg)
     return line, m
 
@@ -191,7 +192,8 @@ def test_existing_passenger_row_is_updated_not_duplicated(bound_db, monkeypatch)
     assert [r["field_id"] for r in client.cv["5594772"]].count(3) == 1
 
 
-def test_flight_is_filled_large_and_small(bound_db):
+def test_short_flight_is_large_not_small(bound_db):
+    """C63: under 700 km är inte längre Small - Vehicle gäller planets typ."""
     line, m = _finnair(bound_db)
     _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 3), mode="flight", from_place="HEL",
               to_place="ARN", km=396.0, source="airport_table", flight_no="AY823")
@@ -200,8 +202,9 @@ def test_flight_is_filled_large_and_small(bound_db):
     from tests.backend.test_c60 import _draft
 
     p = c62.plan(bound_db, m, _draft("5594776"), c62.parse_values([]))
-    assert p["fields"] == {"vehicle": "Airplane: Small ~ 700km/h", "km": "792",
+    assert p["fields"] == {"vehicle": "Airplane: Large ~ 900km/h", "km": "792",
                            "passengers": "1"}
+    assert p["km_kind"] == "riktig" and not p["km_estimate"]
 
 
 def test_flight_long_leg_is_large(bound_db):
@@ -215,7 +218,8 @@ def test_flight_long_leg_is_large(bound_db):
 
 
 @pytest.mark.parametrize("leg", [dict(km=None, km_reason="direction_unknown"),
-                                 dict(is_estimate=True)])
+                                 dict(km=None, km_reason="no_route_in_table"),
+                                 dict(is_estimate=True, source="assumption")])
 def test_leg_without_km_leaves_km_and_vehicle_empty(bound_db, leg):
     line, m = _train(bound_db, **leg)
     p = c62.plan(bound_db, m, _filled_tx(), c62.parse_values([]))
@@ -360,3 +364,167 @@ def test_change_fee_with_borrowed_flights_writes_nothing(bound_db):
     assert p["rows"] == [] and "annat kvitto" in p["notes"][0]
     p2 = c62.plan(bound_db, ticket, _draft("5594780"), c62.parse_values([]))
     assert p2["fields"]["km"] == "399"
+
+
+# ================================================================ C63
+
+
+def test_c63_estimated_train_km_is_written(bound_db, monkeypatch):
+    monkeypatch.setenv("BEZALA_DRAFT_FILL_ENABLED", "true")
+    line, m = _train(bound_db, is_estimate=True)
+    client = FakeCV({"5594772": _filled_tx()}, PASSENGER_DEFAULT)
+    dry = c60.fill_drafts(bound_db, ["5594772"], client=client)
+    item = dry["items"][0]
+    assert client.puts == []
+    cv = item["distance_fill"]
+    assert cv["fields"] == {"vehicle": "Train", "km": "30.4"}
+    assert cv["km_estimate"] is True and cv["km_kind"] == "uppskattad"
+    assert "km uppskattat, rutttabell" in cv["notes"]
+    assert item["distance"]["km"] == 30.4 and item["distance"]["km_estimate"] is True
+    out = c60.fill_drafts(bound_db, ["5594772"], client=client, apply=True)
+    assert out["items"][0]["result"] == "Skrivet och bekräftat"
+    assert {r["field_id"]: r["value"] for r in client.cv["5594772"]} == {
+        1: "Train", 2: "30.4", 3: "1"}
+
+
+@pytest.mark.parametrize("mode,vehicle", [("bus", "Bus"), ("taxi", "Taxi")])
+def test_c63_estimated_bus_and_taxi_km_is_written(bound_db, mode, vehicle):
+    line, m = _skane(bound_db)
+    _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 5), mode=mode, from_place="CPH",
+              to_place="Malmö C", km=42.0, source="route_table", is_estimate=True,
+              receipt_message_id=m.message_id)
+    p = c62.plan(bound_db, m, _filled_tx(), c62.parse_values([]))
+    assert p["fields"] == {"vehicle": vehicle, "km": "42", "passengers": "1"}
+    assert p["km_kind"] == "uppskattad"
+
+
+@pytest.mark.parametrize("mode", ["metro", "ferry", "car_phev"])
+def test_c63_estimate_for_other_modes_is_not_written(bound_db, mode):
+    line, m = _skane(bound_db)
+    _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 5), mode=mode, from_place="A",
+              to_place="B", km=12.0, source="route_table", is_estimate=True,
+              receipt_message_id=m.message_id)
+    p = c62.plan(bound_db, m, _filled_tx(), c62.parse_values([]))
+    assert "km" not in p["fields"] and "km saknas" in p["notes"]
+
+
+def test_c63_manual_km_wins_over_estimate(bound_db):
+    line, m = _train(bound_db, km=33.0, source="manual", is_estimate=True)
+    p = c62.plan(bound_db, m, _filled_tx(), c62.parse_values([]))
+    assert p["fields"]["km"] == "33" and p["km_kind"] == "riktig"
+
+
+def test_c63_mikkos_bezala_km_not_overwritten_by_estimate(bound_db):
+    line, m = _train(bound_db, is_estimate=True)
+    vals = c62.parse_values([_cv_row("5594772", 2, "28", 2)])
+    p = c62.plan(bound_db, m, _filled_tx(), vals)
+    assert "km" not in p["fields"] and p["fields"]["vehicle"] == "Train"
+    assert any("km: värdet i Bezala behålls" in s for s in p["skipped"])
+
+
+@pytest.mark.parametrize("state", ["reviewing", "sent", "accounted"])
+def test_c63_estimate_not_written_to_non_draft(bound_db, monkeypatch, state):
+    monkeypatch.setenv("BEZALA_DRAFT_FILL_ENABLED", "true")
+    line, m = _train(bound_db, is_estimate=True)
+    client = FakeCV({"5594772": _filled_tx(state=state)}, PASSENGER_DEFAULT)
+    out = c60.fill_drafts(bound_db, ["5594772"], client=client, apply=True)
+    assert client.puts == [] and "Inte ett utkast" in out["items"][0]["skipped"][0]
+
+
+def test_c63_flight_with_known_propeller_type_is_small(bound_db):
+    from tests.backend.test_c47 import _receipt
+    from tests.backend.test_c60 import _draft
+
+    m = _receipt(bound_db, date(2026, 11, 3), "Finnair", 210.0, waiting=False,
+                 category="Flyg", bezala_transaction_id="5594790",
+                 flight_segments=[{"flight_no": "AY 1043", "origin": "HEL", "dest": "MHQ",
+                                   "date": "2026-11-03", "aircraft": "ATR 72-500"}])
+    _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 3), mode="flight", from_place="HEL",
+              to_place="MHQ", km=280.0, source="airport_table", flight_no="AY1043")
+    p = c62.plan(bound_db, m, _draft("5594790"), c62.parse_values([]))
+    assert p["fields"]["vehicle"] == "Airplane: Small ~ 700km/h"
+    assert any("propellerplan" in n for n in p["notes"])
+
+
+def test_c63_mixed_jet_and_propeller_is_large(bound_db):
+    from tests.backend.test_c47 import _receipt
+    from tests.backend.test_c60 import _draft
+
+    m = _receipt(bound_db, date(2026, 11, 3), "Finnair", 310.0, waiting=False,
+                 category="Flyg", bezala_transaction_id="5594791",
+                 flight_segments=[
+                     {"flight_no": "AY 1043", "origin": "HEL", "dest": "MHQ",
+                      "date": "2026-11-03", "aircraft": "ATR 72"},
+                     {"flight_no": "AY 1044", "origin": "MHQ", "dest": "HEL",
+                      "date": "2026-11-03", "aircraft": "Airbus A320"}])
+    for i, no in enumerate(("AY1043", "AY1044")):
+        _trip_leg(bound_db, seq=i + 1, leg_date=date(2026, 11, 3), mode="flight",
+                  from_place="HEL", to_place="MHQ", km=280.0, source="airport_table",
+                  flight_no=no)
+    p = c62.plan(bound_db, m, _draft("5594791"), c62.parse_values([]))
+    assert p["fields"]["vehicle"] == "Airplane: Large ~ 900km/h"
+
+
+def test_c63_unknown_aircraft_is_never_small():
+    class L:
+        flight_no = "AY 823"
+        km = 120.0
+
+    assert c62.flight_vehicle([L()])[0] == c62.AIRPLANE_LARGE
+    assert c62.flight_vehicle([L()], segments=[{"flight_no": "AY823", "aircraft": "E190"}]
+                              )[0] == c62.AIRPLANE_LARGE
+    assert c62.flight_vehicle([L()], segments=[{"flight_no": "AY823",
+                                                "aircraft": "De Havilland Dash 8 Q400"}]
+                              )[0] == c62.AIRPLANE_SMALL
+    assert not c62.PROPELLER_RE.search("Status: STARTED, ATRium hotel")
+
+
+def test_c63_change_fee_still_not_filled(bound_db):
+    test_change_fee_with_borrowed_flights_writes_nothing(bound_db)
+
+
+def test_c63_receipt_view_shows_estimate(bound_db):
+    from app.main import _distance_km
+
+    line, m = _train(bound_db, is_estimate=True)
+    d = _distance_km(bound_db, m)
+    assert d == {"km": 30.4, "estimate": True, "note": "km uppskattat, rutttabell",
+                 "kind": "uppskattad"}
+
+
+def test_c63_postgres_estimated_train(pg_url, monkeypatch):  # noqa: F811
+    from contextlib import contextmanager
+
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+
+    from app import models  # noqa: F401
+    from app.db import Base
+    from app.services import bezala_write_guard as guard
+
+    engine = create_engine(pg_url)
+    with engine.begin() as c:
+        c.exec_driver_sql("DROP SCHEMA public CASCADE; CREATE SCHEMA public")
+    Base.metadata.create_all(bind=engine)
+    s = sessionmaker(bind=engine, autoflush=False, autocommit=False)()
+
+    @contextmanager
+    def _session(_db=None):
+        yield s
+
+    monkeypatch.setattr(guard, "_session", _session)
+    monkeypatch.setenv("BEZALA_DRAFT_FILL_ENABLED", "true")
+    try:
+        line, m = _train(s, is_estimate=True)
+        client = FakeCV({"5594772": _filled_tx()}, PASSENGER_DEFAULT)
+        out = c60.fill_drafts(s, ["5594772"], client=client, apply=True)
+        item = out["items"][0]
+        assert item["result"] == "Skrivet och bekräftat"
+        assert item["distance_fill"]["km_kind"] == "uppskattad"
+        client.txs["5594772"]["state"] = "reviewing"
+        res = c60.fill_drafts(s, ["5594772"], client=client, apply=True)
+        assert "Inte ett utkast" in res["items"][0]["skipped"][0]
+        assert len(client.puts) == 1
+    finally:
+        s.close()
+        engine.dispose()

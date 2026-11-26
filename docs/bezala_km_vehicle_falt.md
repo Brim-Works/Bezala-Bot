@@ -39,10 +39,18 @@ Befintliga rader skickas med sitt `id` (annars blir det en dubblett).
 
 * Bara utkast (state "draft"), bakom `BEZALA_DRAFT_FILL_ENABLED`.
 * Bara tomma fält. Mikkos egna värden skrivs aldrig över.
-* Km gissas aldrig: saknas km, är det en uppskattning eller är riktningen okänd
-  lämnas km och Vehicle tomma ("km saknas").
-* Flyg: det längsta benet på kvittot avgör. Under 700 km (Admins "kort flyg")
-  → `Airplane: Small ~ 700km/h`, annars `Airplane: Large ~ 900km/h`.
+* Km gissas aldrig: saknas km eller är riktningen okänd lämnas km och Vehicle
+  tomma ("km saknas").
+* C63: km från rutttabellen (route_table, `is_estimate`) får skrivas för tåg,
+  buss och taxi. Det märks "km uppskattat, rutttabell" i torrkörningen och
+  kvittovyn. Andra uppskattningar (t.ex. antaganden) skrivs inte. Mikkos
+  manuella km (source=manual) och värden Mikko skrivit i Bezala vinner alltid.
+* C63: Flyg → alltid `Airplane: Large ~ 900km/h`. Vehicle gäller flygplanets
+  typ och fart, inte sträckan. `Airplane: Small ~ 700km/h` bara när planet är
+  känt som litet propellerplan (ATR, Dash 8/Q400, Saab 340/2000 m.fl.) på
+  segmentet eller kvittot. Admins kategorier (kort/medel/lång flyg efter km)
+  ändras inte.
+* Flygkvitto utan egna segment (t.ex. ändringsavgift) fylls inte i (C62).
 * Kan fälten inte läsas skrivs inget.
 * Bezala räknar om `emissions` från Vehicle och km (5594772: 6,07 → 1,1 kg).
   Det är Bezalas siffra; Admin-raderna ändras inte.
