@@ -92,7 +92,12 @@ INSTRUCTIONS = (
     "bot has read the draft again (~75 s) and Bezala shows connected_to_bill_line, bill_id, "
     "the card line amount and a date. fill_bezala_drafts / repair_unverified_drafts are "
     "dry runs; apply=true only after Mikko says yes in the chat (needs "
-    "BEZALA_DRAFT_FILL_ENABLED=true; only state 'draft'; only empty fields)."
+    "BEZALA_DRAFT_FILL_ENABLED=true; only state 'draft'; only empty fields). "
+    "C64: preview_auto_fill is a dry run (GET only) of the automatic fill after a "
+    "verified coupling (account, VAT, description, sign, empty 0-rows, km). The "
+    "automation runs only with BEZALA_DRAFT_FILL_ENABLED=true AND set_auto_fill(on=true), "
+    "which is called ONLY after Mikko says yes in the chat. Bezala defaults (account "
+    "4060, VAT 1913/1914) are replaced only on untouched drafts; Mikko's values never."
 )
 
 mcp = FastMCP("Bezala Bot", instructions=INSTRUCTIONS)
@@ -485,6 +490,31 @@ async def repair_unverified_drafts(apply: bool = False) -> dict:
     from app.services.c60_draft import repair_broken_drafts
 
     return await _run(repair_broken_drafts, apply=apply)
+
+
+@mcp.tool()
+async def preview_auto_fill(transaction_ids: list[str] | None = None) -> dict:
+    """C64 DRY RUN (Bezala GET only, nothing written anywhere): for every current
+    Bezala draft plus the reference drafts 5596172, 5596173, 5596175, 5596176,
+    5596178 and 5597345: what Bezala has now (account, VAT, description, amount,
+    cost rows), what the automatic fill would write, and whether the draft counts
+    as untouched (updated_at at most one minute after creation and no field changed
+    by anyone but the bot). 'if_untouched' shows what it would write if it were
+    untouched."""
+    from app.services.c64_autofill import preview
+
+    return await _run(preview, transaction_ids)
+
+
+@mcp.tool()
+async def set_auto_fill(on: bool) -> dict:
+    """C64: turn the automatic fill of new drafts (after a verified coupling) on or
+    off. Call with on=true ONLY after Mikko said yes in the chat to the dry run.
+    Also needs BEZALA_DRAFT_FILL_ENABLED=true. Only state 'draft' is ever written;
+    nothing is submitted for approval."""
+    from app.services.c64_autofill import set_auto_fill as _set
+
+    return await _run(_set, bool(on))
 
 
 @mcp.tool()

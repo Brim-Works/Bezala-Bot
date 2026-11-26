@@ -298,7 +298,7 @@ def _empty(v) -> bool:
     return v is None or (isinstance(v, str) and not v.strip())
 
 
-def plan(db, row, tx: dict, values: dict | None) -> dict:
+def plan(db, row, tx: dict, values: dict | None, *, link: bool = True) -> dict:
     """Torrkörning: vad boten skulle skriva i Vehicle, Sträcka (km) och Antal
     passagerare. Bara utkast, bara tomma fält, km gissas aldrig."""
     from app.services import bezala_write_guard as guard
@@ -315,7 +315,7 @@ def plan(db, row, tx: dict, values: dict | None) -> dict:
         out["skipped"].append("Vehicle/km/passagerare: kan inte läsas i Bezala - skrivs inte")
         return out
     out["before"] = {k: value_of(values, k) for k in FIELD_KEYS.values()}
-    legs = legs_for_receipt(db, row)
+    legs = legs_for_receipt(db, row, link=link)
     out["legs"] = [{"leg_id": lg.id, "date": lg.leg_date.isoformat() if lg.leg_date else None,
                     "mode": lg.mode, "from": lg.from_place, "to": lg.to_place, "km": lg.km,
                     "source": lg.source, "is_estimate": bool(lg.is_estimate),

@@ -300,6 +300,8 @@ def test_valid_token_works(env):
         "list_bot_bezala_writes", "inspect_bezala_transaction", "list_probably_handled_receipts", "get_c50_rerun_report",
         # C62
         "probe_bezala_conditional_fields",
+        # C64
+        "preview_auto_fill", "set_auto_fill",
     }
 
 

@@ -112,6 +112,15 @@ class ProcessedMessage(Base):
     review_flag = Column(String(64), nullable=True)
     # C51 — momsen som den står på kvittot (rates, reverse charge, land, kortslip).
     vat_info = Column(JSON, nullable=True)
+    # C64 — taxi/tåg: km, tid och ort som de står på kvittot (t.ex. "Färd: 1.10 km").
+    ride_info = Column(JSON, nullable=True)
+    # C64 — vad boten läste i Bezala-utkastet (första läsningen efter skapandet
+    # och efter botens egna skrivningar). Avgör om utkastet är "orört".
+    bezala_draft_seen = Column(JSON, nullable=True)
+    # C64 — automatisk ifyllnad efter verifierad koppling: done | fill_unverified
+    # | skipped (NULL = inte körd). Körs bara en gång per utkast.
+    draft_fill_status = Column(String(32), nullable=True)
+    draft_fill_note = Column(Text, nullable=True)
 
 
 class SavedFile(Base):

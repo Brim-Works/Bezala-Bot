@@ -2319,6 +2319,10 @@ class RobustCouplingTest(unittest.TestCase):
         cls.app_module.app.dependency_overrides.clear()
 
     def setUp(self):
+        # C64 — regeln läser c50:s kontocache; andra tester får inte läcka in.
+        from app.services import c50_accounts
+
+        c50_accounts.set_reference([], [])
         with self.SessionLocal() as db:
             db.query(self.ProcessedMessage).delete()
             db.commit()
