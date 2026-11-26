@@ -302,6 +302,8 @@ def test_valid_token_works(env):
         "probe_bezala_conditional_fields",
         # C64
         "preview_auto_fill", "set_auto_fill",
+        # C65
+        "show_match",
     }
 
 
