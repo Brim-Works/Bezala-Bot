@@ -341,3 +341,22 @@ def test_postgres_train_filled_and_logged(pg_url, monkeypatch):  # noqa: F811
     finally:
         s.close()
         engine.dispose()
+
+
+def test_change_fee_with_borrowed_flights_writes_nothing(bound_db):
+    """Ändringsavgift utan egna flygsegment: flygen hör till biljetten."""
+    from tests.backend.test_c47 import _receipt
+    from tests.backend.test_c60 import _draft
+
+    ticket = _receipt(bound_db, date(2026, 11, 16), "Finnair", 540.79, waiting=False,
+                      category="Flyg", booking_ref="8LXVP2",
+                      flight_segments=[{"flight_no": "AY 803", "origin": "HEL", "dest": "ARN",
+                                        "date": "2026-11-24"}])
+    fee = _receipt(bound_db, date(2026, 11, 22), "Finnair", 32.92, waiting=False,
+                   category="Flyg", booking_ref="8LXVP2", bezala_transaction_id="5594766")
+    _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 24), mode="flight", from_place="HEL",
+              to_place="ARN", km=399.0, source="airport_table", flight_no="AY803")
+    p = c62.plan(bound_db, fee, _draft("5594766"), c62.parse_values([]))
+    assert p["rows"] == [] and "annat kvitto" in p["notes"][0]
+    p2 = c62.plan(bound_db, ticket, _draft("5594780"), c62.parse_values([]))
+    assert p2["fields"]["km"] == "399"

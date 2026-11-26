@@ -265,6 +265,13 @@ def plan(db, row, tx: dict, values: dict | None) -> dict:
                             "inget fylls i")
         return out
     mode = next(iter(modes))
+    own = [lg for lg in legs if lg.receipt_message_id == row.message_id]
+    if mode == "flight" and not row.flight_segments and not own:
+        # T.ex. ändringsavgift: flygen är lånade från biljetten med samma
+        # bokningsnummer. Km finns redan på biljetten → fylls inte i (dubbelt).
+        out["notes"].append("Flygen hör till ett annat kvitto (samma bokning, t.ex. "
+                            "ändringsavgift) - oklar match, inget fylls i")
+        return out
     km = 0.0
     km_ok = True
     for lg in legs:
