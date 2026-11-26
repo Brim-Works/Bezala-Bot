@@ -65,7 +65,8 @@ _VAT_TO_LINE = {
 
 FILL_LOG_KEYS = ("description", "date", "original_amount", "original_amount_currency",
                  "billed_amount", "billed_amount_currency", "connected_to_bill_line",
-                 "bill_id", "vat_lines")
+                 "bill_id", "vat_lines", "emissions")
+CV_KEY = "conditional_values_attributes"
 
 
 def draft_fill_enabled() -> bool:
@@ -297,7 +298,9 @@ def verify_and_update(db: Session, transaction_id: str, *, bill_line_id: str | N
         fill_result = None
         if fill and draft_fill_enabled() and row is not None \
                 and guard.is_draft(guard.status_snapshot(tx)):
-            plan = plan_fill(db, row, line, tx)
+            from app.services import c62_conditional as c62
+
+            plan = plan_fill(db, row, line, tx, conditional=c62.read_values(client, tx_id))
             fill_result = apply_fill(client, tx_id, plan, db=db) if plan["changes"] else plan
             if plan["changes"]:
                 tx = client.get_transaction(tx_id)
@@ -432,9 +435,10 @@ def plan_amount(db: Session, row: ProcessedMessage, line: CardLine | None,
 
 
 def plan_fill(db: Session, row: ProcessedMessage, line: CardLine | None, tx: dict,
-              accounts: list[dict] | None = None) -> dict:
+              accounts: list[dict] | None = None, conditional: dict | None = None) -> dict:
     """Vad boten skulle skriva till utkastet (torrkörning). Fyller bara tomma
-    fält eller Bezalas standardvärden."""
+    fält eller Bezalas standardvärden. `conditional` = utkastets Vehicle/km/
+    passagerare lästa med c62_conditional.read_values (None = okänt → skrivs inte)."""
     from app.services.card_line_coupling import _account_suggestion, _bezala_fill
 
     t = guard._unwrap(tx)
@@ -493,15 +497,22 @@ def plan_fill(db: Session, row: ProcessedMessage, line: CardLine | None, tx: dic
                 new = {"id": ln["id"], **new}
             changes["vat_lines_attributes"] = [new]
 
-    # C61 Del 2 — km, Vehicle, passagerare (bara när Bezalas fältnamn är kända).
-    if distance_field_names():
-        dw = plan_distance_write(db, row, tx)
-        changes.update(dw["changes"])
-        skipped.extend(dw["skipped"])
+    # C62 — Vehicle, Sträcka (km), Antal passagerare (conditional_values).
+    from app.services import c62_conditional as c62
 
-    before = {k: t.get(k) for k in FILL_LOG_KEYS + tuple(sorted(distance_field_names()))}
+    cv = c62.plan(db, row, tx, conditional)
+    if cv["rows"]:
+        changes[CV_KEY] = cv["rows"]
+    skipped.extend(cv["skipped"])
+
+    before = {k: t.get(k) for k in FILL_LOG_KEYS}
+    before["conditional"] = cv["before"]
     after = dict(before)
+    if cv["fields"]:
+        after["conditional"] = {**(cv["before"] or {}), **cv["fields"]}
     for k, v in changes.items():
+        if k == CV_KEY:
+            continue
         if k == "vat_lines_attributes":
             after["vat_lines"] = [{**(lines[0] if lines else {}),
                                    **{kk: vv for kk, vv in v[0].items() if kk != "id"}}]
@@ -509,7 +520,7 @@ def plan_fill(db: Session, row: ProcessedMessage, line: CardLine | None, tx: dic
             after[k] = v
     return {**base, "changes": changes, "skipped": skipped, "before": before, "after": after,
             "account": acc.get("name"), "vat": fill.get("vat"), "vat_rule": fill.get("vat_rule"),
-            "flags": fill.get("flags") or []}
+            "flags": fill.get("flags") or [], "distance_fill": cv}
 
 
 def apply_fill(client, transaction_id: str, plan: dict, *, db=None) -> dict:
@@ -523,11 +534,14 @@ def apply_fill(client, transaction_id: str, plan: dict, *, db=None) -> dict:
         out["written"] = {}
         out["result"] = "Inget att fylla i"
         return out
+    from app.services import c62_conditional as c62
+
     try:
         res = guard.guarded_put(client, transaction_id, dict(plan["changes"]), db=db,
-                                allowed=guard.DRAFT_FILL_FIELDS | distance_field_names(),
-                                log_keys=FILL_LOG_KEYS + tuple(sorted(distance_field_names())),
-                                operation="draft_fill")
+                                allowed=guard.DRAFT_FILL_FIELDS, log_keys=FILL_LOG_KEYS,
+                                operation="draft_fill",
+                                extra_read=c62.read_values if CV_KEY in plan["changes"]
+                                else None)
     except guard.BezalaWriteBlocked as exc:
         out["written"] = {}
         out["result"] = f"Nekad: {exc}"
@@ -541,7 +555,11 @@ def apply_fill(client, transaction_id: str, plan: dict, *, db=None) -> dict:
     after = (res or {}).get("after_values") or {}
     confirmed, missing = [], []
     for k, v in plan["changes"].items():
-        if k == "vat_lines_attributes":
+        if k == CV_KEY:
+            fields = (plan.get("distance_fill") or {}).get("fields") or {}
+            _, miss = c62.confirm(after.get("conditional"), fields)
+            ok = not miss
+        elif k == "vat_lines_attributes":
             got = (after.get("vat_lines") or [{}])[0] if after.get("vat_lines") else {}
             ok = all(str(got.get(kk)) == str(vv) for kk, vv in v[0].items() if kk != "id")
         elif k == "original_amount":
@@ -551,6 +569,9 @@ def apply_fill(client, transaction_id: str, plan: dict, *, db=None) -> dict:
         (confirmed if ok else missing).append(k)
     out["written"] = plan["changes"]
     out["after_read"] = after
+    if CV_KEY in plan["changes"]:
+        out["emissions_before"] = (plan.get("before") or {}).get("emissions")
+        out["emissions_after"] = after.get("emissions")
     out["confirmed"] = confirmed
     out["not_confirmed"] = missing
     out["result"] = "Skrivet och bekräftat" if not missing else \
@@ -576,6 +597,9 @@ def fill_drafts(db: Session, transaction_ids: list[str] | None = None, *, apply:
                 .filter(ProcessedMessage.matched_at >= cutoff)
                 .order_by(ProcessedMessage.matched_at).all())
         transaction_ids = [r.bezala_transaction_id for r in rows]
+        by_default = True
+    else:
+        by_default = False
     own = client is None
     if own:
         from app.services.bezala_client import BezalaClient
@@ -583,6 +607,10 @@ def fill_drafts(db: Session, transaction_ids: list[str] | None = None, *, apply:
         client = BezalaClient()
     items = []
     try:
+        if by_default:
+            # C62 — även alla utkast i Bezala (state draft) som boten har ett kvitto för.
+            transaction_ids = list(dict.fromkeys(
+                [str(x) for x in transaction_ids] + _bezala_draft_ids(client)))
         accounts = _accounts()
         for tx_id in transaction_ids:
             tx_id = str(tx_id)
@@ -597,7 +625,10 @@ def fill_drafts(db: Session, transaction_ids: list[str] | None = None, *, apply:
             except Exception as exc:  # noqa: BLE001
                 items.append({"transaction_id": tx_id, "error": f"GET misslyckades: {exc}"})
                 continue
-            plan = plan_fill(db, row, line, tx, accounts=accounts)
+            from app.services import c62_conditional as c62
+
+            plan = plan_fill(db, row, line, tx, accounts=accounts,
+                             conditional=c62.read_values(client, tx_id))
             plan["coupling_before"] = verify_coupling(tx, line)
             try:
                 plan["distance"] = plan_distance(db, row, tx)
@@ -625,6 +656,21 @@ def fill_drafts(db: Session, transaction_ids: list[str] | None = None, *, apply:
         "count": len(items),
         "items": items,
     }
+
+
+def _bezala_draft_ids(client) -> list[str]:
+    """Alla transaktioner i Bezala med state "draft" (GET /transactions)."""
+    try:
+        txs = client.list_transactions() or []
+    except Exception:  # noqa: BLE001
+        logger.exception("C62: listan över Bezala-utkast kunde inte läsas")
+        return []
+    out = []
+    for tx in txs:
+        t = guard._unwrap(tx) if isinstance(tx, dict) else {}
+        if guard.is_draft(guard.status_snapshot(t)) and t.get("id") is not None:
+            out.append(str(t["id"]))
+    return out
 
 
 def repair_broken_drafts(db: Session, *, apply: bool = False, client=None) -> dict:
@@ -806,8 +852,7 @@ def plan_distance(db: Session, row: ProcessedMessage, tx: dict | None = None) ->
         "bezala_emissions_kg": t.get("emissions"),
         "bezala_participants": t.get("participants"),
         "written": False,
-        "why_not_written": ("Bezalas API visar inte fälten Sträcka (km) och Vehicle - "
-                            "fältnamnen är okända, så boten skriver dem inte än."),
+        "why_not_written": "Förslag - skrivningen sker via distance_fill (C62).",
         "notes": [],
     }
     if not legs:
@@ -838,66 +883,26 @@ def plan_distance(db: Session, row: ProcessedMessage, tx: dict | None = None) ->
     return out
 
 
-# ================================================================ C61 Del 2: skriva km, Vehicle, passagerare
-#
-# Bezalas API-svar (GET /transactions/{id}, alla toppnycklar lästa 2026-11-26 på
-# 5594772-5594775) och Bezalas API-dokumentation (help.bezala.com, "Receipts
-# (API)") har inga fält för Sträcka (km), Vehicle eller Antal passagerare på
-# ett kvitto. Liknande fält finns bara på resor/milersättning (/api/trips:
-# distance_km, vehicle, number_of_people) - det är en annan sak och används
-# inte här. `participants` på momsraden är deltagare (representation), inte
-# passagerare.
-#
-# Fältnamnen fylls i här när Mikko visat vilket anrop webbformuläret gör
-# (Chrome DevTools → Nätverk). Tills dess är de None och boten skriver inget.
-DISTANCE_FIELDS: dict[str, str | None] = {"km": None, "vehicle": None, "passengers": None}
-# Bezalas värden för Vehicle (okända tills Mikko visat dem). Benets mode → värde.
-VEHICLE_VALUES: dict[str, str] = {}
+def distance_fix(writes: list[dict]) -> dict | None:
+    """C62 — kvittovyn: senaste gången boten fyllde Vehicle/km/passagerare
+    (före/efter per fält och Bezalas utsläppssiffra före/efter)."""
+    from app.services.c62_conditional import FIELD_KEYS, value_of
 
-
-def distance_field_names() -> set[str]:
-    return {v for v in DISTANCE_FIELDS.values() if v}
-
-
-def _empty(v) -> bool:
-    return v is None or (isinstance(v, str) and not v.strip()) or v == [] or v == 0 \
-        or v == "0"
-
-
-def plan_distance_write(db: Session, row: ProcessedMessage, tx: dict) -> dict:
-    """Vad boten skulle skriva i Sträcka (km), Vehicle och Antal passagerare.
-    Bara utkast (state draft), bara tomma fält. Km gissas aldrig: saknas km,
-    är det en uppskattning eller är riktningen okänd lämnas fältet tomt
-    ("km saknas"). Flygbiljetter först när flygets km är känt."""
-    t = guard._unwrap(tx)
-    snap = guard.status_snapshot(tx)
-    if not guard.is_draft(snap):
-        return {"changes": {}, "skipped": [
-            f"Inte ett utkast (state={guard.draft_state(snap)!r}) - boten skriver inte"],
-            "notes": []}
-    d = plan_distance(db, row, tx)
-    modes = {lg["mode"] for lg in d["legs"]}
-    vehicle = None
-    if len(modes) == 1:
-        vehicle = VEHICLE_VALUES.get(next(iter(modes))) or d.get("vehicle")
-    wanted = {"km": d.get("km"), "vehicle": vehicle, "passengers": 1 if d["legs"] else None}
-    changes: dict = {}
-    skipped: list[str] = []
-    notes = list(d.get("notes") or [])
-    if d.get("km") is None:
-        notes.append("km saknas")
-        if "flight" in modes:
-            return {"changes": {}, "skipped": ["Flyg: km saknas - inget skrivs"], "notes": notes,
-                    "distance": d}
-    for key, value in wanted.items():
-        field = DISTANCE_FIELDS.get(key)
-        if not field:
-            skipped.append(f"{key}: Bezalas fältnamn okänt - skrivs inte")
+    for w in writes or []:
+        fields = w.get("fields") or {}
+        if w.get("outcome") != "ok" or CV_KEY not in fields:
             continue
-        if value is None:
-            continue
-        if not _empty(t.get(field)):
-            skipped.append(f"{key}: värdet i Bezala behålls ({t.get(field)!r})")
-            continue
-        changes[field] = value
-    return {"changes": changes, "skipped": skipped, "notes": notes, "distance": d}
+        b, a = w.get("before") or {}, w.get("after") or {}
+        rows = []
+        for key in FIELD_KEYS.values():
+            before = value_of(b.get("conditional"), key)
+            after = value_of(a.get("conditional"), key)
+            if before != after:
+                rows.append({"field": key, "before": before, "after": after})
+        return {"when": w.get("when"), "fields": rows,
+                "emissions_before": b.get("emissions"), "emissions_after": a.get("emissions"),
+                "text": "Boten fyllde i " + ", ".join(
+                    f"{r['field']}: {r['before'] or 'tomt'} → {r['after'] or 'tomt'}"
+                    for r in rows) + (f" (Bezalas utsläpp {b.get('emissions')} → "
+                                      f"{a.get('emissions')} kg)" if a.get("emissions") else "")}
+    return None

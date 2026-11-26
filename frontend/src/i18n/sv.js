@@ -152,6 +152,10 @@ export default {
       amountFixTitle: 'Boten rättade beloppet i Bezala',
       amountFixBefore: 'Före',
       amountFixAfter: 'Efter',
+      distanceFixTitle: 'Boten fyllde i Vehicle, Sträcka (km) och passagerare i Bezala',
+      distanceField: { vehicle: 'Vehicle', km: 'Sträcka (km)', passengers: 'Antal passagerare' },
+      emissions: 'Bezalas utsläpp',
+      empty: 'tomt',
       naTitle: 'Ingen Bezala-överföring',
       naBody:
         'Steget hoppades över — filen nådde aldrig Drive, eller mailet är inte ett kvitto.',

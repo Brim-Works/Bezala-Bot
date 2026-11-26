@@ -128,3 +128,200 @@ def probe_reads(transaction_id: str, client=None, paths: tuple[str, ...] = PROBE
     hits = [r["path"] for r in results if r.get("conditional")]
     return {"transaction_id": str(transaction_id), "found_in": hits, "results": results,
             "note": "Read-only (GET). Nothing was written to Bezala."}
+
+
+# ================================================================ Del 1: läsning
+#
+# READ_PATH = GET-adressen där kvittots conditional_values syns. Fastställd med
+# probe_reads i prod 2026-11-26 på 5594772: svaret är en lista med rader
+# {id, expense_id, expense_type, field_id, field_type, value} (Train, 30.4, 1).
+# GET /transactions/<id> (även ?include=…) visar dem inte.
+READ_PATH: str | None = "/transactions/{id}/conditional_values"
+READ_KEY = "conditional_values"
+
+
+def _rows_from(data: Any) -> list[dict] | None:
+    """conditional_values-raderna ur ett svar (var de än ligger)."""
+    if isinstance(data, dict):
+        for key in (READ_KEY, "conditional_values_attributes"):
+            v = data.get(key)
+            if isinstance(v, list):
+                return [r for r in v if isinstance(r, dict)]
+        for v in data.values():
+            if isinstance(v, (dict, list)):
+                got = _rows_from(v)
+                if got is not None:
+                    return got
+    elif isinstance(data, list):
+        if data and all(isinstance(r, dict) and "field_id" in r for r in data):
+            return list(data)
+        for v in data:
+            got = _rows_from(v)
+            if got is not None:
+                return got
+    return None
+
+
+def parse_values(rows: list[dict] | None) -> dict:
+    """{"vehicle": {"id", "value"}, "km": {...}, "passengers": {...}} (saknas → None)."""
+    out: dict = {k: None for k in FIELD_KEYS.values()}
+    for r in rows or []:
+        try:
+            fid = int(r.get("field_id"))
+        except (TypeError, ValueError):
+            continue
+        key = FIELD_KEYS.get(fid)
+        if key is None:
+            continue
+        out[key] = {"id": r.get("id"), "value": r.get("value")}
+    return out
+
+
+def read_values(client, transaction_id: str) -> dict | None:
+    """Läs fälten (GET READ_PATH). None = kan inte läsas → inget skrivs."""
+    if not READ_PATH or not hasattr(client, "get_raw"):
+        return None
+    try:
+        resp = client.get_raw(READ_PATH.format(id=transaction_id))
+        if resp.status_code >= 400:
+            return None
+        rows = _rows_from(resp.json())
+    except Exception:  # noqa: BLE001
+        logger.exception("C62: conditional_values kunde inte läsas för %s", transaction_id)
+        return None
+    return parse_values(rows) if rows is not None else None
+
+
+def value_of(values: dict | None, key: str):
+    v = (values or {}).get(key)
+    return v.get("value") if isinstance(v, dict) else None
+
+
+# ================================================================ Del 2: vad som ska skrivas
+
+# Benets färdsätt → Bezalas Vehicle. Flyg avgörs separat (flight_vehicle).
+MODE_TO_VEHICLE = {
+    "train": "Train",
+    "bus": "Bus",
+    "taxi": "Taxi",
+    "metro": "Metro",
+    "tram": "Tram",
+    "ferry": "Ferry by foot (without car)",
+    "ferry_foot": "Ferry by foot (without car)",
+    "ferry_car": "Ferry with car",
+}
+# Flyg: Admins gräns för kort flyg (C54: short < 700 km). Det längsta benet
+# på kvittot avgör: under 700 km → liten (regional), annars stor.
+SMALL_AIRPLANE_MAX_KM = 700.0
+AIRPLANE_SMALL = "Airplane: Small ~ 700km/h"
+AIRPLANE_LARGE = "Airplane: Large ~ 900km/h"
+
+
+def flight_vehicle(legs: list) -> str | None:
+    kms = [lg.km for lg in legs if lg.km is not None]
+    if not kms or len(kms) != len(legs):
+        return None
+    return AIRPLANE_SMALL if max(kms) < SMALL_AIRPLANE_MAX_KM else AIRPLANE_LARGE
+
+
+def km_text(km: float) -> str:
+    """30.4 → "30.4", 39.0 → "39"."""
+    return f"{round(float(km), 1):g}"
+
+
+def _empty(v) -> bool:
+    return v is None or (isinstance(v, str) and not v.strip())
+
+
+def plan(db, row, tx: dict, values: dict | None) -> dict:
+    """Torrkörning: vad boten skulle skriva i Vehicle, Sträcka (km) och Antal
+    passagerare. Bara utkast, bara tomma fält, km gissas aldrig."""
+    from app.services import bezala_write_guard as guard
+    from app.services.c60_draft import legs_for_receipt
+
+    snap = guard.status_snapshot(tx)
+    out: dict = {"wanted": {}, "fields": {}, "rows": [], "skipped": [], "notes": [],
+                 "before": None, "legs": []}
+    if not guard.is_draft(snap):
+        out["skipped"].append(f"Inte ett utkast (state={guard.draft_state(snap)!r}) - "
+                              "boten skriver inte")
+        return out
+    if values is None:
+        out["skipped"].append("Vehicle/km/passagerare: kan inte läsas i Bezala - skrivs inte")
+        return out
+    out["before"] = {k: value_of(values, k) for k in FIELD_KEYS.values()}
+    legs = legs_for_receipt(db, row)
+    out["legs"] = [{"leg_id": lg.id, "date": lg.leg_date.isoformat() if lg.leg_date else None,
+                    "mode": lg.mode, "from": lg.from_place, "to": lg.to_place, "km": lg.km,
+                    "source": lg.source, "is_estimate": bool(lg.is_estimate),
+                    "km_reason": lg.km_reason, "flight_no": lg.flight_no} for lg in legs]
+    if not legs:
+        out["notes"].append("Inget ben matchat till kvittot - inget fylls i")
+        return out
+    modes = {lg.mode for lg in legs}
+    vehicle = None
+    if len(modes) > 1:
+        out["notes"].append(f"Flera färdsätt ({', '.join(sorted(modes))}) - oklar match, "
+                            "inget fylls i")
+        return out
+    mode = next(iter(modes))
+    km = 0.0
+    km_ok = True
+    for lg in legs:
+        if lg.km is None:
+            out["notes"].append(f"km saknas ({lg.from_place}-{lg.to_place} {lg.leg_date}"
+                                f"{', ' + lg.km_reason if lg.km_reason else ''})")
+            km_ok = False
+            break
+        if lg.is_estimate and lg.source != "manual":
+            out["notes"].append(f"km saknas: {lg.from_place}-{lg.to_place} är en uppskattning")
+            km_ok = False
+            break
+        km += float(lg.km)
+    if km_ok and km > 0:
+        vehicle = flight_vehicle(legs) if mode == "flight" else MODE_TO_VEHICLE.get(mode)
+        if vehicle is None:
+            out["notes"].append(f"Färdsätt '{mode}' har inget Vehicle i Bezala - km och "
+                                "Vehicle lämnas tomma")
+        else:
+            out["wanted"]["vehicle"] = vehicle
+            out["wanted"]["km"] = km_text(km)
+    elif km_ok:
+        out["notes"].append("km saknas")
+    else:
+        out["notes"].append("km saknas")
+    out["wanted"]["passengers"] = "1"
+    for key, want in out["wanted"].items():
+        cur = value_of(values, key)
+        if not _empty(cur):
+            if str(cur).strip() != str(want):
+                out["skipped"].append(f"{key}: värdet i Bezala behålls ({cur!r})")
+            continue
+        out["fields"][key] = want
+    tx_id = int(guard._unwrap(tx).get("id"))
+    fid = {v: k for k, v in FIELD_KEYS.items()}
+    for key, want in out["fields"].items():
+        r: dict = {"field_id": fid[key], "field_type": FIELD_TYPE, "value": want,
+                   "expense_id": tx_id, "expense_type": EXPENSE_TYPE}
+        existing = (values or {}).get(key)
+        if isinstance(existing, dict) and existing.get("id") is not None:
+            r = {"id": existing["id"], **r}
+        out["rows"].append(r)
+    return out
+
+
+def confirm(values_after: dict | None, fields: dict) -> tuple[list[str], list[str]]:
+    ok, missing = [], []
+    for key, want in fields.items():
+        got = value_of(values_after, key)
+        same = got is not None and (str(got).strip() == str(want) or (
+            key == "km" and _float(got) == _float(want)))
+        (ok if same else missing).append(key)
+    return ok, missing
+
+
+def _float(v):
+    try:
+        return round(float(str(v).replace(",", ".")), 1)
+    except (TypeError, ValueError):
+        return None

@@ -152,6 +152,10 @@ export default {
       amountFixTitle: 'The bot corrected the amount in Bezala',
       amountFixBefore: 'Before',
       amountFixAfter: 'After',
+      distanceFixTitle: 'The bot filled in Vehicle, Distance (km) and passengers in Bezala',
+      distanceField: { vehicle: 'Vehicle', km: 'Distance (km)', passengers: 'Passengers' },
+      emissions: "Bezala's emissions",
+      empty: 'empty',
       naTitle: 'No Bezala transfer',
       naBody:
         'Step was skipped — the file never reached Drive, or the mail is not a receipt.',

@@ -3640,7 +3640,7 @@ def get_message_bezala_writes(
     _: None = Depends(require_auth),
 ):
     """C60 — kvittovyn: vad boten skrivit till kvittots Bezala-utkast (före/efter)."""
-    from app.services.c60_draft import amount_fix, writes_for
+    from app.services.c60_draft import amount_fix, distance_fix, writes_for
 
     row = db.query(ProcessedMessage).filter(ProcessedMessage.id == msg_id).first()
     if row is None:
@@ -3654,6 +3654,8 @@ def get_message_bezala_writes(
         "writes": writes,
         # C61 — "Boten rättade beloppet i Bezala: 0.00 SEK → 150.00 SEK".
         "amount_fix": amount_fix(writes),
+        # C62 — Vehicle/km/passagerare före/efter + Bezalas utsläpp före/efter.
+        "distance_fix": distance_fix(writes),
     }
 
 
