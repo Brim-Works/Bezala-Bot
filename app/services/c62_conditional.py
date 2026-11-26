@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -210,18 +211,82 @@ MODE_TO_VEHICLE = {
     "ferry_foot": "Ferry by foot (without car)",
     "ferry_car": "Ferry with car",
 }
-# Flyg: Admins gräns för kort flyg (C54: short < 700 km). Det längsta benet
-# på kvittot avgör: under 700 km → liten (regional), annars stor.
-SMALL_AIRPLANE_MAX_KM = 700.0
+# C63 — Flyg: Bezalas Vehicle gäller flygplanets typ och fart, inte sträckan.
+# Alla flygningar = Large. Small bara när flygplanet är känt som litet
+# propellerplan (typen finns på segmentet eller i kvittots text). Admins
+# kategorier (kort/medel/lång efter km) påverkas inte.
 AIRPLANE_SMALL = "Airplane: Small ~ 700km/h"
 AIRPLANE_LARGE = "Airplane: Large ~ 900km/h"
+PROPELLER_RE = re.compile(
+    r"\b(ATR[\s-]?(42|72)|Dash[\s-]?8|DHC[\s-]?8|Q[\s-]?400|Saab[\s-]?(340|2000)"
+    r"|Jetstream[\s-]?\d*|Dornier[\s-]?328|Twin[\s-]?Otter|turbo[\s-]?prop\w*"
+    r"|propellerplan|propeller(?:flyg|kone|plane)?)\b", re.I)
+SEGMENT_AIRCRAFT_KEYS = ("aircraft", "aircraft_type", "equipment", "plane", "plane_type")
+
+# C63 — km från rutttabellen (uppskattning) får skrivas, men bara för dessa
+# markfärdsätt. Flyg tar km ur airport_table som förut.
+ESTIMATE_OK_MODES = frozenset({"train", "bus", "taxi"})
+ESTIMATE_OK_SOURCES = frozenset({"route_table"})
+ESTIMATE_NOTE = "km uppskattat, rutttabell"
 
 
-def flight_vehicle(legs: list) -> str | None:
-    kms = [lg.km for lg in legs if lg.km is not None]
-    if not kms or len(kms) != len(legs):
-        return None
-    return AIRPLANE_SMALL if max(kms) < SMALL_AIRPLANE_MAX_KM else AIRPLANE_LARGE
+def _segment_aircraft(segments, flight_no: str | None) -> str | None:
+    from app.services.c60_draft import _flight_no_key
+
+    key = _flight_no_key(flight_no)
+    for seg in segments or []:
+        if not isinstance(seg, dict) or _flight_no_key(seg.get("flight_no")) != key:
+            continue
+        for k in SEGMENT_AIRCRAFT_KEYS:
+            if seg.get(k):
+                return str(seg[k])
+    return None
+
+
+def _receipt_text(row) -> str:
+    return " ".join(str(getattr(row, k, None) or "") for k in (
+        "subject", "summary", "ai_description_en", "ai_description", "manual_comment"))
+
+
+def flight_vehicle(legs: list, row=None, segments=None) -> tuple[str | None, str | None]:
+    """(Vehicle, skäl). Large om inte ALLA ben är kända propellerplan."""
+    if not legs:
+        return None, None
+    found = []
+    for lg in legs:
+        typ = getattr(lg, "aircraft", None) or _segment_aircraft(segments, lg.flight_no)
+        if typ is None and len(legs) == 1 and row is not None:
+            m = PROPELLER_RE.search(_receipt_text(row))
+            typ = m.group(0) if m else None
+        if not typ or not PROPELLER_RE.search(str(typ)):
+            return AIRPLANE_LARGE, None
+        found.append(str(typ))
+    return AIRPLANE_SMALL, "propellerplan: " + ", ".join(dict.fromkeys(found))
+
+
+def km_basis(legs: list) -> dict:
+    """Kan km skrivas? {"ok", "km", "estimate", "note"}. Mikkos manuella km
+    vinner alltid; rutttabellens uppskattning bara för tåg/buss/taxi; saknas
+    km eller är riktningen okänd blir km tomt."""
+    total, estimate = 0.0, False
+    for lg in legs:
+        if lg.km is None:
+            reason = getattr(lg, "km_reason", None)
+            return {"ok": False, "km": None, "estimate": False,
+                    "note": f"km saknas ({lg.from_place}-{lg.to_place} {lg.leg_date}"
+                            f"{', ' + reason if reason else ''})"}
+        if lg.source != "manual" and lg.is_estimate:
+            if lg.mode in ESTIMATE_OK_MODES and lg.source in ESTIMATE_OK_SOURCES:
+                estimate = True
+            else:
+                return {"ok": False, "km": None, "estimate": False,
+                        "note": f"km saknas: {lg.from_place}-{lg.to_place} är en uppskattning "
+                                f"({lg.source}, {lg.mode})"}
+        total += float(lg.km)
+    if total <= 0:
+        return {"ok": False, "km": None, "estimate": False, "note": "km saknas"}
+    return {"ok": True, "km": round(total, 1), "estimate": estimate,
+            "note": ESTIMATE_NOTE if estimate else None}
 
 
 def km_text(km: float) -> str:
@@ -272,30 +337,28 @@ def plan(db, row, tx: dict, values: dict | None) -> dict:
         out["notes"].append("Flygen hör till ett annat kvitto (samma bokning, t.ex. "
                             "ändringsavgift) - oklar match, inget fylls i")
         return out
-    km = 0.0
-    km_ok = True
-    for lg in legs:
-        if lg.km is None:
-            out["notes"].append(f"km saknas ({lg.from_place}-{lg.to_place} {lg.leg_date}"
-                                f"{', ' + lg.km_reason if lg.km_reason else ''})")
-            km_ok = False
-            break
-        if lg.is_estimate and lg.source != "manual":
-            out["notes"].append(f"km saknas: {lg.from_place}-{lg.to_place} är en uppskattning")
-            km_ok = False
-            break
-        km += float(lg.km)
-    if km_ok and km > 0:
-        vehicle = flight_vehicle(legs) if mode == "flight" else MODE_TO_VEHICLE.get(mode)
+    basis = km_basis(legs)
+    out["km_estimate"] = bool(basis["ok"] and basis["estimate"])
+    out["km_kind"] = None if not basis["ok"] else ("uppskattad" if basis["estimate"]
+                                                   else "riktig")
+    if basis["ok"]:
+        if mode == "flight":
+            vehicle, why = flight_vehicle(legs, row, row.flight_segments)
+            if why:
+                out["notes"].append(f"Airplane: Small - {why}")
+        else:
+            vehicle = MODE_TO_VEHICLE.get(mode)
         if vehicle is None:
             out["notes"].append(f"Färdsätt '{mode}' har inget Vehicle i Bezala - km och "
                                 "Vehicle lämnas tomma")
         else:
             out["wanted"]["vehicle"] = vehicle
-            out["wanted"]["km"] = km_text(km)
-    elif km_ok:
-        out["notes"].append("km saknas")
+            out["wanted"]["km"] = km_text(basis["km"])
+            if basis["estimate"]:
+                out["notes"].append(ESTIMATE_NOTE)
     else:
+        if basis["note"] and basis["note"] != "km saknas":
+            out["notes"].append(basis["note"])
         out["notes"].append("km saknas")
     out["wanted"]["passengers"] = "1"
     for key, want in out["wanted"].items():

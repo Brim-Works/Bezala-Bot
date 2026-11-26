@@ -153,6 +153,8 @@ export default {
       amountFixBefore: 'Before',
       amountFixAfter: 'After',
       distanceFixTitle: 'The bot filled in Vehicle, Distance (km) and passengers in Bezala',
+      kmEstimate: 'km estimated, route table',
+      kmReal: 'km from receipt or airport table',
       distanceField: { vehicle: 'Vehicle', km: 'Distance (km)', passengers: 'Passengers' },
       emissions: "Bezala's emissions",
       empty: 'empty',

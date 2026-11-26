@@ -685,14 +685,22 @@ def test_distance_leg_without_km_stays_empty(bound_db):
 
 
 def test_distance_estimate_not_used_but_manual_wins(bound_db):
+    """C63: rutttabellens uppskattning används för taxi (märks), ett antagande
+    inte; Mikkos egen km vinner alltid."""
     m = _receipt(bound_db, date(2026, 11, 5), "Taxi", 30.0, waiting=False, category="Taxi")
     lg = _trip_leg(bound_db, seq=1, leg_date=date(2026, 11, 5), mode="taxi", from_place="A",
-                   to_place="B", km=12.0, source="route_table", is_estimate=True,
+                   to_place="B", km=12.0, source="assumption", is_estimate=True,
                    receipt_message_id=m.message_id)
     assert c60.plan_distance(bound_db, m)["km"] is None
+    lg.source = "route_table"
+    bound_db.commit()
+    d = c60.plan_distance(bound_db, m)
+    assert d["km"] == 12.0 and d["km_kind"] == "uppskattad"
+    assert "km uppskattat, rutttabell" in d["notes"]
     lg.source = "manual"  # Mikkos egen km vinner
     bound_db.commit()
-    assert c60.plan_distance(bound_db, m)["km"] == 12.0
+    d = c60.plan_distance(bound_db, m)
+    assert d["km"] == 12.0 and d["km_kind"] == "riktig"
 
 
 def test_distance_is_never_written(bound_db, monkeypatch):

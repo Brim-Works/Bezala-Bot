@@ -31,6 +31,7 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
   const [writes, setWrites] = useState([]);
   const [amountFix, setAmountFix] = useState(null);
   const [distanceFix, setDistanceFix] = useState(null);
+  const [distanceKm, setDistanceKm] = useState(null);
 
   const status = message?.bezala_status;
   const msgId = message?.id;
@@ -46,6 +47,7 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
           setWrites(r?.writes || []);
           setAmountFix(r?.amount_fix || null);
           setDistanceFix(r?.distance_fix || null);
+          setDistanceKm(r?.distance_km || null);
         }
       })
       .catch(() => { if (alive) { setWrites([]); setAmountFix(null); setDistanceFix(null); } });
@@ -172,6 +174,18 @@ export default function BezalaTab({ message, onRefetch, onClose }) {
                 <span className="mono">{distanceFix.emissions_after} kg</span>
               </p>
             ) : null}
+            {distanceKm?.estimate ? (
+              <p data-testid="bezala-km-estimate">{t.drawer.bezala.kmEstimate}</p>
+            ) : null}
+          </div>
+        </div>
+      ) : distanceKm?.km != null ? (
+        <div className="drawer-banner" data-testid="bezala-distance-km">
+          <div className="drawer-banner__body">
+            <p>
+              {t.drawer.bezala.distanceField.km}: <span className="mono">{distanceKm.km}</span>
+              {' '}({distanceKm.estimate ? t.drawer.bezala.kmEstimate : t.drawer.bezala.kmReal})
+            </p>
           </div>
         </div>
       ) : null}

@@ -153,6 +153,8 @@ export default {
       amountFixBefore: 'Före',
       amountFixAfter: 'Efter',
       distanceFixTitle: 'Boten fyllde i Vehicle, Sträcka (km) och passagerare i Bezala',
+      kmEstimate: 'km uppskattat, rutttabell',
+      kmReal: 'km från kvitto eller flygplatstabell',
       distanceField: { vehicle: 'Vehicle', km: 'Sträcka (km)', passengers: 'Antal passagerare' },
       emissions: 'Bezalas utsläpp',
       empty: 'tomt',

@@ -837,8 +837,9 @@ def legs_for_receipt(db: Session, row: ProcessedMessage) -> list:
 
 def plan_distance(db: Session, row: ProcessedMessage, tx: dict | None = None) -> dict:
     """Km, Vehicle och passagerare för utkastet (bara förslag, skrivs inte).
-    Gissar aldrig km: saknas km, är det en uppskattning (utan Mikkos ja) eller
-    är riktningen okänd blir km tomt. Mikkos manuella km vinner alltid."""
+    Gissar aldrig km: saknas km eller är riktningen okänd blir km tomt.
+    Rutttabellens uppskattning används bara för tåg/buss/taxi (C63).
+    Mikkos manuella km vinner alltid."""
     t = guard._unwrap(tx) if tx else {}
     legs = legs_for_receipt(db, row)
     out: dict = {
@@ -862,19 +863,19 @@ def plan_distance(db: Session, row: ProcessedMessage, tx: dict | None = None) ->
     out["vehicle"] = LEG_MODE_TO_VEHICLE.get(next(iter(modes))) if len(modes) == 1 else None
     if len(modes) > 1:
         out["notes"].append(f"Flera färdsätt ({', '.join(sorted(modes))}) - Vehicle lämnas tomt")
-    allow_est = guard._env_bool("C60_ALLOW_ESTIMATED_KM", False)
-    total = 0.0
-    for lg in legs:
-        reason = getattr(lg, "km_reason", None)
-        if lg.km is None:
-            out["notes"].append(f"km saknas ({lg.from_place}-{lg.to_place} {lg.leg_date}"
-                                f"{', ' + reason if reason else ''})")
-            return out
-        if lg.is_estimate and lg.source != "manual" and not allow_est:
-            out["notes"].append(f"km saknas: {lg.from_place}-{lg.to_place} är en uppskattning "
-                                "(fylls bara i om Mikko godkänt uppskattningar)")
-            return out
-        total += float(lg.km)
+    # C63 — samma regel som skrivningen: rutttabellens uppskattning får
+    # användas för tåg/buss/taxi (märks "km uppskattat, rutttabell").
+    from app.services.c62_conditional import km_basis
+
+    basis = km_basis(legs)
+    if not basis["ok"]:
+        out["notes"].append(basis["note"] or "km saknas")
+        return out
+    total = float(basis["km"])
+    out["km_estimate"] = basis["estimate"]
+    out["km_kind"] = "uppskattad" if basis["estimate"] else "riktig"
+    if basis["note"]:
+        out["notes"].append(basis["note"])
     out["km"] = round(total, 1)
     # C61 — Bezalas utsläppssiffra är beloppsbaserad; visa kg per km som jämförelse.
     kg = _num(t.get("emissions"))

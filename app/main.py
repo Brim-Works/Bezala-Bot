@@ -3656,7 +3656,25 @@ def get_message_bezala_writes(
         "amount_fix": amount_fix(writes),
         # C62 — Vehicle/km/passagerare före/efter + Bezalas utsläpp före/efter.
         "distance_fix": distance_fix(writes),
+        # C63 — km-underlaget: riktig eller uppskattad (rutttabell).
+        "distance_km": _distance_km(db, row),
     }
+
+
+def _distance_km(db: Session, row: ProcessedMessage) -> dict | None:
+    from app.services.c60_draft import legs_for_receipt
+    from app.services.c62_conditional import km_basis
+
+    try:
+        legs = legs_for_receipt(db, row)
+    except Exception:  # noqa: BLE001 - kvittovyn får aldrig fällas av km-underlaget
+        db.rollback()
+        return None
+    if not legs:
+        return None
+    b = km_basis(legs)
+    return {"km": b["km"], "estimate": b["estimate"], "note": b["note"],
+            "kind": None if not b["ok"] else ("uppskattad" if b["estimate"] else "riktig")}
 
 
 @app.get("/api/bezala/kill-switch")
