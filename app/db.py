@@ -113,6 +113,14 @@ _PROCESSED_MESSAGES_ADDITIONS.update({
     "vat_info": "JSON",
 })
 
+# C64 — km/tid från kvittot, botens läsning av utkastet, ifyllnadens status.
+_PROCESSED_MESSAGES_ADDITIONS.update({
+    "ride_info": "JSON",
+    "bezala_draft_seen": "JSON",
+    "draft_fill_status": "VARCHAR(32)",
+    "draft_fill_note": "TEXT",
+})
+
 _AI_FEEDBACK_ADDITIONS = {
     # FAS 8.1.1 — subject sparas på not_a_receipt-rader så AI:n kan
     # skilja olika mail-typer från samma avsändare.

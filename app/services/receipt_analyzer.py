@@ -52,7 +52,10 @@ SYSTEM_PROMPT = (
     '    "seller_country": "ISO-2, t.ex. FI/SE/US" eller null,\n'
     '    "purchase_country": "ISO-2 där köpet gjordes/tjänsten utfördes" eller null,\n'
     '    "document": "receipt | invoice | card_slip | hotel_folio | other"\n'
-    "  }\n"
+    "  },\n"
+    '  "ride": {"km": 1.1, "start": "HH:MM", "end": "HH:MM", "city": "Stockholm"} '
+    "eller null (bara taxi/tåg/buss: km, tider och ort som de står på kvittot, "
+    "t.ex. 'Färd: 1.10 km'; gissa aldrig - okänt = null)\n"
     "}\n\n"
     "Regler:\n"
     "- Svenska filnamn och sammanfattningar.\n"
@@ -239,6 +242,8 @@ class ReceiptAnalysis:
     date_corrected: bool = False
     # C51 — momsen som den står på kvittot (se normalize_vat_info).
     vat_info: dict | None = None
+    # C64 — taxi/tåg: km, tid och ort från kvittot (se normalize_ride_info).
+    ride_info: dict | None = None
 
 
 def _sanitize_filename(name: str) -> str:
@@ -523,7 +528,30 @@ def _normalize(
         description_en=description_en,
         date_corrected=date_corrected,
         vat_info=normalize_vat_info(payload.get("vat")),
+        ride_info=normalize_ride_info(payload.get("ride")),
     )
+
+
+def normalize_ride_info(raw) -> dict | None:
+    """C64 — städa AI:ns resa-objekt (km, start, slut, ort). Okänt = None."""
+    if not isinstance(raw, dict):
+        return None
+    try:
+        km = round(float(str(raw.get("km")).replace(",", ".")), 2) \
+            if raw.get("km") not in (None, "") else None
+    except (TypeError, ValueError):
+        km = None
+    if km is not None and not (0 < km < 5000):
+        km = None
+
+    def hhmm(v):
+        m = re.match(r"^\s*(\d{1,2})[:.](\d{2})", str(v or ""))
+        return f"{int(m.group(1)):02d}:{m.group(2)}" if m and int(m.group(1)) < 24 else None
+
+    city = str(raw.get("city") or "").strip()[:80] or None
+    out = {"km": km, "start": hhmm(raw.get("start")), "end": hhmm(raw.get("end")),
+           "city": city}
+    return out if any(v is not None for v in out.values()) else None
 
 
 def normalize_vat_info(raw) -> dict | None:

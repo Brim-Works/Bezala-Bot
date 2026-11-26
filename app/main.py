@@ -1635,6 +1635,7 @@ async def upload_manual_receipt(
         summary=analysis.summary if analysis else None,
         ai_description_en=analysis.description_en if analysis else None,
         vat_info=getattr(analysis, "vat_info", None) if analysis else None,
+        ride_info=getattr(analysis, "ride_info", None) if analysis else None,
         ai_confidence=analysis.confidence if analysis else None,
         bezala_upload_status="pending",
         payment_method="company_card",
@@ -1670,10 +1671,24 @@ async def upload_manual_receipt(
                 row=row, bill_line_id=str(bill_line_id), db=db, bezala=bezala,
             )
             db.refresh(row)
+            # C64 — rotorsaken till det halvfärdiga taxiutkastet 2026-11-26:
+            # uppladdning med kortrad startade aldrig verifieringen. Nu samma
+            # väg som couple_receipt: inte "success" förrän utkastet lästs om
+            # (~75 s). Ifyllnaden körs bara när C64-automatiken är på.
+            from app.models import CardLine as _CL
+            from app.services import c60_draft
+
+            _line = db.query(_CL).filter(_CL.bill_line_id == str(bill_line_id)).first()
+            c60_draft.mark_unverified(
+                db, _line, row,
+                f"Utkast {row.bezala_transaction_id} skapat - koppling inte verifierad än")
+            c60_draft.schedule_verification(row.bezala_transaction_id,
+                                            bill_line_id=str(bill_line_id), c64_only=True)
             coupling_result = {
                 "ok": True,
                 "bill_line_id": str(bill_line_id),
                 "transaction_id": row.bezala_transaction_id,
+                "status": "utkast skapat, koppling inte verifierad än",
             }
         except HTTPException as exc:
             coupling_result = {
@@ -3550,6 +3565,17 @@ def _do_match_to_bezala(
         vendor_mappings=vendor_mappings,
     )
 
+    # C64 — EN regel för konto och moms: förslaget här (put_skipped-loggen)
+    # och ifyllnaden av utkastet ger samma svar.
+    try:
+        from app.models import CardLine as _CL64
+        from app.services.c64_autofill import apply_rule_to_params, draft_rule
+
+        _line64 = db.query(_CL64).filter(_CL64.bill_line_id == str(bill_line_id)).first()
+        apply_rule_to_params(params, draft_rule(db, row, _line64))
+    except Exception:  # noqa: BLE001 - förslaget får aldrig stoppa kopplingen
+        logger.exception("C64: regeln kunde inte läggas på förslaget (msg_id=%s)", row.id)
+
     logger.info(
         "MATCH-TO-BEZALA payload: message_id=%s bill_line_id=%s "
         "description=%r vendor=%r category=%r "
@@ -3666,7 +3692,7 @@ def _distance_km(db: Session, row: ProcessedMessage) -> dict | None:
     from app.services.c62_conditional import km_basis
 
     try:
-        legs = legs_for_receipt(db, row)
+        legs = legs_for_receipt(db, row, link=False)
     except Exception:  # noqa: BLE001 - kvittovyn får aldrig fällas av km-underlaget
         db.rollback()
         return None

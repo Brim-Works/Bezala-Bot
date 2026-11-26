@@ -541,7 +541,7 @@ def _resolve_ground(r, mode: str, trip: CalendarTrip, flights: list[dict]) -> li
                 reason = "direction_unknown"
         else:
             reason = "direction_unknown" if len(ends) == 1 else "no_route_in_table"
-    km_receipt = parse_km(r.text)
+    km_receipt = getattr(r, "ride_km", None) or parse_km(r.text)
     vendor = r.vendor or "Receipt"
     if km_receipt is not None:
         km, source, is_est = km_receipt, "receipt", estimate_dir
@@ -613,7 +613,7 @@ def ground_legs(trip: CalendarTrip, flights: list[dict], receipts: list) -> list
         if mode in ("train", "bus"):
             legs += _resolve_ground(r, mode, trip, flights)
             continue
-        km = parse_km(r.text)
+        km = getattr(r, "ride_km", None) or parse_km(r.text)
         legs.append({
             "leg_key": f"receipt:{r.message_id}", "leg_date": r.day, "mode": mode,
             "from_place": None, "to_place": None, "km": km,

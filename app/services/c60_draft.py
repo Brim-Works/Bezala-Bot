@@ -281,30 +281,62 @@ def mark_unverified(db: Session, line: CardLine | None, row: ProcessedMessage,
 
 
 def verify_and_update(db: Session, transaction_id: str, *, bill_line_id: str | None = None,
-                      client=None, fill: bool = True, attempt: int = 1) -> dict:
+                      client=None, fill: bool = True, attempt: int = 1,
+                      c64_only: bool = False) -> dict:
     """Läs utkastet (GET). Fyll i det om BEZALA_DRAFT_FILL_ENABLED (bara
     draft), läs igen och sätt kortraden till resolved bara om kopplingen
-    verifierats. Annars coupling_unverified."""
+    verifierats. Annars coupling_unverified.
+
+    C64: med automatiken på (`c64_autofill.auto_fill_on`) verifieras
+    kopplingen FÖRST; ifyllnaden (konto, moms, beskrivning, km ...) körs bara
+    när kopplingen är verifierad. Före verifieringen rättas bara belopp/datum
+    som Bezala läst fel (krävs för att kopplingen ska gå igenom).
+    `c64_only`: fyll bara i om C64-automatiken är på (manuell uppladdning)."""
+    from app.services import c64_autofill as c64
+
     tx_id = str(transaction_id)
     row = _row_for_tx(db, tx_id)
     line = _line_for(db, tx_id, row, bill_line_id)
+    c64_on = bool(fill and row is not None and c64.auto_fill_on(db))
+    if c64_only and not c64_on:
+        fill = False
     own = client is None
     if own:
         from app.services.bezala_client import BezalaClient
 
         client = BezalaClient()
+    auto = None
     try:
         tx = client.get_transaction(tx_id)
+        if row is not None and guard.is_draft(guard.status_snapshot(tx)):
+            c64.record_seen(row, tx)
         fill_result = None
-        if fill and draft_fill_enabled() and row is not None \
-                and guard.is_draft(guard.status_snapshot(tx)):
+        can_fill = (fill and draft_fill_enabled() and row is not None
+                    and guard.is_draft(guard.status_snapshot(tx)))
+        if can_fill and c64_on:
+            v = verify_coupling(tx, line)
+            if not v["ok"] and attempt == 1:
+                amount, notes = plan_amount(db, row, line, guard._unwrap(tx))
+                plan = {"transaction_id": tx_id, "changes": amount, "skipped": notes,
+                        "before": {k: guard._unwrap(tx).get(k) for k in FILL_LOG_KEYS},
+                        "after": {}, "mode": "c64_amount_before_verification"}
+                fill_result = apply_fill(client, tx_id, plan, db=db) if amount else plan
+                if amount:
+                    tx = client.get_transaction(tx_id)
+                    if fill_result.get("written"):
+                        c64.record_seen(row, tx, after_write=True)
+        elif can_fill:
             from app.services import c62_conditional as c62
 
             plan = plan_fill(db, row, line, tx, conditional=c62.read_values(client, tx_id))
             fill_result = apply_fill(client, tx_id, plan, db=db) if plan["changes"] else plan
             if plan["changes"]:
                 tx = client.get_transaction(tx_id)
+                if fill_result.get("written"):
+                    c64.record_seen(row, tx, after_write=True)
         v = verify_coupling(tx, line)
+        if v["ok"] and c64_on and fill:
+            auto = c64.auto_fill_after_verified(db, row, line, client, tx_id)
     finally:
         if own:
             client.close()
@@ -324,17 +356,21 @@ def verify_and_update(db: Session, transaction_id: str, *, bill_line_id: str | N
            "verified": v["ok"], "problems": v["problems"], "bezala": v["bezala"]}
     if fill_result is not None:
         out["fill"] = fill_result
+    if auto is not None:
+        out["auto_fill"] = auto
     wrote_amount = bool(fill_result and set(fill_result.get("written") or {})
                         & {"original_amount", "date"})
     if not v["ok"] and wrote_amount and attempt == 1:
         # Bezala kan behöva en stund för att koppla efter att beloppet rättats.
-        schedule_verification(tx_id, bill_line_id=out["bill_line_id"], attempt=2)
+        schedule_verification(tx_id, bill_line_id=out["bill_line_id"], attempt=2,
+                              c64_only=c64_only)
         out["next_check"] = "om ca 75 s"
     return out
 
 
 def schedule_verification(transaction_id: str, *, bill_line_id: str | None = None,
-                          attempt: int = 1, delay: float | None = None) -> None:
+                          attempt: int = 1, delay: float | None = None,
+                          c64_only: bool = False) -> None:
     """Läs om utkastet efter 60-90 s (Bezala läser kvittot i bakgrunden)."""
     if os.environ.get("C60_VERIFY_SCHEDULE", "true").strip().lower() == "false":
         return
@@ -346,7 +382,7 @@ def schedule_verification(transaction_id: str, *, bill_line_id: str | None = Non
         db = SessionLocal()
         try:
             res = verify_and_update(db, transaction_id, bill_line_id=bill_line_id,
-                                    attempt=attempt)
+                                    attempt=attempt, c64_only=c64_only)
             logger.info("C60 verifiering tx=%s: %s", transaction_id, res)
         except Exception:  # noqa: BLE001
             db.rollback()
@@ -414,7 +450,8 @@ def plan_amount(db: Session, row: ProcessedMessage, line: CardLine | None,
         if _same_amount(row.amount, row.currency, line.amount, line.currency):
             if not _same_amount(t.get("original_amount"), t.get("original_amount_currency"),
                                 line.amount, line.currency):
-                changes["original_amount"] = f"{abs(float(line.amount)):.2f}"
+                # C64 — tecknet följer kortraden (aldrig +22,95 på en -22,95-rad).
+                changes["original_amount"] = f"{float(line.amount):.2f}"
                 changes["original_amount_currency"] = (line.currency or "").upper()
         else:
             notes.append(f"Belopp: kvittot ({row.amount} {row.currency}) och kortraden "
@@ -424,7 +461,8 @@ def plan_amount(db: Session, row: ProcessedMessage, line: CardLine | None,
                         row.amount, row.currency):
             pass
         elif _cross_currency_ok(db, row, line):
-            changes["original_amount"] = f"{abs(float(row.amount)):.2f}"
+            sign = -1 if float(line.amount) < 0 else 1
+            changes["original_amount"] = f"{sign * abs(float(row.amount)):.2f}"
             changes["original_amount_currency"] = row.currency.upper()
         else:
             notes.append(f"Belopp: {row.amount} {row.currency} kunde inte kontrolleras mot "
@@ -435,7 +473,8 @@ def plan_amount(db: Session, row: ProcessedMessage, line: CardLine | None,
 
 
 def plan_fill(db: Session, row: ProcessedMessage, line: CardLine | None, tx: dict,
-              accounts: list[dict] | None = None, conditional: dict | None = None) -> dict:
+              accounts: list[dict] | None = None, conditional: dict | None = None,
+              link: bool = True) -> dict:
     """Vad boten skulle skriva till utkastet (torrkörning). Fyller bara tomma
     fält eller Bezalas standardvärden. `conditional` = utkastets Vehicle/km/
     passagerare lästa med c62_conditional.read_values (None = okänt → skrivs inte)."""
@@ -500,7 +539,7 @@ def plan_fill(db: Session, row: ProcessedMessage, line: CardLine | None, tx: dic
     # C62 — Vehicle, Sträcka (km), Antal passagerare (conditional_values).
     from app.services import c62_conditional as c62
 
-    cv = c62.plan(db, row, tx, conditional)
+    cv = c62.plan(db, row, tx, conditional, link=link)
     if cv["rows"]:
         changes[CV_KEY] = cv["rows"]
     skipped.extend(cv["skipped"])
@@ -560,8 +599,7 @@ def apply_fill(client, transaction_id: str, plan: dict, *, db=None) -> dict:
             _, miss = c62.confirm(after.get("conditional"), fields)
             ok = not miss
         elif k == "vat_lines_attributes":
-            got = (after.get("vat_lines") or [{}])[0] if after.get("vat_lines") else {}
-            ok = all(str(got.get(kk)) == str(vv) for kk, vv in v[0].items() if kk != "id")
+            ok = _lines_confirmed(after.get("vat_lines") or [], v)
         elif k == "original_amount":
             ok = _num(after.get(k)) == _num(v)
         else:
@@ -577,6 +615,32 @@ def apply_fill(client, transaction_id: str, plan: dict, *, db=None) -> dict:
     out["result"] = "Skrivet och bekräftat" if not missing else \
         "Skrivet, men Bezala visar inte allt: " + ", ".join(missing)
     return out
+
+
+def _same_value(got, want) -> bool:
+    if isinstance(want, list) or isinstance(got, list):
+        return sorted(str(x) for x in (got or [])) == sorted(str(x) for x in (want or []))
+    a, b = _num(got), _num(want)
+    if a is not None and b is not None:
+        return a == b
+    return str(got) == str(want)
+
+
+def _lines_confirmed(got_lines: list, entries: list[dict]) -> bool:
+    """C64 — varje skickad kostnadsrad syns i Bezala efter skrivningen
+    (borttagna 0-rader syns inte längre)."""
+    got_lines = [g for g in got_lines if isinstance(g, dict)]
+    for e in entries:
+        same_id = [g for g in got_lines
+                   if e.get("id") is not None and str(g.get("id")) == str(e["id"])]
+        if e.get("_destroy"):
+            if same_id:
+                return False
+            continue
+        got = same_id[0] if same_id else (got_lines[0] if got_lines else {})
+        if not all(_same_value(got.get(kk), vv) for kk, vv in e.items() if kk != "id"):
+            return False
+    return True
 
 
 # ================================================================ verktyg
@@ -628,7 +692,7 @@ def fill_drafts(db: Session, transaction_ids: list[str] | None = None, *, apply:
             from app.services import c62_conditional as c62
 
             plan = plan_fill(db, row, line, tx, accounts=accounts,
-                             conditional=c62.read_values(client, tx_id))
+                             conditional=c62.read_values(client, tx_id), link=apply)
             plan["coupling_before"] = verify_coupling(tx, line)
             try:
                 plan["distance"] = plan_distance(db, row, tx)
@@ -809,14 +873,23 @@ def _flight_no_key(no: str | None) -> str | None:
     return f"{m.group(1)}{int(m.group(2))}" if m else None
 
 
-def legs_for_receipt(db: Session, row: ProcessedMessage) -> list:
+def legs_for_receipt(db: Session, row: ProcessedMessage, *, link: bool = True) -> list:
     """Ben som hör till kvittot: ben med kvittots message_id, och för flyg
-    ben med samma flygnummer (samma eller närliggande datum)."""
+    ben med samma flygnummer (samma eller närliggande datum).
+
+    C64: taxi/tåg utan ben → ett ben i resan med samma typ, datum och
+    leverantör kopplas till kvittot (link=False: bara visa, spara inget).
+    Kvittots km vinner över rutttabellen."""
     from app.models import TripLeg
+    from app.services import c64_autofill as c64
 
     legs = (db.query(TripLeg)
             .filter(TripLeg.receipt_message_id == row.message_id)
             .filter(TripLeg.excluded.is_(False)).all())
+    if not legs:
+        legs = c64.link_legs(db, row, apply=link)
+    elif link:
+        c64.apply_receipt_km(db, row, legs)
     seen = {lg.id for lg in legs}
     segs = segments_for(db, row) if row.category == "Flyg" or row.flight_segments else []
     for seg in segs:
@@ -841,7 +914,7 @@ def plan_distance(db: Session, row: ProcessedMessage, tx: dict | None = None) ->
     Rutttabellens uppskattning används bara för tåg/buss/taxi (C63).
     Mikkos manuella km vinner alltid."""
     t = guard._unwrap(tx) if tx else {}
-    legs = legs_for_receipt(db, row)
+    legs = legs_for_receipt(db, row, link=False)
     out: dict = {
         "legs": [{"leg_id": lg.id, "trip_id": lg.trip_id,
                   "date": lg.leg_date.isoformat() if lg.leg_date else None,

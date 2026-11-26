@@ -217,10 +217,17 @@ class ManualUploadEndpointTest(unittest.TestCase):
     def test_upload_company_card_couples_to_bill_line(self):
         """När bill_line_id ges kopplas raden direkt till Bezala via samma
         flöde som /match-to-bezala — coupling.ok=True och attach_file kallad."""
-        resp, _drive, bezala = self._post_upload(
-            filename="autopesu.pdf",
-            bill_line_id="2200001",
-        )
+        from unittest import mock
+
+        from app.services import c60_draft
+
+        with mock.patch.object(c60_draft, "schedule_verification") as sched:
+            resp, _drive, bezala = self._post_upload(
+                filename="autopesu.pdf",
+                bill_line_id="2200001",
+            )
+        # C64 — uppladdning med kortrad startar verifieringen (som couple_receipt).
+        sched.assert_called_once_with("tx-501", bill_line_id="2200001", c64_only=True)
         self.assertEqual(resp.status_code, 200, resp.text)
         body = resp.json()
         self.assertIsNotNone(body.get("coupling"))
@@ -235,7 +242,8 @@ class ManualUploadEndpointTest(unittest.TestCase):
         # Raden i DB har bezala_transaction_id satt.
         msg = body["message"]
         self.assertEqual(msg["bezala_transaction_id"], "tx-501")
-        self.assertEqual(msg["bezala_upload_status"], "success")
+        # C64 — inte "success" förrän utkastet lästs om och verifierats.
+        self.assertEqual(msg["bezala_upload_status"], "coupling_unverified")
 
     def test_upload_validates_pdf_content(self):
         """Filer märkta som PDF (filändelse + content-type) som saknar

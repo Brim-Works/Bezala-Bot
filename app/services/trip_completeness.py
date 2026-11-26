@@ -151,7 +151,7 @@ class Receipt:
     __slots__ = ("message_id", "vendor", "amount", "currency", "day", "text",
                  "kinds", "drive_link", "bill_line_id", "kind", "segments",
                  "parking_entry_at", "parking_exit_at", "duplicate_of", "route_fields",
-                 "received_at")
+                 "received_at", "ride_km")
 
     def __init__(self, m: ProcessedMessage):
         self.message_id = m.message_id
@@ -181,6 +181,9 @@ class Receipt:
         self.route_fields = [m.file_name, m.subject, m.ai_description_en, m.summary]
         # C59 - när mailet kom (köptid) ger riktningen för Arlanda Express.
         self.received_at = getattr(m, "received_at", None)
+        # C64 - km som står på kvittot (taxi/tåg) vinner över rutttabellen.
+        ri = getattr(m, "ride_info", None)
+        self.ride_km = ri.get("km") if isinstance(ri, dict) else None
 
     def as_link(self) -> dict:
         return {
